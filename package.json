@@ -1,0 +1,14 @@
+{
+  "name": "lakeandpine",
+  "private": true,
+  "packageManager": "pnpm@10.12.4",
+  "engines": {
+    "node": "24.16.0"
+  },
+  "scripts": {
+    "dev": "pnpm --dir apps/web dev",
+    "build": "pnpm --dir apps/web build",
+    "lint": "pnpm --dir apps/web lint",
+    "typecheck": "pnpm --dir apps/web typecheck"
+  }
+}
