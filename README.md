@@ -1,17 +1,11 @@
-# Lake and Pine Recovery Snapshot
+# Lake and Pine
 
-This repository currently preserves the recovered Claude Desktop source artifacts for Lake and Pine.
+This repository now uses `main` as the permanent base branch.
 
-## Recovered source
+## Preserved historical source
 
-- prototypes/claude-desktop/lake_pine_cleaning_visionary_v3.html
+- Recovered standalone prototype: `prototypes/recovered/2026-06-24/lake_pine_cleaning_visionary_v3.html`
+- Recovery provenance: `docs/recovered/claude-desktop-recovery.md`
+- Canonical product truth: `docs/product/recovered-product-truth.md`
 
-## Current assessment
-
-- Newest recovered source: lake_pine_cleaning_visionary_v3.html modified on 2026-06-24 08:19 local time.
-- Most complete recovered source: lake_pine_cleaning_visionary_v3.html.
-- Artifact type: standalone HTML prototype, not a production application.
-
-The prototype already includes product direction for instant estimating, recurring plans, scheduling, pricing anchors, service areas, reviews, local SEO, booking flows, a customer dashboard, billing concepts, support, and an AI concierge experience.
-
-See docs/recovered/claude-desktop-recovery.md for provenance and recovery notes.
+The recovered prototype remains historical product and design source material. It is not the production application architecture.
