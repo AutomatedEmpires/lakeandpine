@@ -64,6 +64,33 @@ export async function sendBookingConfirmation(input: {
   }
 }
 
+// Ops heads-up to the business inbox for every new booking or lead — the
+// point where a website visit becomes revenue. Same gating as customer email.
+export async function sendOpsNotification(input: {
+  kind: "booking" | "lead";
+  summary: string;
+  detailLines: string[];
+}): Promise<void> {
+  const resend = getResend();
+  const subject = `New ${input.kind}: ${input.summary}`;
+  if (!resend) {
+    console.log(`[email:skipped] RESEND_API_KEY unset — would notify ops: "${subject}"`);
+    return;
+  }
+  try {
+    await resend.emails.send({
+      from: FROM,
+      to: BUSINESS_EMAIL,
+      subject,
+      html: `<div style="font-family:ui-monospace,monospace;color:#061f1b"><h2>${escapeHtml(subject)}</h2><ul>${input.detailLines
+        .map((line) => `<li>${escapeHtml(line)}</li>`)
+        .join("")}</ul></div>`,
+    });
+  } catch (error) {
+    console.error("[email:error]", error);
+  }
+}
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { createLead } from "@/lib/data";
+import { sendOpsNotification } from "@/lib/email";
 
 const leadSchema = z.object({
   fullName: z.string().min(1).max(200),
@@ -19,5 +20,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid lead" }, { status: 400 });
   }
   const lead = await createLead(parsed.data);
+  await sendOpsNotification({
+    kind: "lead",
+    summary: `${parsed.data.fullName} · ${parsed.data.zip}`,
+    detailLines: [
+      `Service: ${parsed.data.serviceId ?? "unspecified"}`,
+      `Preferred date: ${parsed.data.preferredDate ?? "unspecified"}`,
+      `Lead: ${lead.id}`,
+    ],
+  });
   return NextResponse.json({ id: lead.id });
 }

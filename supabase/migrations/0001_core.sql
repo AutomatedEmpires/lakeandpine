@@ -195,7 +195,9 @@ create index billing_customer_idx on billing_records (customer_id, occurred_at);
 create index homes_customer_idx on homes (customer_id);
 
 create function set_updated_at() returns trigger
-language plpgsql as $$
+language plpgsql
+set search_path = public
+as $$
 begin
   new.updated_at = now();
   return new;

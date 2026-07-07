@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { createBooking, createQuote, getCustomerByEmail, upsertCustomerFromClerk } from "@/lib/data";
-import { sendBookingConfirmation } from "@/lib/email";
+import { sendBookingConfirmation, sendOpsNotification } from "@/lib/email";
 import { authEnabled } from "@/lib/env";
 import { calculateEstimate, ESTIMATE_SERVICES } from "@/lib/pricing";
 import { isBookableDate, isBookableWindow } from "@/lib/scheduling";
@@ -116,6 +116,16 @@ export async function POST(request: Request) {
     window: input.scheduledWindow,
     estimateDollars: estimate.dollars,
     bookingId: booking.id,
+  });
+  await sendOpsNotification({
+    kind: "booking",
+    summary: `${serviceTitle} · ${input.scheduledDate} ${input.scheduledWindow} · $${estimate.dollars}+`,
+    detailLines: [
+      `Customer: ${input.contact.name} (${input.contact.email}, ${input.contact.phone}, ${input.contact.zip})`,
+      `Frequency: ${input.frequency} · Add-ons: ${input.addonIds.join(", ") || "none"}`,
+      `Home: ${input.home.sizeBand} · ${input.home.bedrooms} bd · ${input.home.bathrooms} ba · pets ${input.home.pets} · ${input.home.condition}`,
+      `Booking: ${booking.id}`,
+    ],
   });
 
   return NextResponse.json({ id: booking.id, estimate: estimate.dollars });

@@ -32,9 +32,12 @@ Copy `.env.example` values into `apps/web/.env.local` (dev `DATABASE_URL` above)
 Clerk (auth) · Supabase Postgres via `DATABASE_URL` (data) · Stripe (payments) ·
 Resend (email) · PostHog (analytics) · Sentry (errors) · Mapbox (maps) · Vercel (hosting).
 All integrations are wired and key-gated — see `.env.example` for exactly what go-live needs.
-Go-live note: the Supabase org is at its free-project limit; create the `lakeandpine`
-project (upgrade org or free a slot), apply `supabase/migrations/*.sql`, point
-`DATABASE_URL` at it.
+
+**Live:** https://lakeandpine.vercel.app (Vercel project `lakeandpine`, root `apps/web`).
+Production DB: Supabase project `fftnqsvxxsxcsiwvtmwr` (us-west-1), connected via the
+scoped `lakeandpine_app` role through the **aws-1**-us-west-1 pooler (new projects live on
+the aws-1 Supavisor cluster — aws-0 returns "tenant not found"). Migrations + catalog +
+area content are applied. Remaining key-gated: Clerk, Stripe, Resend, PostHog, Sentry, Mapbox.
 
 ## Preserved historical source
 
