@@ -3,16 +3,28 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3010",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3010",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "ops:seed-content": "node scripts/seed-content.mjs",
+    "ops:seed-dev": "node scripts/seed-dev.mjs",
+    "ops:purge-dev-seed": "node scripts/purge-dev-seed.mjs"
   },
   "dependencies": {
+    "@clerk/nextjs": "^7.5.13",
+    "@sentry/nextjs": "^10.63.0",
+    "mapbox-gl": "^3.25.0",
     "next": "16.2.10",
+    "postgres": "^3.4.9",
+    "posthog-js": "^1.398.0",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "resend": "^6.17.1",
+    "stripe": "^22.3.0",
+    "svix": "^1.96.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

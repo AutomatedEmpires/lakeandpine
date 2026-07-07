@@ -9,6 +9,9 @@
     "dev": "pnpm --dir apps/web dev",
     "build": "pnpm --dir apps/web build",
     "lint": "pnpm --dir apps/web lint",
-    "typecheck": "pnpm --dir apps/web typecheck"
+    "typecheck": "pnpm --dir apps/web typecheck",
+    "ops:seed-content": "pnpm --dir apps/web ops:seed-content",
+    "ops:seed-dev": "pnpm --dir apps/web ops:seed-dev",
+    "ops:purge-dev-seed": "pnpm --dir apps/web ops:purge-dev-seed"
   }
 }

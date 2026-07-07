@@ -1,0 +1,23 @@
+import { NextResponse } from "next/server";
+import { z } from "zod";
+
+import { createLead } from "@/lib/data";
+
+const leadSchema = z.object({
+  fullName: z.string().min(1).max(200),
+  zip: z.string().min(3).max(12),
+  serviceId: z.enum(["essential", "deep", "move", "rental", "office", "addons"]).optional(),
+  preferredDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  email: z.string().email().optional(),
+  phone: z.string().max(30).optional(),
+});
+
+export async function POST(request: Request) {
+  const body = await request.json().catch(() => null);
+  const parsed = leadSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Invalid lead" }, { status: 400 });
+  }
+  const lead = await createLead(parsed.data);
+  return NextResponse.json({ id: lead.id });
+}
