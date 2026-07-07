@@ -103,7 +103,8 @@ export async function POST(request: Request) {
     return reply(match.answer);
   }
 
+  const contactFallback = BUSINESS_PHONE ? `, or call or text ${BUSINESS_PHONE}` : "";
   return reply(
-    `I can help with service choice, starting prices, pets, supplies, scheduling, and service areas. For an exact starting number use the estimate studio on the home page, or start a booking — and you can always call or text ${BUSINESS_PHONE}.`,
+    `I can help with service choice, starting prices, pets, supplies, scheduling, and service areas. For an exact starting number use the estimate studio on the home page, or start a booking${contactFallback}.`,
   );
 }

@@ -20,7 +20,7 @@ function isActive(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname.startsWith(href);
 }
 
-export function Nav({ phone, phoneTel }: { phone: string; phoneTel: string }) {
+export function Nav({ phone, phoneTel }: { phone?: string; phoneTel?: string }) {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -68,9 +68,11 @@ export function Nav({ phone, phoneTel }: { phone: string; phoneTel: string }) {
             ))}
           </nav>
           <div className="nav-actions">
-            <a className="btn btn-soft desktop-phone" href={phoneTel}>
-              ☎ {phone}
-            </a>
+            {phone && phoneTel ? (
+              <a className="btn btn-soft desktop-phone" href={phoneTel}>
+                ☎ {phone}
+              </a>
+            ) : null}
             <button className="icon-btn" onClick={toggleTheme} aria-label="Toggle day/night theme">
               ◐
             </button>
@@ -99,9 +101,15 @@ export function Nav({ phone, phoneTel }: { phone: string; phoneTel: string }) {
             {link.label}
           </Link>
         ))}
-        <a className="btn btn-primary" href={phoneTel}>
-          Call or Text
-        </a>
+        {phoneTel ? (
+          <a className="btn btn-primary" href={phoneTel}>
+            Call or Text
+          </a>
+        ) : (
+          <Link className="btn btn-primary" href="/book">
+            Book a Clean
+          </Link>
+        )}
       </aside>
     </>
   );

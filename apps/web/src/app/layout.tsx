@@ -46,7 +46,6 @@ const localBusinessJsonLd = {
   name: "Lake & Pine Cleaning Co.",
   description:
     "Premium home cleaning, recurring maid service, deep cleaning, move-in and move-out cleaning, vacation rental turnover, and small office cleaning across Coeur d'Alene and Spokane.",
-  telephone: BUSINESS_PHONE,
   email: BUSINESS_EMAIL,
   priceRange: "$$",
   areaServed: [
@@ -64,6 +63,7 @@ const localBusinessJsonLd = {
     { "@type": "Offer", name: "Move In / Move Out Detail", price: "369", priceCurrency: "USD" },
     { "@type": "Offer", name: "Lakehouse Turnover", price: "125", priceCurrency: "USD" },
   ],
+  ...(BUSINESS_PHONE ? { telephone: BUSINESS_PHONE } : {}),
 };
 
 const themeInit = `try{var t=localStorage.getItem("lp-theme");if(t)document.documentElement.dataset.theme=t}catch(e){}`;

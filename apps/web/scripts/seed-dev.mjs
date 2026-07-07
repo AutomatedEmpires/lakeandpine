@@ -4,7 +4,7 @@
 import { connect } from "./_db.mjs";
 
 const sql = connect();
-const EMAIL = "dev-preview@lakepinecleaning.com";
+const EMAIL = "dev-preview@lakeandpinecleaning.com";
 
 // customers has no BEFORE INSERT triggers, but keep the sibling-venture rule
 // anyway: select-then-insert instead of relying on ON CONFLICT.
@@ -12,7 +12,7 @@ let [customer] = await sql`select id from customers where email = ${EMAIL}`;
 if (!customer) {
   [customer] = await sql`
     insert into customers (email, full_name, phone, referral_credit_cents, is_dev_seed)
-    values (${EMAIL}, 'Devon Preview', '(208) 555-0142', 2500, true)
+    values (${EMAIL}, 'Devon Preview', null, 2500, true)
     returning id`;
 }
 
@@ -35,7 +35,7 @@ const existingBookings = await sql`select 1 from bookings where customer_id = ${
 if (existingBookings.length === 0) {
   const contact = {
     name: "Devon Preview",
-    phone: "(208) 555-0142",
+    phone: "",
     email: EMAIL,
     zip: "83814",
   };

@@ -413,7 +413,7 @@ export function BookingFlow({ services, addons }: { services: Service[]; addons:
                   id="contact-phone"
                   value={contact.phone}
                   onChange={(e) => setContact((c) => ({ ...c, phone: e.target.value }))}
-                  placeholder="(208) 555-0198"
+                  placeholder="Text-capable number"
                   autoComplete="tel"
                 />
               </div>

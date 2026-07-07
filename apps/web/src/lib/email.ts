@@ -13,6 +13,9 @@ function getResend(): Resend | null {
 }
 
 const FROM = process.env.RESEND_FROM_EMAIL || `Lake & Pine <${BUSINESS_EMAIL}>`;
+const emailFooterParts = ["Lake & Pine Cleaning Co.", BUSINESS_PHONE, "Licensed", "Bonded", "Insured"].filter(
+  Boolean,
+);
 
 export async function sendBookingConfirmation(input: {
   to: string;
@@ -53,7 +56,7 @@ export async function sendBookingConfirmation(input: {
             </a>
           </p>
           <p style="color:#88a39d;font-size:13px">
-            Lake &amp; Pine Cleaning Co. · ${escapeHtml(BUSINESS_PHONE)} · Licensed · Bonded · Insured
+            ${emailFooterParts.map((part) => escapeHtml(String(part))).join(" · ")}
             <br />Reference: ${escapeHtml(input.bookingId)}
           </p>
         </div>`,
