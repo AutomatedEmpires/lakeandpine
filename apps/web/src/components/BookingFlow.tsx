@@ -19,7 +19,7 @@ import {
   isBookableDate,
   toIsoDate,
 } from "@/lib/scheduling";
-import { showToast } from "./toast";
+import { showToast } from "./toast-events";
 
 type Service = { id: string; title: string; icon: string; price_label: string };
 type Addon = { id: string; title: string; price_label: string };

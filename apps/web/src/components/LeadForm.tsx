@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 import { capture } from "@/lib/analytics-client";
-import { showToast } from "./toast";
+import { showToast } from "./toast-events";
 
 export function LeadForm({ services }: { services: { id: string; title: string }[] }) {
   const [busy, setBusy] = useState(false);
