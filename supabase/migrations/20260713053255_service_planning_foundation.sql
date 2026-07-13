@@ -1721,7 +1721,11 @@ for each row execute function reject_immutable_event_mutation();
 do $$
 begin
   if not exists (select 1 from pg_roles where rolname = 'lakeandpine_app') then
-    create role lakeandpine_app login nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls;
+    -- SUPERUSER, REPLICATION, and BYPASSRLS default to false. Supabase's
+    -- project postgres role has CREATEROLE but is intentionally not a
+    -- superuser, so it cannot explicitly set even the negative forms of
+    -- those attributes.
+    create role lakeandpine_app login nocreatedb nocreaterole noinherit;
   end if;
 end
 $$;
@@ -1730,7 +1734,27 @@ $$;
 -- role. Preserve that non-privileged LOGIN path; disabling it is a separately
 -- approved credential-revocation action. Runtime still selects and verifies this
 -- exact non-owner role on every connection.
-alter role lakeandpine_app login nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls;
+-- hosted-role-compatibility:start
+do $$
+begin
+  if exists (
+    select 1
+    from pg_roles
+    where rolname = 'lakeandpine_app'
+      and (rolsuper or rolreplication or rolbypassrls)
+  ) then
+    raise exception
+      'lakeandpine_app has a privileged role attribute; a Supabase administrator must remove it before migration';
+  end if;
+end
+$$;
+
+-- These attributes are within the hosted project postgres role's CREATEROLE
+-- boundary. The privileged attributes above are asserted rather than restated
+-- because PostgreSQL reserves ALTER ... [NO]SUPERUSER/[NO]REPLICATION/
+-- [NO]BYPASSRLS to an actual superuser even when the requested value is false.
+alter role lakeandpine_app login nocreatedb nocreaterole noinherit;
+-- hosted-role-compatibility:end
 -- Supabase's server connection opens as the project `postgres` role, then the
 -- startup `role` parameter selects this non-owner role on every pooled backend.
 -- INHERIT is deliberately false: owner sessions keep owner privileges unless

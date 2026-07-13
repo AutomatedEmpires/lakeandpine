@@ -167,6 +167,49 @@ async function seedProductionLikeApplicationRole(sql) {
   }
 }
 
+async function inspectHostedRoleDdlCompatibility(sql, migrations) {
+  const startMarker = "-- hosted-role-compatibility:start";
+  const endMarker = "-- hosted-role-compatibility:end";
+  const candidates = migrations.filter(
+    ({ source }) => source.includes(startMarker) || source.includes(endMarker),
+  );
+  invariant(
+    candidates.length === 1 &&
+      candidates[0].source.includes(startMarker) &&
+      candidates[0].source.includes(endMarker),
+    "Exactly one migration must contain the hosted role-compatibility block",
+  );
+  const source = candidates[0].source;
+  const start = source.indexOf(startMarker) + startMarker.length;
+  const end = source.indexOf(endMarker, start);
+  invariant(end > start, "Hosted role-compatibility markers are malformed");
+  const roleDdl = source.slice(start, end);
+  const runner = "lakeandpine_migration_runner";
+
+  // SET ROLE drops the disposable bootstrap superuser's effective privileges,
+  // reproducing Supabase's CREATEROLE + ADMIN OPTION boundary without trying
+  // to demote PostgreSQL's protected bootstrap role.
+  await sql.unsafe(
+    `create role ${quoteIdentifier(runner)} nologin nosuperuser createrole createdb noinherit noreplication nobypassrls`,
+  );
+  await sql.unsafe(
+    `grant ${quoteIdentifier(APP_ROLE)} to ${quoteIdentifier(runner)} with admin true, inherit false, set false`,
+  );
+  try {
+    await sql.unsafe(`set role ${quoteIdentifier(runner)}`);
+    try {
+      await sql.unsafe(roleDdl);
+    } finally {
+      await sql.unsafe("reset role");
+    }
+  } finally {
+    await sql.unsafe(
+      `revoke ${quoteIdentifier(APP_ROLE)} from ${quoteIdentifier(runner)}`,
+    );
+    await sql.unsafe(`drop role ${quoteIdentifier(runner)}`);
+  }
+}
+
 async function applyMigrations(sql, migrations) {
   await sql`create schema migration_verification`;
   await sql`
@@ -830,6 +873,7 @@ try {
   );
 
   await seedProductionLikeApplicationRole(sql);
+  await inspectHostedRoleDdlCompatibility(sql, migrations);
   await applyMigrations(sql, migrations);
   await assertSafeRole(sql, true);
 

@@ -12,10 +12,12 @@ The verifier:
    `proof`, or `disposable`;
 2. refuses a database that already contains public tables;
 3. seeds the production-compatible `lakeandpine_app` LOGIN role plus a production-like
-   unsafe membership issued by a distinct grantor, then requires the migration to
-   normalize `NOSUPERUSER`, `NOBYPASSRLS`, and `NOINHERIT` while giving the `postgres`
+   unsafe membership issued by a distinct grantor, then requires privileged role
+   attributes to remain false, normalizes `NOINHERIT`, and gives the `postgres`
    connection owner effective `SET TRUE` and `INHERIT FALSE` access even when multiple
-   grantor rows remain;
+   grantor rows remain. It also executes the marked application-role DDL under a
+   non-superuser `CREATEROLE` + `ADMIN OPTION` boundary so hosted-incompatible clauses
+   fail in CI;
 4. applies every `supabase/migrations/*.sql` file in filename order, with one transaction
    per file and a SHA-256 record of the exact SQL applied;
 5. fails if the current booking spine is incomplete: `bookings`, `checklist_items`,

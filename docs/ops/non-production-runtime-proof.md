@@ -38,7 +38,7 @@ events, checklist, and notification-outbox rows in a `finally` block. Use
 
 - All three repository migrations applied in filename order with `ON_ERROR_STOP=1` on
   PostgreSQL 17. The premium operations migration SHA-256 was
-  `56ee7e34986dd03d2ba5df991f9f66ad213e7fcf17e880d6e7561ee90e7c791d`.
+  `f063ccc97ecef99d3e189f2efd72a3d96583ce5a6e03b0295d55eca56c9e69d3`.
 - The verifier proved `lakeandpine_app` is a non-superuser, cannot bypass RLS, owns no
   operational tables, and has only the intended table privileges. A second physical
   Postgres.js connection opened as `postgres` and reported `current_user =
