@@ -10,10 +10,10 @@ Create an empty local database whose name includes `ci`, `test`, `proof`, or
 `disposable`, then run:
 
 ```bash
-export MIGRATION_DATABASE_URL=postgresql://postgres:<password>@127.0.0.1:5442/lakeandpine_proof
-export DATABASE_URL=$MIGRATION_DATABASE_URL
+export MIGRATION_DATABASE_URL=postgresql://supabase_admin:<password>@127.0.0.1:5442/lakeandpine_proof
 
 pnpm quality:verify-migrations
+export DATABASE_URL=postgresql://postgres:lakeandpine-verifier-postgres@127.0.0.1:5442/lakeandpine_proof
 pnpm ops:seed-content
 pnpm ops:seed-dev
 ```
@@ -24,7 +24,7 @@ random 32-or-more-character values for `RUNTIME_SMOKE_TOKEN`,
 shell:
 
 ```bash
-export DATABASE_URL=$MIGRATION_DATABASE_URL
+export DATABASE_URL=postgresql://postgres:lakeandpine-verifier-postgres@127.0.0.1:5442/lakeandpine_proof
 export RUNTIME_SMOKE_BASE_URL=http://127.0.0.1:3010
 export RUNTIME_SMOKE_TOKEN='<same value configured on the server>'
 pnpm ops:smoke-runtime
@@ -38,7 +38,7 @@ events, checklist, and notification-outbox rows in a `finally` block. Use
 
 - All three repository migrations applied in filename order with `ON_ERROR_STOP=1` on
   PostgreSQL 17. The premium operations migration SHA-256 was
-  `56ee7e34986dd03d2ba5df991f9f66ad213e7fcf17e880d6e7561ee90e7c791d`.
+  `a31fe0ec9e305fd1e8520ce5dc6f81847e1cbb965a953d89bc07fc2190672952`.
 - The verifier proved `lakeandpine_app` is a non-superuser, cannot bypass RLS, owns no
   operational tables, and has only the intended table privileges. A second physical
   Postgres.js connection opened as `postgres` and reported `current_user =

@@ -22,13 +22,13 @@ jobs:
       postgres:
         image: postgres:17-alpine
         env:
-          POSTGRES_USER: postgres
+          POSTGRES_USER: supabase_admin
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: lakeandpine_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d lakeandpine_test"
+          --health-cmd "pg_isready -U supabase_admin -d lakeandpine_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -68,7 +68,7 @@ jobs:
       - name: Verify fresh PostgreSQL migrations and application-role access
         run: pnpm quality:verify-migrations
         env:
-          MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/lakeandpine_test
+          MIGRATION_DATABASE_URL: postgresql://supabase_admin:postgres@127.0.0.1:5432/lakeandpine_test
 
       - name: Test
         run: pnpm test
@@ -82,4 +82,4 @@ jobs:
       - name: Build
         run: pnpm build
         env:
-          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/lakeandpine_test
+          DATABASE_URL: postgresql://postgres:lakeandpine-verifier-postgres@127.0.0.1:5432/lakeandpine_test

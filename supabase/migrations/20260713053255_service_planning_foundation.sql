@@ -1718,10 +1718,14 @@ for each row execute function reject_immutable_event_mutation();
 -- The direct server role is intentionally a non-owner, non-superuser role and
 -- never bypasses RLS. Existing LOGIN/password settings are left untouched.
 
+-- hosted-role-compatibility:start
 do $$
 begin
   if not exists (select 1 from pg_roles where rolname = 'lakeandpine_app') then
-    create role lakeandpine_app login nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls;
+    -- Privileged attributes default to false. Keep them implicit here and
+    -- verify them below so creation and existing-role normalization share the
+    -- same fail-closed checks.
+    create role lakeandpine_app login nocreatedb nocreaterole noinherit;
   end if;
 end
 $$;
@@ -1730,7 +1734,96 @@ $$;
 -- role. Preserve that non-privileged LOGIN path; disabling it is a separately
 -- approved credential-revocation action. Runtime still selects and verifies this
 -- exact non-owner role on every connection.
-alter role lakeandpine_app login nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls;
+do $$
+declare
+  application_role_oid oid;
+  connection_owner_oid oid;
+begin
+  select oid into application_role_oid
+  from pg_roles
+  where rolname = 'lakeandpine_app';
+
+  select oid into connection_owner_oid
+  from pg_roles
+  where rolname = 'postgres';
+
+  if application_role_oid is null or connection_owner_oid is null then
+    raise exception 'Required application and connection-owner roles are missing';
+  end if;
+
+  if exists (
+    select 1
+    from pg_roles
+    where rolname = 'lakeandpine_app'
+      and (rolsuper or rolreplication or rolbypassrls)
+  ) then
+    raise exception
+      'lakeandpine_app has a privileged role attribute; a Supabase administrator must remove it before migration';
+  end if;
+
+  if exists (
+    select 1 from pg_auth_members
+    where member = application_role_oid
+  ) then
+    raise exception
+      'lakeandpine_app inherits or can set another role; remove the unexpected membership before migration';
+  end if;
+
+  if exists (
+    select 1 from pg_auth_members
+    where roleid = application_role_oid
+      and member <> connection_owner_oid
+  ) then
+    raise exception
+      'lakeandpine_app is granted to an unexpected member; remove the grant before migration';
+  end if;
+
+  if exists (
+    select 1 from pg_auth_members
+    where roleid = application_role_oid
+      and member = connection_owner_oid
+      and inherit_option
+  ) then
+    raise exception
+      'postgres must not inherit lakeandpine_app privileges automatically';
+  end if;
+
+  if exists (
+    select 1
+    from pg_class relation
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'public'
+      and relation.relowner = application_role_oid
+  ) or exists (
+    select 1
+    from pg_proc routine
+    join pg_namespace namespace on namespace.oid = routine.pronamespace
+    where namespace.nspname = 'public'
+      and routine.proowner = application_role_oid
+  ) or exists (
+    select 1
+    from pg_type data_type
+    join pg_namespace namespace on namespace.oid = data_type.typnamespace
+    where namespace.nspname = 'public'
+      and data_type.typowner = application_role_oid
+  ) or exists (
+    select 1
+    from pg_namespace namespace
+    where namespace.nspname = 'public'
+      and namespace.nspowner = application_role_oid
+  ) then
+    raise exception
+      'lakeandpine_app owns a public object and would bypass the intended privilege boundary';
+  end if;
+end
+$$;
+
+-- These attributes are within the hosted project postgres role's CREATEROLE
+-- boundary. The privileged attributes above are asserted rather than restated
+-- because PostgreSQL reserves ALTER ... [NO]SUPERUSER/[NO]REPLICATION/
+-- [NO]BYPASSRLS to an actual superuser even when the requested value is false.
+alter role lakeandpine_app login nocreatedb nocreaterole noinherit;
+-- hosted-role-compatibility:end
 -- Supabase's server connection opens as the project `postgres` role, then the
 -- startup `role` parameter selects this non-owner role on every pooled backend.
 -- INHERIT is deliberately false: owner sessions keep owner privileges unless
