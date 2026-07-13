@@ -199,7 +199,7 @@ Still protect secrets, provider ownership, public claims, prospective lead priva
 Refreshed 2026-07-13 UTC:
 
 - Draft PR #4, `docs: add agent operating standards`, is this contract branch.
-- PR #3, `test: prove disposable booking runtime`, has merged into `main`; this branch is one commit behind it. Refresh before changing booking/runtime/data files.
+- PR #3, `test: prove disposable booking runtime`, has merged into `main`; this local branch was synchronized with that revision during the standards pass. Refresh before changing booking/runtime/data files.
 - No other open PRs were reported at refresh.
 
 Before a public marketing launch, resolve or explicitly disposition unsupported service claims, contact-routing ownership, real service areas/availability, privacy/legal copy, and any required runtime/provider keys. Optional auth/payment/analytics/maps are blockers only for features that truly need them—not for a strong public service and lead-capture site.
