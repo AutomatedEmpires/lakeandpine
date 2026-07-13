@@ -1,6 +1,7 @@
 import "server-only";
 
 import { sql } from "./db";
+import { localDateTimeToUtc, validateUtcInterval } from "./zoned-datetime";
 
 export type Cleaner = {
   id: string;
@@ -12,6 +13,7 @@ export type Cleaner = {
   skills: string[];
   vertical_experience: string[];
   home_territory_name: string | null;
+  home_territory_timezone: string | null;
   max_daily_minutes: number;
   max_weekly_minutes: number;
   is_dev_seed: boolean;
@@ -27,6 +29,7 @@ export type CrewAssignment = {
   assignment_status: string;
   assignment_role: string;
   territory_name: string;
+  territory_timezone: string;
   required_skills: string[];
   planning_direction: string | null;
 };
@@ -52,6 +55,7 @@ async function cleanerSelect(where: ReturnType<typeof sql>) {
   const rows = await sql<Cleaner[]>`
     select c.id, c.external_auth_id, c.full_name, c.email, c.phone, c.status,
            c.skills, c.vertical_experience, t.name as home_territory_name,
+           t.timezone as home_territory_timezone,
            c.max_daily_minutes, c.max_weekly_minutes, c.is_dev_seed
     from cleaners c
     left join service_territories t on t.id = c.home_territory_id
@@ -104,7 +108,8 @@ export async function getCrewAssignments(cleanerId: string, devOnly: boolean) {
   return sql<CrewAssignment[]>`
     select a.id, s.id as schedule_id, s.service_vertical, s.start_at::text,
            s.end_at::text, s.status as schedule_status, a.status as assignment_status,
-           a.assignment_role, t.name as territory_name, s.required_skills,
+           a.assignment_role, t.name as territory_name, t.timezone as territory_timezone,
+           s.required_skills,
            b.planning_direction
     from job_assignments a
     join job_schedules s on s.id = a.job_schedule_id
@@ -159,11 +164,26 @@ export async function respondToAssignment(
 
 export async function requestTimeOff(input: {
   cleanerId: string;
-  startAt: string;
-  endAt: string;
+  startLocal: string;
+  endLocal: string;
   reasonCategory: "unavailable" | "personal" | "medical" | "training" | "other";
+  devOnly: boolean;
 }) {
+  const territories = await sql<{ timezone: string }[]>`
+    select territory.timezone
+    from cleaners cleaner
+    join service_territories territory on territory.id = cleaner.home_territory_id
+    where cleaner.id = ${input.cleanerId}
+      and cleaner.status in ('onboarding', 'active')
+      and (${input.devOnly} = false or cleaner.is_dev_seed)
+    limit 1`;
+  if (!territories[0]) {
+    throw new Error("A home territory is required before requesting time off");
+  }
+  const startAt = localDateTimeToUtc(input.startLocal, territories[0].timezone);
+  const endAt = localDateTimeToUtc(input.endLocal, territories[0].timezone);
+  validateUtcInterval(startAt, endAt, { maxMinutes: 14 * 24 * 60 });
   await sql`
     insert into cleaner_time_off (cleaner_id, start_at, end_at, reason_category, status)
-    values (${input.cleanerId}, ${input.startAt}, ${input.endAt}, ${input.reasonCategory}, 'requested')`;
+    values (${input.cleanerId}, ${startAt}, ${endAt}, ${input.reasonCategory}, 'requested')`;
 }

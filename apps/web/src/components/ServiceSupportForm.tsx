@@ -124,7 +124,7 @@ export function ServiceSupportForm({ intakeEnabled }: { intakeEnabled: boolean }
           <>
             <div className="field">
               <label htmlFor="support-preferred-date">Preferred new date</label>
-              <input id="support-preferred-date" name="preferredDate" type="date" />
+              <input id="support-preferred-date" name="preferredDate" type="date" required />
             </div>
             <div className="field">
               <label htmlFor="support-alternate-date">Alternate date</label>

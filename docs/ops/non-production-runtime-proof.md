@@ -38,16 +38,18 @@ events, checklist, and notification-outbox rows in a `finally` block. Use
 
 - All three repository migrations applied in filename order with `ON_ERROR_STOP=1` on
   PostgreSQL 17. The premium operations migration SHA-256 was
-  `dfbab20ccf131bab6b724e173e53baf040f8dc2fddf0f6227e7e443b383c6fd7`.
+  `8c2d9e8d17c17ce1d2059b84078a84bfa7d0ac6390a8aef5e6090ca0797e69a7`.
 - The verifier proved `lakeandpine_app` is a non-superuser, cannot bypass RLS, owns no
   operational tables, and has only the intended table privileges. A second physical
   Postgres.js connection opened as `postgres` and reported `current_user =
   lakeandpine_app` through the same startup-role mechanism used by the web runtime.
-- Database integration probes rejected undersized labor windows, booking-only schedule
-  claims, assignments outside recurring availability, daily/weekly cap violations,
-  time-off approval over accepted work, capacity-invalid reschedules, and over-refunds.
-  Confirmed/completed schedules synchronized booking state, and processed refund receipts
-  resolved their linked service cases.
+- Database integration probes rejected malformed or ineligible ZIPs, active territories
+  without screened capacity, undersized labor windows, booking-only schedule claims,
+  overstaffing, assignments outside recurring availability, daily/weekly/job-count cap
+  violations, time-off approval over accepted work, capacity-invalid reschedules,
+  unfinished recovery claims, and over-refunds. Confirmed/completed schedules synchronized
+  booking state, cancellations remained possible after capacity paused, and completed
+  recovery/refund receipts resolved their linked service cases.
 - Premium requests persist one booking, one immutable request event, a program-specific
   checklist, two durable notification-outbox records, consent/version evidence,
   qualification state, crew/skill requirements, duration, and an HMAC-derived public
@@ -66,12 +68,14 @@ events, checklist, and notification-outbox rows in a `finally` block. Use
   horizontal overflow. Labels, headings, skip navigation, mobile navigation, privacy
   choices, and validation alerts were exposed in the accessibility tree.
 - The private operator page displayed capacity-backed territories, applicant screening,
-  cleaner readiness/availability, qualification, explainable crew suggestions,
-  schedule lifecycle, service recovery, and a non-money-moving refund ledger.
-- The cleaner workspace displayed scoped skills, territory, capacity, recurring
-  availability, assignments, and time-away controls. The customer workspace displayed
-  request windows, program, confirmation state, property notes, and support without a
-  legacy low-price or referral-credit promise.
+  cleaner readiness/availability, qualification, timezone-aware crew suggestions,
+  exact-capacity schedule lifecycle, owned/dated recovery actions, and a
+  non-money-moving refund ledger.
+- The cleaner workspace displayed scoped skills, territory timezone, capacity, recurring
+  availability, assignments, and DST-safe time-away controls. The customer workspace
+  distinguished preferences from confirmed windows and routed reschedules, cancellations,
+  complaints, recleans, refund reviews, damage concerns, and general support into visible,
+  reference-backed operator cases.
 
 ## Readiness classification
 

@@ -34,8 +34,10 @@ export type CleanerCapacity = {
   availability: TimeSpan[];
   timeOff: TimeSpan[];
   assignments: TimeSpan[];
+  assignedJobsToday: number;
   assignedMinutesToday: number;
   assignedMinutesThisWeek: number;
+  maxDailyJobs: number;
   maxDailyMinutes: number;
   maxWeeklyMinutes: number;
 };
@@ -167,6 +169,9 @@ export function evaluateAssignment(job: SchedulingJob, candidate: AssignmentCand
     }
     if (cleaner.assignments.some((span) => overlaps(span, requestedSpan, candidate.travelBufferMinutes))) {
       blockers.push(`Cleaner ${cleaner.id} has an overlapping job or travel buffer`);
+    }
+    if (cleaner.assignedJobsToday + 1 > cleaner.maxDailyJobs) {
+      blockers.push(`Cleaner ${cleaner.id} would exceed daily job capacity`);
     }
     if (cleaner.assignedMinutesToday + requiredMinutes > cleaner.maxDailyMinutes) {
       blockers.push(`Cleaner ${cleaner.id} would exceed daily capacity`);

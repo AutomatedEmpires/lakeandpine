@@ -433,14 +433,19 @@ create table service_recovery_actions (
     check (action_type in ('reclean', 'site_visit', 'apology', 'credit_review', 'refund_review', 'crew_coaching', 'documentation', 'other')),
   status text not null default 'planned'
     check (status in ('planned', 'approved', 'scheduled', 'completed', 'canceled')),
-  scheduled_at timestamptz,
+  owner_label text not null default 'Operator'
+    check (char_length(owner_label) between 1 and 120),
+  scheduled_at timestamptz not null,
   completed_at timestamptz,
   value_cents integer check (value_cents is null or value_cents >= 0),
   notes text,
   approved_by_label text,
   is_dev_seed boolean not null default false,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  check (status not in ('scheduled', 'completed') or scheduled_at is not null),
+  check (status not in ('approved', 'scheduled', 'completed') or approved_by_label is not null),
+  check ((status = 'completed') = (completed_at is not null))
 );
 
 create table refund_records (
@@ -604,6 +609,228 @@ create trigger request_rate_limits_updated_at before update on request_rate_limi
 create trigger stripe_event_receipts_updated_at before update on stripe_event_receipts
   for each row execute function set_updated_at();
 
+create function validate_recovery_status_transition() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  if new.status = old.status then return new; end if;
+  if not (
+    (old.status = 'planned' and new.status in ('approved', 'canceled'))
+    or (old.status = 'approved' and new.status in ('scheduled', 'completed', 'canceled'))
+    or (old.status = 'scheduled' and new.status in ('completed', 'approved', 'canceled'))
+  ) then
+    raise exception 'Invalid recovery transition from % to %', old.status, new.status
+      using errcode = '23514';
+  end if;
+  return new;
+end
+$$;
+
+create trigger service_recovery_transition_guard
+before update of status on service_recovery_actions
+for each row execute function validate_recovery_status_transition();
+
+create function assert_service_case_recovery_consistency(
+  service_case_to_validate uuid,
+  service_case_status text
+) returns void
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  if service_case_status = 'reclean_scheduled' and not exists (
+    select 1 from service_recovery_actions recovery
+    where recovery.service_case_id = service_case_to_validate
+      and recovery.action_type = 'reclean'
+      and recovery.status in ('scheduled', 'completed')
+  ) then
+    raise exception 'Service case % needs a scheduled reclean recovery action', service_case_to_validate
+      using errcode = '23514';
+  end if;
+  if service_case_status in ('resolved', 'closed') and exists (
+    select 1 from service_recovery_actions recovery
+    where recovery.service_case_id = service_case_to_validate
+      and recovery.status in ('planned', 'approved', 'scheduled')
+  ) then
+    raise exception 'Service case % has unfinished recovery actions', service_case_to_validate
+      using errcode = '23514';
+  end if;
+end
+$$;
+
+revoke all on function assert_service_case_recovery_consistency(uuid, text) from public;
+
+create function validate_service_case_recovery_state() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  perform assert_service_case_recovery_consistency(new.id, new.status);
+  return new;
+end
+$$;
+
+create trigger service_cases_recovery_consistency_guard
+before insert or update of status on service_cases
+for each row execute function validate_service_case_recovery_state();
+
+create function revalidate_service_case_after_recovery_mutation() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+declare
+  affected_case uuid;
+  affected_status text;
+begin
+  for affected_case in
+    select distinct service_case_id
+    from (values
+      (case when tg_op <> 'INSERT' then old.service_case_id else null end),
+      (case when tg_op <> 'DELETE' then new.service_case_id else null end)
+    ) cases(service_case_id)
+    where service_case_id is not null
+  loop
+    select status into affected_status from service_cases where id = affected_case;
+    if affected_status is not null then
+      perform assert_service_case_recovery_consistency(affected_case, affected_status);
+    end if;
+  end loop;
+  if tg_op = 'DELETE' then return old; else return new; end if;
+end
+$$;
+
+create trigger service_recovery_case_consistency_guard
+after insert or update of status, action_type, service_case_id or delete
+on service_recovery_actions
+for each row execute function revalidate_service_case_after_recovery_mutation();
+
+-- The current launch market is US-only. Service eligibility compares the first
+-- five digits while accepting common ZIP+4 formatting at intake.
+create function normalize_us_postal_code(raw_postal_code text) returns text
+language sql
+immutable
+strict
+parallel safe
+as $$
+  select substring(trim(raw_postal_code) from '^([0-9]{5})(-[0-9]{4})?$')
+$$;
+
+revoke all on function normalize_us_postal_code(text) from public;
+
+alter table territory_postal_codes
+  add constraint territory_postal_codes_us_format_check
+  check (postal_code ~ '^[0-9]{5}(-[0-9]{4})?$');
+
+create function validate_territory_activation() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  if new.status <> 'active' or (tg_op = 'UPDATE' and old.status = 'active') then
+    return new;
+  end if;
+  if not exists (
+    select 1 from territory_postal_codes postal
+    where postal.territory_id = new.id and postal.status = 'active'
+  ) then
+    raise exception 'Territory % needs an active postal code before activation', new.id
+      using errcode = '23514';
+  end if;
+  if not exists (
+    select 1
+    from cleaners cleaner
+    where cleaner.home_territory_id = new.id
+      and cleaner.status = 'active'
+      and cleaner.screening_status = 'verified'
+      and exists (
+        select 1 from cleaner_availability_rules availability
+        where availability.cleaner_id = cleaner.id
+          and availability.status = 'active'
+          and (availability.territory_id is null or availability.territory_id = new.id)
+      )
+  ) then
+    raise exception 'Territory % needs a screened, available cleaner before activation', new.id
+      using errcode = '23514';
+  end if;
+  return new;
+end
+$$;
+
+create trigger service_territories_activation_guard
+before insert or update of status on service_territories
+for each row execute function validate_territory_activation();
+
+create function guard_active_territory_postal_capacity() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  if old.status <> 'active' then
+    if tg_op = 'DELETE' then return old; else return new; end if;
+  end if;
+  if tg_op = 'UPDATE'
+     and new.territory_id = old.territory_id
+     and new.status = 'active' then
+    return new;
+  end if;
+  if exists (
+    select 1 from service_territories territory
+    where territory.id = old.territory_id and territory.status = 'active'
+  ) and not exists (
+    select 1 from territory_postal_codes postal
+    where postal.territory_id = old.territory_id
+      and postal.status = 'active'
+      and postal.postal_code <> old.postal_code
+  ) then
+    raise exception 'Active territory % must retain an active postal code', old.territory_id
+      using errcode = '23514';
+  end if;
+  if tg_op = 'DELETE' then return old; else return new; end if;
+end
+$$;
+
+create trigger territory_postal_codes_capacity_guard
+before update or delete on territory_postal_codes
+for each row execute function guard_active_territory_postal_capacity();
+
+create function pause_territory_without_cleaner_capacity(territory_to_check uuid) returns void
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  if territory_to_check is null then
+    return;
+  end if;
+  update service_territories territory
+  set status = 'paused'
+  where territory.id = territory_to_check
+    and territory.status = 'active'
+    and not exists (
+      select 1
+      from cleaners cleaner
+      where cleaner.home_territory_id = territory.id
+        and cleaner.status = 'active'
+        and cleaner.screening_status = 'verified'
+        and exists (
+          select 1 from cleaner_availability_rules availability
+          where availability.cleaner_id = cleaner.id
+            and availability.status = 'active'
+            and (availability.territory_id is null or availability.territory_id = territory.id)
+        )
+    );
+end
+$$;
+
+revoke all on function pause_territory_without_cleaner_capacity(uuid) from public;
+
 create function assert_cleaner_schedule_capacity(
   requested_cleaner_id uuid,
   requested_schedule_id uuid,
@@ -618,6 +845,8 @@ set search_path = public, pg_temp
 as $$
 declare
   cleaner_state text;
+  cleaner_screening_state text;
+  cleaner_home_territory uuid;
   cleaner_daily_minutes integer;
   cleaner_weekly_minutes integer;
   cleaner_daily_jobs integer;
@@ -635,9 +864,11 @@ declare
 begin
   perform pg_advisory_xact_lock(hashtextextended(requested_cleaner_id::text, 0));
 
-  select c.status, c.max_daily_minutes, c.max_weekly_minutes, c.max_daily_jobs,
+  select c.status, c.screening_status, c.home_territory_id,
+         c.max_daily_minutes, c.max_weekly_minutes, c.max_daily_jobs,
          t.timezone
-    into cleaner_state, cleaner_daily_minutes, cleaner_weekly_minutes,
+    into cleaner_state, cleaner_screening_state, cleaner_home_territory,
+         cleaner_daily_minutes, cleaner_weekly_minutes,
          cleaner_daily_jobs, territory_timezone
   from cleaners c
   join service_territories t on t.id = requested_territory_id
@@ -645,6 +876,14 @@ begin
 
   if cleaner_state is distinct from 'active' then
     raise exception 'Cleaner % is not active', requested_cleaner_id using errcode = '23514';
+  end if;
+  if cleaner_screening_state is distinct from 'verified' then
+    raise exception 'Cleaner % does not have verified screening', requested_cleaner_id
+      using errcode = '23514';
+  end if;
+  if cleaner_home_territory is distinct from requested_territory_id then
+    raise exception 'Cleaner % is not assigned to schedule territory %', requested_cleaner_id, requested_territory_id
+      using errcode = '23514';
   end if;
 
   local_start := requested_start at time zone territory_timezone;
@@ -751,11 +990,16 @@ as $$
 declare
   booking_qualification text;
   booking_vertical text;
+  booking_postal text;
+  territory_state text;
   assigned_cleaner record;
   accepted_count integer;
   accepted_skills text[];
   required_elapsed_minutes integer;
 begin
+  if new.status = 'canceled' then
+    return new;
+  end if;
   required_elapsed_minutes := ceil(new.labor_minutes::numeric / new.required_crew_size / 30) * 30;
   if extract(epoch from (new.end_at - new.start_at)) / 60 < required_elapsed_minutes then
     raise exception 'Schedule % needs at least % elapsed minutes for % labor minutes and % cleaners',
@@ -763,8 +1007,25 @@ begin
       using errcode = '23514';
   end if;
 
-  select qualification_status, service_vertical into booking_qualification, booking_vertical
+  select qualification_status, service_vertical, normalize_us_postal_code(contact ->> 'zip')
+    into booking_qualification, booking_vertical, booking_postal
     from bookings where id = new.booking_id;
+  select status into territory_state from service_territories where id = new.territory_id;
+
+  if territory_state is distinct from 'active' then
+    raise exception 'Schedule territory % must be active', new.territory_id
+      using errcode = '23514';
+  end if;
+
+  if booking_postal is null or not exists (
+    select 1 from territory_postal_codes postal
+    where postal.territory_id = new.territory_id
+      and postal.status = 'active'
+      and normalize_us_postal_code(postal.postal_code) = booking_postal
+  ) then
+    raise exception 'Booking % postal code is not active in schedule territory %', new.booking_id, new.territory_id
+      using errcode = '23514';
+  end if;
 
   if booking_vertical is not null and booking_vertical is distinct from new.service_vertical then
     raise exception 'Schedule vertical % does not match booking vertical %', new.service_vertical, booking_vertical
@@ -783,8 +1044,8 @@ begin
     join cleaners c on c.id = a.cleaner_id
     left join lateral unnest(c.skills) skill on true
     where a.job_schedule_id = new.id and a.status in ('accepted', 'confirmed');
-    if accepted_count < new.required_crew_size then
-      raise exception 'Schedule % needs % accepted cleaners before confirmation; found %',
+    if accepted_count <> new.required_crew_size then
+      raise exception 'Schedule % needs exactly % accepted cleaners before confirmation; found %',
         new.id, new.required_crew_size, accepted_count using errcode = '23514';
     end if;
     if not new.required_skills <@ accepted_skills then
@@ -865,18 +1126,33 @@ declare
   requested_end timestamptz;
   requested_territory uuid;
   requested_travel_buffer integer;
+  requested_crew_size integer;
+  accepted_count integer;
 begin
   if new.status not in ('accepted', 'confirmed') then
     return new;
   end if;
 
-  select start_at, end_at, territory_id, travel_buffer_minutes
-    into requested_start, requested_end, requested_territory, requested_travel_buffer
+  select start_at, end_at, territory_id, travel_buffer_minutes, required_crew_size
+    into requested_start, requested_end, requested_territory, requested_travel_buffer,
+         requested_crew_size
   from job_schedules
-  where id = new.job_schedule_id;
+  where id = new.job_schedule_id
+  for update;
   if requested_start is null then
     raise exception 'Assignment schedule % does not exist', new.job_schedule_id
       using errcode = '23503';
+  end if;
+
+  select count(distinct assignment.cleaner_id)::integer
+    into accepted_count
+  from job_assignments assignment
+  where assignment.job_schedule_id = new.job_schedule_id
+    and assignment.status in ('accepted', 'confirmed')
+    and assignment.id <> new.id;
+  if accepted_count + 1 > requested_crew_size then
+    raise exception 'Schedule % cannot accept more than % cleaners', new.job_schedule_id, requested_crew_size
+      using errcode = '23514';
   end if;
 
   perform assert_cleaner_schedule_capacity(
@@ -891,6 +1167,196 @@ $$;
 create trigger job_assignments_capacity_guard
 before insert or update of status, cleaner_id, job_schedule_id on job_assignments
 for each row execute function validate_job_assignment_capacity();
+
+create function revalidate_schedule_readiness(schedule_to_validate uuid) returns void
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  -- A no-op parent update runs the authoritative schedule readiness trigger
+  -- against the post-mutation assignment/cleaner/availability state. Any failure
+  -- rolls the originating mutation back in the same transaction.
+  update job_schedules
+  set version = version
+  where id = schedule_to_validate
+    and status in ('confirmed', 'en_route', 'in_progress', 'quality_review');
+end
+$$;
+
+revoke all on function revalidate_schedule_readiness(uuid) from public;
+
+create function revalidate_schedules_after_assignment_mutation() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  if tg_op = 'DELETE' then
+    perform revalidate_schedule_readiness(old.job_schedule_id);
+    return old;
+  end if;
+  if tg_op = 'INSERT' then
+    perform revalidate_schedule_readiness(new.job_schedule_id);
+    return new;
+  end if;
+  perform revalidate_schedule_readiness(old.job_schedule_id);
+  if new.job_schedule_id is distinct from old.job_schedule_id then
+    perform revalidate_schedule_readiness(new.job_schedule_id);
+  end if;
+  return new;
+end
+$$;
+
+create trigger job_assignments_parent_readiness_guard
+after insert or update or delete on job_assignments
+for each row execute function revalidate_schedules_after_assignment_mutation();
+
+create function revalidate_schedules_after_cleaner_mutation() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+declare
+  assigned_schedule uuid;
+begin
+  for assigned_schedule in
+    select distinct assignment.job_schedule_id
+    from job_assignments assignment
+    where assignment.cleaner_id = new.id
+      and assignment.status in ('accepted', 'confirmed')
+  loop
+    perform revalidate_schedule_readiness(assigned_schedule);
+  end loop;
+  return new;
+end
+$$;
+
+create trigger cleaners_assignment_readiness_guard
+after update of status, screening_status, screening_verified_at, home_territory_id,
+  skills, max_daily_minutes, max_weekly_minutes, max_daily_jobs
+on cleaners for each row execute function revalidate_schedules_after_cleaner_mutation();
+
+create function maintain_territory_after_cleaner_mutation() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  perform pause_territory_without_cleaner_capacity(old.home_territory_id);
+  if new.home_territory_id is distinct from old.home_territory_id then
+    perform pause_territory_without_cleaner_capacity(new.home_territory_id);
+  end if;
+  return new;
+end
+$$;
+
+-- Alphabetical ordering makes this run after the assignment-readiness guard.
+-- Mutations that would strand live work fail; safe capacity loss pauses sales.
+create trigger z_cleaners_territory_capacity_guard
+after update of status, screening_status, screening_verified_at, home_territory_id
+on cleaners for each row execute function maintain_territory_after_cleaner_mutation();
+
+create function revalidate_schedules_after_availability_mutation() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+declare
+  affected_cleaner uuid;
+  assigned_schedule uuid;
+begin
+  affected_cleaner := case when tg_op = 'DELETE' then old.cleaner_id else new.cleaner_id end;
+  for assigned_schedule in
+    select distinct assignment.job_schedule_id
+    from job_assignments assignment
+    where assignment.cleaner_id = affected_cleaner
+      and assignment.status in ('accepted', 'confirmed')
+  loop
+    perform revalidate_schedule_readiness(assigned_schedule);
+  end loop;
+  if tg_op = 'UPDATE' and old.cleaner_id is distinct from new.cleaner_id then
+    for assigned_schedule in
+      select distinct assignment.job_schedule_id
+      from job_assignments assignment
+      where assignment.cleaner_id = old.cleaner_id
+        and assignment.status in ('accepted', 'confirmed')
+    loop
+      perform revalidate_schedule_readiness(assigned_schedule);
+    end loop;
+  end if;
+  perform pause_territory_without_cleaner_capacity((
+    select cleaner.home_territory_id from cleaners cleaner
+    where cleaner.id = affected_cleaner
+  ));
+  if tg_op = 'UPDATE' and old.cleaner_id is distinct from new.cleaner_id then
+    perform pause_territory_without_cleaner_capacity((
+      select cleaner.home_territory_id from cleaners cleaner
+      where cleaner.id = old.cleaner_id
+    ));
+  end if;
+  if tg_op = 'DELETE' then return old; else return new; end if;
+end
+$$;
+
+create trigger cleaner_availability_parent_readiness_guard
+after insert or update or delete on cleaner_availability_rules
+for each row execute function revalidate_schedules_after_availability_mutation();
+
+create function revalidate_schedules_after_territory_mutation() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+declare
+  affected_schedule uuid;
+begin
+  for affected_schedule in
+    select schedule.id
+    from job_schedules schedule
+    where schedule.territory_id = new.id
+      and schedule.status in ('confirmed', 'en_route', 'in_progress', 'quality_review')
+  loop
+    perform revalidate_schedule_readiness(affected_schedule);
+  end loop;
+  return new;
+end
+$$;
+
+create trigger service_territories_schedule_readiness_guard
+after update of status, timezone on service_territories
+for each row execute function revalidate_schedules_after_territory_mutation();
+
+create function revalidate_schedules_after_postal_mutation() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+declare
+  affected_territory uuid;
+  affected_schedule uuid;
+begin
+  for affected_territory in
+    select distinct territory_id
+    from (values (old.territory_id),
+      (case when tg_op = 'UPDATE' then new.territory_id else null end)) ids(territory_id)
+    where territory_id is not null
+  loop
+    for affected_schedule in
+      select schedule.id from job_schedules schedule
+      where schedule.territory_id = affected_territory
+        and schedule.status in ('confirmed', 'en_route', 'in_progress', 'quality_review')
+    loop
+      perform revalidate_schedule_readiness(affected_schedule);
+    end loop;
+  end loop;
+  if tg_op = 'DELETE' then return old; else return new; end if;
+end
+$$;
+
+create trigger territory_postal_codes_schedule_readiness_guard
+after update or delete on territory_postal_codes
+for each row execute function revalidate_schedules_after_postal_mutation();
 
 create function validate_time_off_against_assignments() returns trigger
 language plpgsql
@@ -942,6 +1408,7 @@ begin
 
   update bookings booking
   set status = synchronized_status,
+      territory_id = new.territory_id,
       scheduled_date = (new.start_at at time zone territory.timezone)::date,
       scheduled_window = case
         when new.status = 'canceled' then booking.scheduled_window
@@ -1189,17 +1656,21 @@ for each row execute function reject_immutable_event_mutation();
 do $$
 begin
   if not exists (select 1 from pg_roles where rolname = 'lakeandpine_app') then
-    create role lakeandpine_app nologin nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls;
+    create role lakeandpine_app login nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls;
   end if;
 end
 $$;
 
-alter role lakeandpine_app nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls;
+-- Production currently connects through a dedicated Supavisor credential for this
+-- role. Preserve that non-privileged LOGIN path; disabling it is a separately
+-- approved credential-revocation action. Runtime still selects and verifies this
+-- exact non-owner role on every connection.
+alter role lakeandpine_app login nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls;
 -- Supabase's server connection opens as the project `postgres` role, then the
 -- startup `role` parameter selects this non-owner role on every pooled backend.
 -- INHERIT is deliberately false: owner sessions keep owner privileges unless
 -- they explicitly select the RLS-bound application role.
-grant lakeandpine_app to postgres with inherit false, set true;
+grant lakeandpine_app to postgres with admin false, inherit false, set true;
 grant usage on schema public to lakeandpine_app;
 
 alter table service_territories enable row level security;
@@ -1266,6 +1737,10 @@ $$;
 grant select on services, addons, plans, service_areas, faqs, reviews to lakeandpine_app;
 grant usage, select on all sequences in schema public to lakeandpine_app;
 grant execute on function assert_cleaner_schedule_capacity(uuid, uuid, timestamptz, timestamptz, uuid, integer) to lakeandpine_app;
+grant execute on function revalidate_schedule_readiness(uuid) to lakeandpine_app;
+grant execute on function normalize_us_postal_code(text) to lakeandpine_app;
+grant execute on function pause_territory_without_cleaner_capacity(uuid) to lakeandpine_app;
+grant execute on function assert_service_case_recovery_consistency(uuid, text) to lakeandpine_app;
 
 alter default privileges in schema public revoke all on tables from public;
 alter default privileges in schema public revoke all on sequences from public;

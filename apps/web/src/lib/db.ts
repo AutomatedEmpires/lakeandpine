@@ -20,8 +20,9 @@ export const sql =
     connect_timeout: 10,
     prepare: false, // safe with transaction-pooled Supabase connections at go-live
     // PostgreSQL applies this startup parameter to every physical connection.
-    // The owner credential can open the connection, but every application query
-    // runs as the non-owner, RLS-bound role granted by the reviewed migration.
+    // Production may connect directly as this role; owner-fallback connections
+    // also select it explicitly. Every application query therefore runs as the
+    // reviewed non-owner, RLS-bound role.
     connection: {
       application_name: "lakeandpine_web",
       role: DATABASE_RUNTIME_ROLE,

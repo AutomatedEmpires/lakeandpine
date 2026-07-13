@@ -11,9 +11,11 @@ The verifier:
 1. refuses any non-loopback host and any database name that does not contain `ci`, `test`,
    `proof`, or `disposable`;
 2. refuses a database that already contains public tables;
-3. creates a disposable `lakeandpine_app` role with `NOLOGIN`, `NOSUPERUSER`, and
-   `NOBYPASSRLS` before applying migrations, then requires the migration to grant only
-   `SET TRUE`, `INHERIT FALSE`, `ADMIN FALSE` membership to the `postgres` connection role;
+3. seeds the production-compatible `lakeandpine_app` LOGIN role plus a production-like
+   unsafe membership issued by a distinct grantor, then requires the migration to
+   normalize `NOSUPERUSER`, `NOBYPASSRLS`, and `NOINHERIT` while giving the `postgres`
+   connection owner effective `SET TRUE` and `INHERIT FALSE` access even when multiple
+   grantor rows remain;
 4. applies every `supabase/migrations/*.sql` file in filename order, with one transaction
    per file and a SHA-256 record of the exact SQL applied;
 5. fails if the current booking spine is incomplete: `bookings`, `checklist_items`,
@@ -26,9 +28,9 @@ The verifier:
    identity-sequence `USAGE`, an explicit `SET ROLE` read probe, and a second physical
    Postgres.js connection whose startup `role` parameter must report `current_user =
    lakeandpine_app` while reading every private table;
-8. fails if `lakeandpine_app` owns an operational table, gains a privileged attribute or
-   any membership other than the non-inheriting `postgres` SET grant, or if `PUBLIC`
-   receives a table grant; and
+8. fails if `lakeandpine_app` owns an operational table, gains a privileged attribute,
+   inherits another role, is granted to an unexpected member, lacks an effective
+   non-inheriting `postgres` SET grant, or if `PUBLIC` receives a table grant; and
 9. detects atomic-intake functions by a `create*booking` / `booking*create` name or an
    `atomic intake` function comment. A detected function must be `SECURITY INVOKER`, be
    executable by `lakeandpine_app`, and not be executable by `PUBLIC`.

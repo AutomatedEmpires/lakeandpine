@@ -24,6 +24,14 @@ const schema = z.object({
   alternateDate: optionalDate,
   details: z.string().trim().min(10).max(4000),
   privacyConsent: z.literal(true),
+}).superRefine((value, context) => {
+  if (value.caseType === "reschedule" && !value.preferredDate) {
+    context.addIssue({
+      code: "custom",
+      path: ["preferredDate"],
+      message: "A preferred new date is required for reschedule requests",
+    });
+  }
 });
 
 export async function POST(request: Request) {

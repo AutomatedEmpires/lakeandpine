@@ -4,6 +4,7 @@ import Link from "next/link";
 import { resolveDashboardIdentity } from "@/lib/auth";
 import {
   getCustomerBookings,
+  getCustomerServiceCases,
   getNextBooking,
   getPrimaryHome,
   getSupportThread,
@@ -33,10 +34,20 @@ function StatusBadge({ status }: { status: string }) {
   return <span className={`status-badge ${status}`}>{status}</span>;
 }
 
+function windowLabel(booking: { status: string; scheduled_window: string }) {
+  if (["confirmed", "scheduled", "in_progress", "completed", "follow_up"].includes(booking.status)) {
+    return `${booking.scheduled_window} · confirmed window`;
+  }
+  if (booking.status === "ready") {
+    return `${booking.scheduled_window} · proposed, not confirmed`;
+  }
+  return `${booking.scheduled_window} · requested preference`;
+}
+
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; booking?: string }>;
 }) {
   const identity = await resolveDashboardIdentity();
 
@@ -82,11 +93,12 @@ export default async function DashboardPage({
   const params = await searchParams;
   const tab: TabId = (TABS.some(([id]) => id === params.tab) ? params.tab : "overview") as TabId;
 
-  const [nextBooking, bookings, home, support] = await Promise.all([
+  const [nextBooking, bookings, home, support, serviceCases] = await Promise.all([
     getNextBooking(customer.id),
     getCustomerBookings(customer.id),
     getPrimaryHome(customer.id),
     getSupportThread(customer.id),
+    getCustomerServiceCases(customer.id),
   ]);
 
   return (
@@ -130,7 +142,7 @@ export default async function DashboardPage({
                         : "—"}
                     </b>
                     <p className="copy">
-                      {nextBooking ? `${nextBooking.scheduled_window} preference` : "No active request"}
+                      {nextBooking ? windowLabel(nextBooking) : "No active request"}
                     </p>
                   </div>
                   <div className="dash-metric card">
@@ -158,8 +170,8 @@ export default async function DashboardPage({
                       <div>
                         <h3>{nextBooking.service_title} request</h3>
                         <p className="copy">
-                          {formatLongDate(nextBooking.scheduled_date)} · {nextBooking.scheduled_window}{" "}
-                          preference · <StatusBadge status={nextBooking.status} />
+                          {formatLongDate(nextBooking.scheduled_date)} · {windowLabel(nextBooking)} ·{" "}
+                          <StatusBadge status={nextBooking.status} />
                         </p>
                         {requestIntakeEnabled ? (
                           <form action={rescheduleAction} style={{ marginTop: 12 }}>
@@ -167,6 +179,15 @@ export default async function DashboardPage({
                             <button className="btn btn-primary">Request reschedule</button>
                           </form>
                         ) : <p className="copy" style={{ marginTop: 12 }}>Request changes are disabled while customer-data intake is in preview.</p>}
+                        {requestIntakeEnabled && (
+                          <Link
+                            className="btn btn-soft"
+                            style={{ marginTop: 8 }}
+                            href={`/dashboard?tab=support&booking=${nextBooking.id}`}
+                          >
+                            Cancellation, concern, reclean, or refund help
+                          </Link>
+                        )}
                       </div>
                     </div>
                   )}
@@ -214,7 +235,7 @@ export default async function DashboardPage({
                         {formatLongDate(booking.scheduled_date)} · <StatusBadge status={booking.status} />
                       </h3>
                       <p className="copy">
-                        {booking.service_title} · {booking.scheduled_window} preference · {booking.frequency}
+                        {booking.service_title} · {windowLabel(booking)} · {booking.frequency}
                       </p>
                     </div>
                   </div>
@@ -260,7 +281,20 @@ export default async function DashboardPage({
 
             {tab === "support" && (
               <div className="card" style={{ padding: 28 }}>
-                <h2>Support thread</h2>
+                <h2>Support requests</h2>
+                {serviceCases.length > 0 && (
+                  <div className="ops-list" style={{ marginTop: 18 }}>
+                    {serviceCases.map((serviceCase) => (
+                      <article className="notice-card" key={serviceCase.id}>
+                        <div className="ops-row-head">
+                          <strong>{serviceCase.public_reference} · {serviceCase.case_type.replaceAll("_", " ")}</strong>
+                          <span className={`status-badge ${serviceCase.status}`}>{serviceCase.status.replaceAll("_", " ")}</span>
+                        </div>
+                        <p>{serviceCase.resolution_summary ?? serviceCase.details}</p>
+                      </article>
+                    ))}
+                  </div>
+                )}
                 <div style={{ display: "grid", gap: 10, margin: "18px 0" }}>
                   {support.length === 0 && (
                     <div className="msg bot">
@@ -277,10 +311,38 @@ export default async function DashboardPage({
                     </div>
                   ))}
                 </div>
-                {requestIntakeEnabled ? <form action={supportMessageAction} className="chat-input" style={{ padding: 0, border: 0 }}>
-                  <input name="body" placeholder="Message support..." required />
-                  <button className="btn btn-primary">Send</button>
-                </form> : <div className="notice-card"><strong>Messaging is not live.</strong><p>The support thread is a preview until customer-data collection and communications are approved.</p></div>}
+                {requestIntakeEnabled ? <form action={supportMessageAction} className="ops-form" style={{ padding: 0, border: 0 }}>
+                  <div className="field">
+                    <label htmlFor="dashboard-case-type">What do you need?</label>
+                    <select id="dashboard-case-type" name="caseType" required defaultValue="">
+                      <option value="" disabled>Choose request type</option>
+                      <option value="reschedule">Reschedule</option>
+                      <option value="cancel">Cancellation</option>
+                      <option value="complaint">Complaint or missed scope</option>
+                      <option value="reclean">Reclean review</option>
+                      <option value="refund_review">Refund review</option>
+                      <option value="damage">Property damage concern</option>
+                      <option value="other">Other support</option>
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label htmlFor="dashboard-case-booking">Related booking</label>
+                    <select id="dashboard-case-booking" name="bookingId" defaultValue={params.booking ?? ""}>
+                      <option value="">No booking / general concern</option>
+                      {bookings.map((booking) => (
+                        <option value={booking.id} key={booking.id}>
+                          {formatLongDate(booking.scheduled_date)} · {booking.service_title} · {booking.status}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field full">
+                    <label htmlFor="dashboard-case-details">Details</label>
+                    <textarea id="dashboard-case-details" name="body" maxLength={4000} placeholder="What happened, what outcome are you requesting, and how should we follow up?" required />
+                  </div>
+                  <p className="copy">Schedule changes, refunds, and recleans remain pending until an operator confirms them. Booking-linked request types require a related booking.</p>
+                  <button className="btn btn-primary">Send to operations</button>
+                </form> : <div className="notice-card"><strong>Messaging is not live.</strong><p>Support intake is a preview until customer-data collection and communications are approved.</p></div>}
               </div>
             )}
           </div>

@@ -40,8 +40,10 @@ function candidate(overrides: Partial<AssignmentCandidate> = {}): AssignmentCand
       availability: [{ start: "2026-07-20T08:00:00-07:00", end: "2026-07-20T17:00:00-07:00" }],
       timeOff: [],
       assignments: [],
+      assignedJobsToday: 0,
       assignedMinutesToday: 0,
       assignedMinutesThisWeek: 480,
+      maxDailyJobs: 3,
       maxDailyMinutes: 540,
       maxWeeklyMinutes: 2_400,
     })),
@@ -123,4 +125,22 @@ test("rejects malformed or reversed work intervals", () => {
 
   assert.equal(result.eligible, false);
   assert.ok(result.blockers.includes("Job start and end must define a valid positive interval"));
+});
+
+test("rejects a cleaner who has reached the daily job-count cap", () => {
+  const result = evaluateAssignment(
+    job,
+    candidate({
+      cleaners: candidate().cleaners.map((cleaner, index) =>
+        index === 0
+          ? { ...cleaner, assignedJobsToday: 3, maxDailyJobs: 3 }
+          : cleaner,
+      ),
+    }),
+  );
+
+  assert.equal(result.eligible, false);
+  assert.ok(
+    result.blockers.includes("Cleaner cleaner-a would exceed daily job capacity"),
+  );
 });

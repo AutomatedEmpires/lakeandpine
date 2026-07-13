@@ -20,6 +20,7 @@ import {
   proposeCrewAction,
   qualificationStatusAction,
   recoveryAction,
+  recoveryStatusAction,
   rescheduleCaseAction,
   refundStatusAction,
   requestRefundReviewAction,
@@ -28,6 +29,7 @@ import {
   serviceCaseStatusAction,
   territoryStatusAction,
   timeOffReviewAction,
+  updateUnscheduledPreferenceAction,
   verifyCleanerScreeningAction,
 } from "./actions";
 
@@ -76,6 +78,11 @@ const REFUND_NEXT: Record<string, string[]> = {
   ready_for_manual_processing: ["processed", "failed", "canceled"],
   failed: ["ready_for_manual_processing", "canceled"],
 };
+const RECOVERY_NEXT: Record<string, string[]> = {
+  planned: ["approved", "canceled"],
+  approved: ["scheduled", "completed", "canceled"],
+  scheduled: ["completed", "approved", "canceled"],
+};
 const SCHEDULE_NEXT: Record<string, string[]> = {
   tentative: ["held", "canceled"],
   held: ["confirmed", "tentative", "canceled"],
@@ -98,9 +105,12 @@ function label(value: string) {
   return value.replaceAll("_", " ");
 }
 
-function formatDateTime(value: string) {
+function formatDateTime(
+  value: string,
+  timeZone = "America/Los_Angeles",
+) {
   return new Date(value).toLocaleString("en-US", {
-    timeZone: "America/Los_Angeles",
+    timeZone,
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -269,7 +279,7 @@ export default async function OperationsPage({
                 </div>
                 <p className="copy">
                   Default travel buffer: {territory.travel_buffer_minutes}{" "}
-                  minutes
+                  minutes · {territory.timezone}
                 </p>
                 <div className="postal-list">
                   {territory.postal_codes.map((postal) => (
@@ -629,8 +639,8 @@ export default async function OperationsPage({
                   <div>
                     <strong>{item.cleaner_name}</strong>
                     <span>
-                      {formatDateTime(item.start_at)} →{" "}
-                      {formatDateTime(item.end_at)} ·{" "}
+                      {formatDateTime(item.start_at, item.territory_timezone)} →{" "}
+                      {formatDateTime(item.end_at, item.territory_timezone)} ·{" "}
                       {label(item.reason_category)}
                     </span>
                   </div>
@@ -786,10 +796,14 @@ export default async function OperationsPage({
                       </option>
                       {activeTerritories.map((territory) => (
                         <option key={territory.id} value={territory.id}>
-                          {territory.name}
+                          {territory.name} · {territory.timezone}
                         </option>
                       ))}
                     </select>
+                    <p className="copy">
+                      Enter wall-clock time in the timezone shown for the selected
+                      territory. DST gaps and repeated times are rejected.
+                    </p>
                     <input
                       name="startAt"
                       type="datetime-local"
@@ -841,9 +855,9 @@ export default async function OperationsPage({
                       {schedule.service_vertical} · {schedule.territory_name}
                     </strong>
                     <span>
-                      {formatDateTime(schedule.start_at)} ·{" "}
+                      {formatDateTime(schedule.start_at, schedule.territory_timezone)} ·{" "}
                       {schedule.assignment_count}/{schedule.required_crew_size}{" "}
-                      proposed · {label(schedule.status)}
+                      accepted · {label(schedule.status)}
                     </span>
                   </Link>
                   <div className="schedule-actions">
@@ -863,7 +877,7 @@ export default async function OperationsPage({
                           className="btn btn-soft"
                           name="to"
                           value={next}
-                          aria-label={`${label(next)} schedule for ${schedule.service_vertical} in ${schedule.territory_name} starting ${formatDateTime(schedule.start_at)}`}
+                          aria-label={`${label(next)} schedule for ${schedule.service_vertical} in ${schedule.territory_name} starting ${formatDateTime(schedule.start_at, schedule.territory_timezone)}`}
                         >
                           {label(next)}
                         </button>
@@ -881,7 +895,7 @@ export default async function OperationsPage({
             <span className="eyebrow">Explainable crew suggestions</span>
             <h3>
               {selectedSchedule
-                ? `${selectedSchedule.service_vertical} · ${formatDateTime(selectedSchedule.start_at)}`
+                ? `${selectedSchedule.service_vertical} · ${formatDateTime(selectedSchedule.start_at, selectedSchedule.territory_timezone)}`
                 : "Select a schedule"}
             </h3>
             {suggestions.map((suggestion) => (
@@ -995,7 +1009,13 @@ export default async function OperationsPage({
                       <option value="" disabled>
                         Next case state
                       </option>
-                      {(CASE_NEXT[serviceCase.status] ?? []).map((next) => (
+                      {(CASE_NEXT[serviceCase.status] ?? [])
+                        .filter(
+                          (next) =>
+                            next !== "reclean_scheduled" ||
+                            serviceCase.has_scheduled_reclean,
+                        )
+                        .map((next) => (
                         <option value={next} key={next}>
                           {label(next)}
                         </option>
@@ -1009,6 +1029,30 @@ export default async function OperationsPage({
                     </button>
                   </form>
                   {serviceCase.case_type === "reschedule" &&
+                    !serviceCase.has_schedule &&
+                    serviceCase.status === "action_planned" && (
+                      <form
+                        action={updateUnscheduledPreferenceAction}
+                        className="ops-form compact"
+                      >
+                        <input
+                          type="hidden"
+                          name="caseId"
+                          value={serviceCase.id}
+                        />
+                        <input
+                          name="preferredDate"
+                          type="date"
+                          required
+                          aria-label={`New preferred date for unscheduled service case ${serviceCase.public_reference}`}
+                        />
+                        <button className="btn btn-primary">
+                          Update preference · no appointment
+                        </button>
+                      </form>
+                    )}
+                  {serviceCase.case_type === "reschedule" &&
+                    serviceCase.has_schedule &&
                     serviceCase.status === "action_planned" && (
                       <form
                         action={rescheduleCaseAction}
@@ -1019,6 +1063,10 @@ export default async function OperationsPage({
                           name="caseId"
                           value={serviceCase.id}
                         />
+                        <p className="copy">
+                          Enter wall-clock time in {serviceCase.territory_timezone}.
+                          DST gaps and repeated times are rejected.
+                        </p>
                         <input
                           name="startAt"
                           type="datetime-local"
@@ -1062,11 +1110,6 @@ export default async function OperationsPage({
                     )}
                   <form action={recoveryAction} className="ops-form compact">
                     <input type="hidden" name="caseId" value={serviceCase.id} />
-                    <input
-                      type="hidden"
-                      name="bookingId"
-                      value={serviceCase.booking_id ?? ""}
-                    />
                     <select
                       name="type"
                       aria-label={`Recovery action for service case ${serviceCase.public_reference}`}
@@ -1080,11 +1123,29 @@ export default async function OperationsPage({
                       <option value="documentation">Documentation</option>
                     </select>
                     <input
+                      name="ownerLabel"
+                      required
+                      maxLength={120}
+                      placeholder="Owner"
+                      aria-label={`Recovery owner for service case ${serviceCase.public_reference}`}
+                    />
+                    <input
+                      name="scheduledAt"
+                      type="datetime-local"
+                      required
+                      aria-label={`Recovery target time in ${serviceCase.territory_timezone} for service case ${serviceCase.public_reference}`}
+                    />
+                    <input
                       name="notes"
                       maxLength={2000}
-                      placeholder="Planned action and owner"
+                      placeholder="Scope, handoff, and completion evidence needed"
                       aria-label={`Recovery notes for service case ${serviceCase.public_reference}`}
                     />
+                    <p className="copy">
+                      Target time uses {serviceCase.territory_timezone}. Reclean
+                      timing is a separate recovery plan, not a confirmed main
+                      appointment or crew assignment.
+                    </p>
                     <button
                       className="btn btn-soft"
                       aria-label={`Plan recovery for service case ${serviceCase.public_reference}`}
@@ -1138,6 +1199,55 @@ export default async function OperationsPage({
               )}
             </div>
             <div className="ops-list">
+              <h3>Recovery action queue</h3>
+              {data.recoveries.map((recovery) => (
+                <article
+                  className="card operator-panel ops-row"
+                  key={recovery.id}
+                >
+                  <div className="ops-row-head">
+                    <div>
+                      <strong>
+                        {label(recovery.action_type)} · {recovery.public_reference}
+                      </strong>
+                      <small>
+                        Owner {recovery.owner_label} · {recovery.scheduled_at
+                          ? formatDateTime(
+                              recovery.scheduled_at,
+                              recovery.territory_timezone,
+                            )
+                          : "target not set"} · {recovery.territory_timezone}
+                      </small>
+                    </div>
+                    <span className={`status-badge ${recovery.status}`}>
+                      {label(recovery.status)}
+                    </span>
+                  </div>
+                  {recovery.notes && <p>{recovery.notes}</p>}
+                  {(RECOVERY_NEXT[recovery.status] ?? []).map((next) => (
+                    <form
+                      action={recoveryStatusAction}
+                      className="inline-ops-form"
+                      key={next}
+                    >
+                      <input type="hidden" name="recoveryId" value={recovery.id} />
+                      <input type="hidden" name="from" value={recovery.status} />
+                      <input type="hidden" name="to" value={next} />
+                      <button
+                        className="btn btn-soft"
+                        aria-label={`${label(next)} ${label(recovery.action_type)} recovery plan ${recovery.public_reference}`}
+                      >
+                        {label(next)}
+                      </button>
+                    </form>
+                  ))}
+                </article>
+              ))}
+              {data.recoveries.length === 0 && (
+                <div className="card operator-panel">
+                  <p className="copy">No open recovery actions.</p>
+                </div>
+              )}
               <h3>Refund decision ledger</h3>
               {data.refunds.map((refund) => (
                 <article

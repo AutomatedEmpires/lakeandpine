@@ -8,7 +8,6 @@ import { normalizeVerifiedClerkEmail } from "@/lib/clerk-identity";
 import { buildBookingConsentRecord } from "@/lib/consent-policy";
 import {
   createBooking,
-  getCustomerByEmail,
   recordBookingNotificationDelivery,
   upsertCustomerFromClerk,
 } from "@/lib/data";
@@ -264,9 +263,8 @@ export async function POST(request: Request) {
       customerId = customer.id;
     }
   }
-  if (!customerId) {
-    customerId = (await getCustomerByEmail(input.contact.email))?.id ?? null;
-  }
+  // Guest contact email is unverified. Keep the request unowned until a later
+  // Clerk sign-in proves the primary email and adopts matching null-owned rows.
 
   const frequency = ["weekly", "biweekly", "monthly"].includes(
     input.property.cadence,

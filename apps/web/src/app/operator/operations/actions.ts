@@ -15,6 +15,7 @@ import {
   proposeAssignmentCandidate,
   rescheduleBookingFromCase,
   reviewTimeOff,
+  setRecoveryStatus,
   setCleanerApplicationStatus,
   setCleanerCapabilities,
   setCleanerStatus,
@@ -24,18 +25,22 @@ import {
   setRefundStatus,
   setServiceCaseStatus,
   setTerritoryStatus,
+  updateUnscheduledBookingPreferenceFromCase,
   verifyCleanerScreening,
 } from "@/lib/operations-console-data";
 import {
   canTransitionQualification,
+  canTransitionRecovery,
   canTransitionRefund,
   canTransitionSchedule,
   canTransitionServiceCase,
   QUALIFICATION_STATUSES,
+  RECOVERY_STATUSES,
   REFUND_STATUSES,
   SCHEDULE_STATUSES,
   SERVICE_CASE_STATUSES,
   type QualificationStatus,
+  type RecoveryStatus,
   type RefundStatus,
   type ScheduleStatus,
   type ServiceCaseStatus,
@@ -65,18 +70,26 @@ export async function createTerritoryAction(formData: FormData) {
     .replace(/[^a-z0-9_-]/g, "")
     .slice(0, 50);
   const name = value(formData, "name").slice(0, 120);
-  const postalCodes = [
+  const rawPostalCodes = [
     ...new Set(
       value(formData, "postalCodes")
         .split(/[\s,]+/)
-        .map((item) => item.trim().toUpperCase())
+        .map((item) => item.trim())
         .filter(Boolean),
     ),
   ].slice(0, 30);
   if (
+    rawPostalCodes.length === 0 ||
+    rawPostalCodes.some((item) => !/^\d{5}(?:-\d{4})?$/.test(item))
+  ) {
+    throw new Error("Enter US ZIP codes as 12345 or 12345-6789");
+  }
+  const postalCodes = [
+    ...new Set(rawPostalCodes.map((item) => item.slice(0, 5))),
+  ];
+  if (
     code.length < 2 ||
-    name.length < 2 ||
-    postalCodes.some((item) => item.length < 3 || item.length > 12)
+    name.length < 2
   ) {
     throw new Error("Territory name, code, or postal-code list is invalid");
   }
@@ -307,24 +320,11 @@ export async function scheduleStatusAction(formData: FormData) {
 
 export async function createScheduleAction(formData: FormData) {
   const operator = await requireOperator();
-  const start = new Date(value(formData, "startAt"));
-  const end = new Date(value(formData, "endAt"));
-  if (
-    Number.isNaN(start.getTime()) ||
-    Number.isNaN(end.getTime()) ||
-    start.getTime() < Date.now() - 5 * 60_000 ||
-    end <= start ||
-    end.getTime() - start.getTime() > 24 * 60 * 60_000
-  ) {
-    throw new Error(
-      "Schedule interval must be future-dated, positive, and no longer than 24 hours",
-    );
-  }
   await createJobSchedule({
     bookingId: value(formData, "bookingId"),
     territoryId: value(formData, "territoryId"),
-    startAt: start.toISOString(),
-    endAt: end.toISOString(),
+    startLocal: value(formData, "startAt"),
+    endLocal: value(formData, "endAt"),
     devOnly: operator.devOnly,
   });
   refresh();
@@ -362,21 +362,20 @@ export async function serviceCaseStatusAction(formData: FormData) {
 
 export async function rescheduleCaseAction(formData: FormData) {
   const operator = await requireOperator();
-  const start = new Date(value(formData, "startAt"));
-  const end = new Date(value(formData, "endAt"));
-  if (
-    Number.isNaN(start.getTime()) ||
-    Number.isNaN(end.getTime()) ||
-    start.getTime() < Date.now() - 5 * 60_000 ||
-    end <= start ||
-    end.getTime() - start.getTime() > 24 * 60 * 60_000
-  ) {
-    throw new Error("Reschedule interval is invalid");
-  }
   await rescheduleBookingFromCase({
     caseId: value(formData, "caseId"),
-    startAt: start.toISOString(),
-    endAt: end.toISOString(),
+    startLocal: value(formData, "startAt"),
+    endLocal: value(formData, "endAt"),
+    devOnly: operator.devOnly,
+  });
+  refresh();
+}
+
+export async function updateUnscheduledPreferenceAction(formData: FormData) {
+  const operator = await requireOperator();
+  await updateUnscheduledBookingPreferenceFromCase({
+    caseId: value(formData, "caseId"),
+    preferredDate: value(formData, "preferredDate"),
     devOnly: operator.devOnly,
   });
   refresh();
@@ -393,6 +392,8 @@ export async function cancelCaseBookingAction(formData: FormData) {
 export async function recoveryAction(formData: FormData) {
   const operator = await requireOperator();
   const type = value(formData, "type");
+  const ownerLabel = value(formData, "ownerLabel").slice(0, 120);
+  const scheduledLocal = value(formData, "scheduledAt");
   const allowed = [
     "reclean",
     "site_visit",
@@ -403,14 +404,38 @@ export async function recoveryAction(formData: FormData) {
     "documentation",
     "other",
   ];
-  if (!allowed.includes(type)) throw new Error("Invalid recovery action");
+  if (!allowed.includes(type) || !ownerLabel || !scheduledLocal) {
+    throw new Error("Recovery type, owner, and target time are required");
+  }
   await createRecoveryAction({
     caseId: value(formData, "caseId"),
-    bookingId: value(formData, "bookingId") || null,
     type,
+    ownerLabel,
+    scheduledLocal,
     notes: value(formData, "notes").slice(0, 2000),
     devOnly: operator.devOnly,
   });
+  refresh();
+}
+
+export async function recoveryStatusAction(formData: FormData) {
+  const operator = await requireOperator();
+  const from = value(formData, "from") as RecoveryStatus;
+  const to = value(formData, "to") as RecoveryStatus;
+  if (
+    !RECOVERY_STATUSES.includes(from) ||
+    !RECOVERY_STATUSES.includes(to) ||
+    !canTransitionRecovery(from, to)
+  ) {
+    throw new Error("Invalid recovery transition");
+  }
+  const changed = await setRecoveryStatus(
+    value(formData, "recoveryId"),
+    from,
+    to,
+    operator.devOnly,
+  );
+  if (!changed) throw new Error("Recovery plan changed; refresh and retry");
   refresh();
 }
 

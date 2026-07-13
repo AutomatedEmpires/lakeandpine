@@ -12,11 +12,13 @@ import {
   type SchedulingJob,
   type ServiceVertical,
 } from "./operations-scheduling";
+import { localDateTimeToUtc, validateUtcInterval } from "./zoned-datetime";
 
 export type TerritoryRow = {
   id: string;
   code: string;
   name: string;
+  timezone: string;
   status: "draft" | "active" | "paused";
   travel_buffer_minutes: number;
   postal_codes: { code: string; status: string }[];
@@ -93,6 +95,9 @@ export type ServiceCaseRow = {
   created_at: string;
   refundable_balance_cents: number;
   refund_eligible: boolean;
+  has_schedule: boolean;
+  has_scheduled_reclean: boolean;
+  territory_timezone: string;
   is_dev_seed: boolean;
 };
 
@@ -108,6 +113,18 @@ export type RefundRow = {
   created_at: string;
 };
 
+export type RecoveryRow = {
+  id: string;
+  public_reference: string;
+  action_type: string;
+  status: string;
+  owner_label: string;
+  scheduled_at: string | null;
+  completed_at: string | null;
+  notes: string | null;
+  territory_timezone: string;
+};
+
 export type TimeOffOpsRow = {
   id: string;
   cleaner_id: string;
@@ -116,6 +133,7 @@ export type TimeOffOpsRow = {
   end_at: string;
   status: string;
   reason_category: string;
+  territory_timezone: string;
   is_dev_seed: boolean;
 };
 
@@ -139,13 +157,14 @@ export async function getOperationsConsole(devOnly: boolean) {
     qualifications,
     schedules,
     serviceCases,
+    recoveries,
     refunds,
     timeOff,
     outbox,
     outboxQueue,
   ] = await Promise.all([
     sql<TerritoryRow[]>`
-      select t.id, t.code, t.name, t.status, t.travel_buffer_minutes, t.is_dev_seed,
+      select t.id, t.code, t.name, t.timezone, t.status, t.travel_buffer_minutes, t.is_dev_seed,
              coalesce(jsonb_agg(jsonb_build_object('code', p.postal_code, 'status', p.status)
                order by p.postal_code) filter (where p.postal_code is not null), '[]') as postal_codes
       from service_territories t
@@ -185,7 +204,8 @@ export async function getOperationsConsole(devOnly: boolean) {
              s.required_crew_size, s.required_skills, s.labor_minutes,
              s.travel_buffer_minutes, s.is_dev_seed, count(a.id)::int as assignment_count
       from job_schedules s join service_territories t on t.id = s.territory_id
-      left join job_assignments a on a.job_schedule_id = s.id and a.status <> 'removed'
+      left join job_assignments a on a.job_schedule_id = s.id
+        and a.status in ('accepted', 'confirmed')
       where (${devOnly} = false or s.is_dev_seed)
         and s.end_at >= now() - interval '7 days'
       group by s.id, t.name, t.timezone
@@ -194,6 +214,21 @@ export async function getOperationsConsole(devOnly: boolean) {
       select c.id, c.public_reference, c.case_type, c.booking_id,
              coalesce(contact ->> 'name', 'Unnamed customer') as contact_name,
              c.status, c.priority, c.details, c.created_at::text, c.is_dev_seed,
+             exists(select 1 from job_schedules schedule where schedule.booking_id = c.booking_id)
+               as has_schedule,
+             exists(
+               select 1 from service_recovery_actions recovery
+               where recovery.service_case_id = c.id
+                 and recovery.action_type = 'reclean'
+                 and recovery.status in ('scheduled', 'completed')
+             ) as has_scheduled_reclean,
+             coalesce((
+               select territory.timezone
+               from job_schedules schedule
+               join service_territories territory on territory.id = schedule.territory_id
+               where schedule.booking_id = c.booking_id
+               limit 1
+             ), 'America/Los_Angeles') as territory_timezone,
              coalesce(refundable.balance_cents, 0)::int as refundable_balance_cents,
              (c.booking_id is not null
                and c.case_type in ('refund_review', 'complaint', 'reclean', 'damage')
@@ -215,6 +250,21 @@ export async function getOperationsConsole(devOnly: boolean) {
         and c.status not in ('closed', 'canceled')
       order by case c.priority when 'urgent' then 0 when 'high' then 1 else 2 end,
                c.created_at asc limit 60`,
+    sql<RecoveryRow[]>`
+      select recovery.id, service_case.public_reference, recovery.action_type,
+             recovery.status, recovery.owner_label, recovery.scheduled_at::text,
+             recovery.completed_at::text, recovery.notes,
+             coalesce(schedule_territory.timezone, booking_territory.timezone,
+               'America/Los_Angeles') as territory_timezone
+      from service_recovery_actions recovery
+      join service_cases service_case on service_case.id = recovery.service_case_id
+      left join bookings booking on booking.id = recovery.booking_id
+      left join service_territories booking_territory on booking_territory.id = booking.territory_id
+      left join job_schedules schedule on schedule.booking_id = booking.id
+      left join service_territories schedule_territory on schedule_territory.id = schedule.territory_id
+      where (${devOnly} = false or recovery.is_dev_seed)
+        and recovery.status not in ('completed', 'canceled')
+      order by recovery.scheduled_at asc, recovery.created_at asc limit 60`,
     sql<RefundRow[]>`
       select id, service_case_id, booking_id, amount_cents, status, provider,
              reason_code, provider_refund_id, created_at::text
@@ -223,8 +273,10 @@ export async function getOperationsConsole(devOnly: boolean) {
       order by created_at desc limit 50`,
     sql<TimeOffOpsRow[]>`
       select o.id, o.cleaner_id, c.full_name as cleaner_name, o.start_at::text,
-             o.end_at::text, o.status, o.reason_category, o.is_dev_seed
+             o.end_at::text, o.status, o.reason_category, o.is_dev_seed,
+             territory.timezone as territory_timezone
       from cleaner_time_off o join cleaners c on c.id = o.cleaner_id
+      join service_territories territory on territory.id = c.home_territory_id
       where (${devOnly} = false or o.is_dev_seed)
         and o.status = 'requested'
       order by o.start_at asc limit 50`,
@@ -251,6 +303,7 @@ export async function getOperationsConsole(devOnly: boolean) {
     qualifications,
     schedules,
     serviceCases,
+    recoveries,
     refunds,
     timeOff,
     outbox,
@@ -264,6 +317,7 @@ type CapacityRow = {
   vertical_experience: ServiceVertical[];
   max_daily_minutes: number;
   max_weekly_minutes: number;
+  max_daily_jobs: number;
   home_territory_id: string | null;
 };
 
@@ -319,14 +373,14 @@ export async function getScheduleSuggestions(
     join service_territories t on t.id = s.territory_id
     where s.id = ${scheduleId} and (${devOnly} = false or (s.is_dev_seed and b.is_dev_seed))`;
   const schedule = schedules[0];
-  if (!schedule || ["completed", "canceled"].includes(schedule.status))
+  if (!schedule || !["tentative", "held"].includes(schedule.status))
     return [];
 
-  const [capacity, availability, timeOff, assignments, loads] =
+  const [capacity, availability, timeOff, assignments, loads, acceptedAssignments] =
     await Promise.all([
       sql<(CapacityRow & { full_name: string })[]>`
       select id, full_name, skills, vertical_experience, max_daily_minutes,
-             max_weekly_minutes, home_territory_id
+             max_weekly_minutes, max_daily_jobs, home_territory_id
       from cleaners where status = 'active'
         and home_territory_id = ${schedule.territory_id}
         and (${devOnly} = false or is_dev_seed)
@@ -336,7 +390,8 @@ export async function getScheduleSuggestions(
         (((s.start_at at time zone t.timezone)::date + a.start_time) at time zone t.timezone)::text as start_at,
         (((s.start_at at time zone t.timezone)::date + a.end_time) at time zone t.timezone)::text as end_at
       from job_schedules s join service_territories t on t.id = s.territory_id
-      join cleaner_availability_rules a on a.territory_id = s.territory_id
+      join cleaner_availability_rules a on
+        (a.territory_id is null or a.territory_id = s.territory_id)
         and a.day_of_week = extract(dow from s.start_at at time zone t.timezone)::int
         and a.status = 'active'
         and a.effective_from <= (s.start_at at time zone t.timezone)::date
@@ -354,19 +409,29 @@ export async function getScheduleSuggestions(
         and s.start_at < ${schedule.end_at}::timestamptz + interval '3 hours'
         and s.end_at > ${schedule.start_at}::timestamptz - interval '3 hours'`,
       sql<
-        { cleaner_id: string; minutes_today: number; minutes_week: number }[]
+        { cleaner_id: string; jobs_today: number; minutes_today: number; minutes_week: number }[]
       >`
       select c.id as cleaner_id,
+        count(distinct s.id)
+          filter (where (s.start_at at time zone ${schedule.territory_timezone})::date =
+            (${schedule.start_at}::timestamptz at time zone ${schedule.territory_timezone})::date)::int as jobs_today,
         coalesce(sum(extract(epoch from (s.end_at - s.start_at)) / 60)
-          filter (where (s.start_at at time zone 'America/Los_Angeles')::date =
-            (${schedule.start_at}::timestamptz at time zone 'America/Los_Angeles')::date), 0)::int as minutes_today,
+          filter (where (s.start_at at time zone ${schedule.territory_timezone})::date =
+            (${schedule.start_at}::timestamptz at time zone ${schedule.territory_timezone})::date), 0)::int as minutes_today,
         coalesce(sum(extract(epoch from (s.end_at - s.start_at)) / 60)
-          filter (where date_trunc('week', s.start_at at time zone 'America/Los_Angeles') =
-            date_trunc('week', ${schedule.start_at}::timestamptz at time zone 'America/Los_Angeles')), 0)::int as minutes_week
+          filter (where date_trunc('week', s.start_at at time zone ${schedule.territory_timezone}) =
+            date_trunc('week', ${schedule.start_at}::timestamptz at time zone ${schedule.territory_timezone})), 0)::int as minutes_week
       from cleaners c left join job_assignments a on a.cleaner_id = c.id and a.status in ('accepted', 'confirmed')
-      left join job_schedules s on s.id = a.job_schedule_id and s.status not in ('completed', 'canceled')
+      left join job_schedules s on s.id = a.job_schedule_id
+        and s.id <> ${scheduleId}
+        and s.status not in ('completed', 'canceled')
       where c.status = 'active' and c.home_territory_id = ${schedule.territory_id}
         and (${devOnly} = false or c.is_dev_seed) group by c.id`,
+      sql<{ cleaner_id: string }[]>`
+      select cleaner_id
+      from job_assignments
+      where job_schedule_id = ${scheduleId}
+        and status in ('accepted', 'confirmed')`,
     ]);
 
   const nameById = new Map(
@@ -389,14 +454,24 @@ export async function getScheduleSuggestions(
       assignments: assignments
         .filter((row) => row.cleaner_id === cleaner.id)
         .map((row) => ({ start: row.start_at, end: row.end_at })),
+      assignedJobsToday: load?.jobs_today ?? 0,
       assignedMinutesToday: load?.minutes_today ?? 0,
       assignedMinutesThisWeek: load?.minutes_week ?? 0,
+      maxDailyJobs: cleaner.max_daily_jobs,
       maxDailyMinutes: cleaner.max_daily_minutes,
       maxWeeklyMinutes: cleaner.max_weekly_minutes,
     });
   }
 
-  const crewGroups = combinations(capacity, schedule.required_crew_size);
+  const acceptedCleanerIds = new Set(
+    acceptedAssignments.map((assignment) => assignment.cleaner_id),
+  );
+  const crewGroups = combinations(capacity, schedule.required_crew_size).filter(
+    (group) =>
+      [...acceptedCleanerIds].every((acceptedId) =>
+        group.some((cleaner) => cleaner.id === acceptedId),
+      ),
+  );
   const candidates: AssignmentCandidate[] = crewGroups.map((group) => ({
     id: group
       .map((cleaner) => cleaner.id)
@@ -478,10 +553,21 @@ export async function setTerritoryStatus(
   if (status === "active") {
     const readiness = await sql<{ ready: boolean }[]>`
       select exists(select 1 from territory_postal_codes where territory_id = ${territoryId} and status = 'active')
-        and exists(select 1 from cleaners where home_territory_id = ${territoryId} and status = 'active') as ready`;
+        and exists(
+          select 1 from cleaners cleaner
+          where cleaner.home_territory_id = ${territoryId}
+            and cleaner.status = 'active'
+            and cleaner.screening_status = 'verified'
+            and exists (
+              select 1 from cleaner_availability_rules availability
+              where availability.cleaner_id = cleaner.id
+                and availability.status = 'active'
+                and (availability.territory_id is null or availability.territory_id = ${territoryId})
+            )
+        ) as ready`;
     if (!readiness[0]?.ready)
       throw new Error(
-        "An active postal code and active cleaner are required before territory activation",
+        "An active postal code and a screened, available cleaner are required before territory activation",
       );
   }
   await sql`update service_territories set status = ${status} where id = ${territoryId}
@@ -618,8 +704,8 @@ export async function setQualificationStatus(
 export async function createJobSchedule(input: {
   bookingId: string;
   territoryId: string;
-  startAt: string;
-  endAt: string;
+  startLocal: string;
+  endLocal: string;
   devOnly: boolean;
 }) {
   return sql.begin(async (tx) => {
@@ -639,14 +725,17 @@ export async function createJobSchedule(input: {
       throw new Error(
         "Booking must be qualification-approved before scheduling",
       );
-    const territories = await tx<{ travel_buffer_minutes: number }[]>`
-      select travel_buffer_minutes from service_territories where id = ${input.territoryId}
+    const territories = await tx<
+      { travel_buffer_minutes: number; timezone: string }[]
+    >`
+      select travel_buffer_minutes, timezone from service_territories where id = ${input.territoryId}
         and status = 'active' and (${input.devOnly} = false or is_dev_seed)`;
     if (!territories[0])
       throw new Error("Choose an active, capacity-backed territory");
-    const elapsedMinutes = Math.round(
-      (Date.parse(input.endAt) - Date.parse(input.startAt)) / 60000,
-    );
+    const startAt = localDateTimeToUtc(input.startLocal, territories[0].timezone);
+    const endAt = localDateTimeToUtc(input.endLocal, territories[0].timezone);
+    validateUtcInterval(startAt, endAt, { maxMinutes: 24 * 60 });
+    const elapsedMinutes = Math.round((Date.parse(endAt) - Date.parse(startAt)) / 60000);
     const booking = bookings[0];
     const laborMinutes = Math.max(
       booking.estimated_duration_minutes ?? elapsedMinutes,
@@ -664,8 +753,8 @@ export async function createJobSchedule(input: {
     const rows = await tx<{ id: string }[]>`
       insert into job_schedules (booking_id, territory_id, service_vertical, start_at, end_at,
         status, required_crew_size, required_skills, labor_minutes, travel_buffer_minutes, is_dev_seed)
-      values (${input.bookingId}, ${input.territoryId}, ${booking.service_vertical}, ${input.startAt},
-        ${input.endAt}, 'tentative', ${booking.required_crew_size}, ${booking.required_skills},
+      values (${input.bookingId}, ${input.territoryId}, ${booking.service_vertical}, ${startAt},
+        ${endAt}, 'tentative', ${booking.required_crew_size}, ${booking.required_skills},
         ${laborMinutes}, ${territories[0].travel_buffer_minutes},
         ${input.devOnly}) returning id`;
     return rows[0];
@@ -698,6 +787,34 @@ export async function proposeAssignmentCandidate(
   if (!suggestion)
     throw new Error("That crew is no longer eligible; refresh suggestions");
   await sql.begin(async (tx) => {
+    const lockedSchedules = await tx<{ id: string }[]>`
+      select id from job_schedules
+      where id = ${scheduleId} and status in ('tentative', 'held')
+        and (${devOnly} = false or is_dev_seed)
+      for update`;
+    if (!lockedSchedules[0]) {
+      throw new Error("Crew proposals are limited to tentative or held schedules");
+    }
+    const acceptedAssignments = await tx<{ cleaner_id: string }[]>`
+      select cleaner_id
+      from job_assignments
+      where job_schedule_id = ${scheduleId}
+        and status in ('accepted', 'confirmed')`;
+    if (
+      acceptedAssignments.some(
+        (assignment) => !suggestion.cleanerIds.includes(assignment.cleaner_id),
+      )
+    ) {
+      throw new Error(
+        "The selected crew must retain every cleaner who already accepted",
+      );
+    }
+    await tx`
+      update job_assignments
+      set status = 'removed', responded_at = now()
+      where job_schedule_id = ${scheduleId}
+        and status = 'proposed'
+        and cleaner_id <> all(${suggestion.cleanerIds}::uuid[])`;
     for (const [index, cleanerId] of suggestion.cleanerIds.entries()) {
       await tx`insert into job_assignments
         (job_schedule_id, cleaner_id, assignment_role, status, suggestion_score,
@@ -705,7 +822,12 @@ export async function proposeAssignmentCandidate(
         values (${scheduleId}, ${cleanerId}, ${index === 0 ? "lead" : "member"}, 'proposed',
           ${suggestion.score}, ${tx.json(suggestion.reasons as postgres.JSONValue)}, 'Operator', ${devOnly})
         on conflict (job_schedule_id, cleaner_id) do update set
-          status = 'proposed', suggestion_score = excluded.suggestion_score,
+          assignment_role = excluded.assignment_role,
+          status = case
+            when job_assignments.status in ('accepted', 'confirmed') then job_assignments.status
+            else 'proposed'
+          end,
+          suggestion_score = excluded.suggestion_score,
           suggestion_reasons = excluded.suggestion_reasons, assigned_at = now()`;
     }
   });
@@ -726,16 +848,24 @@ export async function setServiceCaseStatus(
 
 export async function rescheduleBookingFromCase(input: {
   caseId: string;
-  startAt: string;
-  endAt: string;
+  startLocal: string;
+  endLocal: string;
   devOnly: boolean;
 }) {
   return sql.begin(async (tx) => {
     const rows = await tx<
-      { schedule_id: string; labor_minutes: number; required_crew_size: number }[]
+      {
+        schedule_id: string;
+        labor_minutes: number;
+        required_crew_size: number;
+        territory_timezone: string;
+      }[]
     >`
-      select s.id as schedule_id, s.labor_minutes, s.required_crew_size from service_cases c
+      select s.id as schedule_id, s.labor_minutes, s.required_crew_size,
+             territory.timezone as territory_timezone
+      from service_cases c
       join job_schedules s on s.booking_id = c.booking_id
+      join service_territories territory on territory.id = s.territory_id
       where c.id = ${input.caseId} and c.case_type = 'reschedule'
         and c.status = 'action_planned' and (${input.devOnly} = false or (c.is_dev_seed and s.is_dev_seed))
       for update of c, s`;
@@ -743,9 +873,10 @@ export async function rescheduleBookingFromCase(input: {
       throw new Error(
         "Reschedule case must be action-planned and linked to a schedule",
       );
-    const elapsedMinutes = Math.round(
-      (Date.parse(input.endAt) - Date.parse(input.startAt)) / 60000,
-    );
+    const startAt = localDateTimeToUtc(input.startLocal, rows[0].territory_timezone);
+    const endAt = localDateTimeToUtc(input.endLocal, rows[0].territory_timezone);
+    validateUtcInterval(startAt, endAt, { maxMinutes: 24 * 60 });
+    const elapsedMinutes = Math.round((Date.parse(endAt) - Date.parse(startAt)) / 60000);
     const requiredMinutes = requiredElapsedMinutes(
       rows[0].labor_minutes,
       rows[0].required_crew_size,
@@ -755,16 +886,65 @@ export async function rescheduleBookingFromCase(input: {
         `Reschedule needs at least ${requiredMinutes} elapsed minutes for the existing labor plan and crew size`,
       );
     }
-    await tx`update job_schedules set start_at = ${input.startAt}, end_at = ${input.endAt},
+    await tx`update job_schedules set start_at = ${startAt}, end_at = ${endAt},
       version = version + 1 where id = ${rows[0].schedule_id}`;
-    await tx`update bookings b set
-      scheduled_date = (s.start_at at time zone t.timezone)::date,
-      scheduled_window = 'Operator-confirmed window'
-      from job_schedules s join service_territories t on t.id = s.territory_id
-      where s.id = ${rows[0].schedule_id} and b.id = s.booking_id`;
     await tx`update service_cases set status = 'resolved', resolution_type = 'rescheduled',
       resolution_summary = 'Schedule updated by operator after capacity validation.', resolved_at = now()
       where id = ${input.caseId}`;
+    return rows[0];
+  });
+}
+
+export async function updateUnscheduledBookingPreferenceFromCase(input: {
+  caseId: string;
+  preferredDate: string;
+  devOnly: boolean;
+}) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.preferredDate)) {
+    throw new Error("Choose a valid preferred date");
+  }
+  const preferredDate = new Date(`${input.preferredDate}T12:00:00.000Z`);
+  if (
+    Number.isNaN(preferredDate.getTime()) ||
+    preferredDate.toISOString().slice(0, 10) !== input.preferredDate ||
+    preferredDate.getTime() < Date.now() - 24 * 60 * 60_000
+  ) {
+    throw new Error("Choose a future preferred date");
+  }
+  return sql.begin(async (tx) => {
+    const rows = await tx<{ booking_id: string }[]>`
+      select service_case.booking_id
+      from service_cases service_case
+      join bookings booking on booking.id = service_case.booking_id
+      where service_case.id = ${input.caseId}
+        and service_case.case_type = 'reschedule'
+        and service_case.status = 'action_planned'
+        and booking.status in ('requested', 'reviewing', 'ready')
+        and not exists (
+          select 1 from job_schedules schedule where schedule.booking_id = booking.id
+        )
+        and (${input.devOnly} = false or (service_case.is_dev_seed and booking.is_dev_seed))
+      for update of service_case, booking`;
+    if (!rows[0]) {
+      throw new Error(
+        "Preferred-date updates are limited to action-planned requests without a schedule",
+      );
+    }
+    await tx`
+      update bookings
+      set scheduled_date = ${input.preferredDate},
+          scheduled_window = 'Customer preference; time not confirmed'
+      where id = ${rows[0].booking_id}`;
+    await tx`
+      update service_cases
+      set status = 'resolved', resolution_type = 'rescheduled',
+          resolution_summary = 'Preferred date updated before scheduling; no appointment was confirmed.',
+          resolved_at = now()
+      where id = ${input.caseId}`;
+    await tx`
+      insert into booking_events (booking_id, type, data)
+      values (${rows[0].booking_id}, 'preferred_date_changed',
+        ${tx.json({ serviceCaseId: input.caseId, preferredDate: input.preferredDate } as postgres.JSONValue)})`;
     return rows[0];
   });
 }
@@ -794,15 +974,67 @@ export async function cancelBookingFromCase(caseId: string, devOnly: boolean) {
 
 export async function createRecoveryAction(input: {
   caseId: string;
-  bookingId: string | null;
   type: string;
+  ownerLabel: string;
+  scheduledLocal: string;
   notes: string;
   devOnly: boolean;
 }) {
-  await sql`insert into service_recovery_actions
-    (service_case_id, booking_id, action_type, notes, status, is_dev_seed)
-    select id, booking_id, ${input.type}, ${input.notes || null}, 'planned', ${input.devOnly}
-    from service_cases where id = ${input.caseId} and (${input.devOnly} = false or is_dev_seed)`;
+  return sql.begin(async (tx) => {
+    const cases = await tx<
+      { booking_id: string | null; timezone: string }[]
+    >`
+      select service_case.booking_id,
+             coalesce(schedule_territory.timezone, booking_territory.timezone,
+               'America/Los_Angeles') as timezone
+      from service_cases service_case
+      left join bookings booking on booking.id = service_case.booking_id
+      left join service_territories booking_territory on booking_territory.id = booking.territory_id
+      left join job_schedules schedule on schedule.booking_id = booking.id
+      left join service_territories schedule_territory on schedule_territory.id = schedule.territory_id
+      where service_case.id = ${input.caseId}
+        and service_case.status not in ('resolved', 'closed', 'declined', 'canceled')
+        and (${input.devOnly} = false or service_case.is_dev_seed)
+      for update of service_case`;
+    if (!cases[0]) throw new Error("Choose an open service case");
+    const scheduledAt = localDateTimeToUtc(
+      input.scheduledLocal,
+      cases[0].timezone,
+    );
+    if (Date.parse(scheduledAt) < Date.now() - 5 * 60_000) {
+      throw new Error("Recovery target time must be in the future");
+    }
+    const rows = await tx<{ id: string }[]>`
+      insert into service_recovery_actions
+        (service_case_id, booking_id, action_type, owner_label, scheduled_at,
+         notes, status, is_dev_seed)
+      values (${input.caseId}, ${cases[0].booking_id}, ${input.type},
+        ${input.ownerLabel}, ${scheduledAt}, ${input.notes || null}, 'planned',
+        ${input.devOnly})
+      returning id`;
+    return rows[0];
+  });
+}
+
+export async function setRecoveryStatus(
+  recoveryId: string,
+  from: string,
+  to: string,
+  devOnly: boolean,
+) {
+  const rows = await sql<{ id: string }[]>`
+    update service_recovery_actions
+    set status = ${to},
+        approved_by_label = case
+          when ${to} in ('approved', 'scheduled', 'completed')
+            then coalesce(approved_by_label, 'Operator')
+          else approved_by_label
+        end,
+        completed_at = case when ${to} = 'completed' then now() else null end
+    where id = ${recoveryId} and status = ${from}
+      and (${devOnly} = false or is_dev_seed)
+    returning id`;
+  return Boolean(rows[0]);
 }
 
 export async function createRefundReview(input: {

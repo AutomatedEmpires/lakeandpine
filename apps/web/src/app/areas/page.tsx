@@ -57,7 +57,7 @@ export default function AreasPage() {
 
       <section className="section">
         <div className="container service-explainer-grid">
-          <article className="card"><span className="eyebrow">Cleaner areas</span><h3>Assign by route + capability</h3><p>Future crew assignment should account for travel zone, property type, scope complexity, duration, and any finish or access notes—not just the nearest ZIP.</p></article>
+          <article className="card"><span className="eyebrow">Cleaner areas</span><h3>Assign by route + capability</h3><p>Crew assignment accounts for travel zone, property type, scope complexity, duration, and finish or access notes—not just the nearest ZIP.</p></article>
           <article className="card"><span className="eyebrow">Schedule quality</span><h3>Protect realistic travel time</h3><p>A confirmed window should include the work duration and travel buffer needed to arrive prepared, especially for marinas, gated properties, and job sites.</p></article>
           <article className="card"><span className="eyebrow">Fallback</span><h3>Say no before overpromising</h3><p>If a route, property, date, or requested specialty cannot be responsibly covered, the operator should decline or offer another window before confirmation.</p></article>
         </div>

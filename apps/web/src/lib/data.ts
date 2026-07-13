@@ -387,7 +387,7 @@ export async function getNextBooking(
            b.scheduled_window, b.status, b.estimate_cents, b.access_notes, b.created_at::text
     from bookings b join services s on s.id = b.service_id
     where b.customer_id = ${customerId}
-      and b.status in ('requested', 'confirmed')
+      and b.status in ('requested', 'reviewing', 'ready', 'confirmed', 'scheduled', 'in_progress')
       and b.scheduled_date >= current_date
     order by b.scheduled_date asc
     limit 1`;
@@ -445,6 +445,29 @@ export type SupportMessage = {
   created_at: string;
 };
 
+export type CustomerServiceCase = {
+  id: string;
+  public_reference: string;
+  case_type: string;
+  status: string;
+  priority: string;
+  details: string;
+  resolution_summary: string | null;
+  created_at: string;
+};
+
+export async function getCustomerServiceCases(
+  customerId: string,
+): Promise<CustomerServiceCase[]> {
+  return sql<CustomerServiceCase[]>`
+    select id, public_reference, case_type, status, priority, details,
+           resolution_summary, created_at::text
+    from service_cases
+    where customer_id = ${customerId}
+    order by created_at desc
+    limit 30`;
+}
+
 export async function getSupportThread(
   customerId: string,
 ): Promise<SupportMessage[]> {
@@ -478,6 +501,7 @@ export type OperatorBooking = BookingRow & {
   planning_score: number | null;
   contact_status: string;
   service_vertical: string | null;
+  territory_timezone: string;
   is_dev_seed: boolean;
 };
 
@@ -514,8 +538,11 @@ export async function getOperatorBookings(
            b.created_at::text, b.contact, b.home_details, b.property_profile,
            b.room_plan, b.cleaning_preferences, b.pet_notes, b.special_instructions,
             b.planning_direction, b.planning_score, b.contact_status,
-            b.service_vertical, b.is_dev_seed
+            b.service_vertical,
+            coalesce(territory.timezone, 'America/Los_Angeles') as territory_timezone,
+            b.is_dev_seed
     from bookings b join services s on s.id = b.service_id
+    left join service_territories territory on territory.id = b.territory_id
     where ${devOnly ? sql`b.is_dev_seed` : sql`true`}
       and b.status <> 'canceled'
     order by b.scheduled_date asc, b.created_at asc`;

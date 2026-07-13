@@ -31,16 +31,13 @@ export async function timeOffRequestAction(formData: FormData) {
   const identity = await requireCleaner();
   if (identity.devOnly) throw new Error("Time-off writes are disabled in cleaner preview mode");
 
-  const startAt = new Date(String(formData.get("startAt") ?? ""));
-  const endAt = new Date(String(formData.get("endAt") ?? ""));
+  const startLocal = String(formData.get("startAt") ?? "");
+  const endLocal = String(formData.get("endAt") ?? "");
   const reasonCategory = String(formData.get("reasonCategory") ?? "unavailable");
   const validReasons = ["unavailable", "personal", "medical", "training", "other"] as const;
   if (
-    Number.isNaN(startAt.getTime()) ||
-    Number.isNaN(endAt.getTime()) ||
-    startAt.getTime() < Date.now() - 5 * 60 * 1000 ||
-    endAt <= startAt ||
-    endAt.getTime() - startAt.getTime() > 14 * 24 * 60 * 60 * 1000 ||
+    !startLocal ||
+    !endLocal ||
     !validReasons.includes(reasonCategory as (typeof validReasons)[number])
   ) {
     throw new Error("Invalid time-off request");
@@ -48,9 +45,10 @@ export async function timeOffRequestAction(formData: FormData) {
 
   await requestTimeOff({
     cleanerId: identity.cleaner.id,
-    startAt: startAt.toISOString(),
-    endAt: endAt.toISOString(),
+    startLocal,
+    endLocal,
     reasonCategory: reasonCategory as (typeof validReasons)[number],
+    devOnly: identity.devOnly,
   });
   revalidatePath("/crew");
 }

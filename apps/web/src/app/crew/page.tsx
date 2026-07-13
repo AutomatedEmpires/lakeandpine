@@ -14,9 +14,9 @@ export const metadata: Metadata = {
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
-function formatDateTime(value: string) {
+function formatDateTime(value: string, timeZone: string) {
   return new Date(value).toLocaleString("en-US", {
-    timeZone: "America/Los_Angeles",
+    timeZone,
     weekday: "short",
     month: "short",
     day: "numeric",
@@ -72,7 +72,7 @@ export default async function CrewPage() {
               {assignments.map((assignment) => (
                 <article key={assignment.id}>
                   <div><strong>{assignment.service_vertical}</strong><span className={`status-badge ${assignment.assignment_status}`}>{assignment.assignment_status}</span></div>
-                  <p>{formatDateTime(assignment.start_at)} → {formatDateTime(assignment.end_at)}</p>
+                  <p>{formatDateTime(assignment.start_at, assignment.territory_timezone)} → {formatDateTime(assignment.end_at, assignment.territory_timezone)}</p>
                   <p>{assignment.territory_name} · {assignment.assignment_role}</p>
                   {assignment.required_skills.length > 0 && <small>Skills: {assignment.required_skills.join(", ")}</small>}
                   {assignment.planning_direction && <small>Plan: {assignment.planning_direction}</small>}
@@ -114,9 +114,10 @@ export default async function CrewPage() {
               <span className="eyebrow">Time away</span>
               <h2>Requests + decisions</h2>
               <div className="availability-list">
-                {timeOff.map((item) => <div key={item.id}><strong>{item.status}</strong><span>{formatDateTime(item.start_at)} → {formatDateTime(item.end_at)} · {item.reason_category}</span></div>)}
+                {timeOff.map((item) => <div key={item.id}><strong>{item.status}</strong><span>{formatDateTime(item.start_at, identity.cleaner.home_territory_timezone ?? "America/Los_Angeles")} → {formatDateTime(item.end_at, identity.cleaner.home_territory_timezone ?? "America/Los_Angeles")} · {item.reason_category}</span></div>)}
               </div>
               <form action={timeOffRequestAction} className="time-off-form">
+                <p className="copy">Enter local time in {identity.cleaner.home_territory_timezone ?? "your assigned territory"}. Daylight-saving gaps and repeated times are rejected.</p>
                 <div className="field"><label htmlFor="time-off-start">Start</label><input id="time-off-start" name="startAt" type="datetime-local" required disabled={identity.devOnly} /></div>
                 <div className="field"><label htmlFor="time-off-end">End</label><input id="time-off-end" name="endAt" type="datetime-local" required disabled={identity.devOnly} /></div>
                 <div className="field"><label htmlFor="time-off-reason">Category</label><select id="time-off-reason" name="reasonCategory" disabled={identity.devOnly}><option value="unavailable">Unavailable</option><option value="personal">Personal</option><option value="medical">Medical</option><option value="training">Training</option><option value="other">Other</option></select></div>

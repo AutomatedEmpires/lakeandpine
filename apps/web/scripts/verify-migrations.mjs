@@ -110,7 +110,7 @@ async function assertSafeRole(sql, expectRuntimeGrant = false) {
   invariant(!role.rolsuper, `${APP_ROLE} must not be a superuser`);
   invariant(!role.rolcreaterole, `${APP_ROLE} must not have CREATEROLE`);
   invariant(!role.rolcreatedb, `${APP_ROLE} must not have CREATEDB`);
-  invariant(!role.rolcanlogin, `${APP_ROLE} must remain NOLOGIN in disposable verification`);
+  invariant(role.rolcanlogin, `${APP_ROLE} must retain the production-compatible LOGIN attribute`);
   invariant(!role.rolreplication, `${APP_ROLE} must not have REPLICATION`);
   invariant(!role.rolbypassrls, `${APP_ROLE} must not have BYPASSRLS`);
 
@@ -122,14 +122,21 @@ async function assertSafeRole(sql, expectRuntimeGrant = false) {
     join pg_roles member on member.oid = membership.member
     where granted.rolname = ${APP_ROLE} or member.rolname = ${APP_ROLE}`;
   if (expectRuntimeGrant) {
+    const grantsToConnectionOwner = memberships.filter(
+      (membership) =>
+        membership.granted_role === APP_ROLE &&
+        membership.member_role === "postgres",
+    );
     invariant(
-      memberships.length === 1 &&
-        memberships[0].granted_role === APP_ROLE &&
-        memberships[0].member_role === "postgres" &&
-        !memberships[0].admin_option &&
-        !memberships[0].inherit_option &&
-        memberships[0].set_option,
-      `${APP_ROLE} must be granted only to postgres with SET TRUE, INHERIT FALSE, and ADMIN FALSE`,
+      grantsToConnectionOwner.length > 0 &&
+        grantsToConnectionOwner.every((membership) => !membership.inherit_option) &&
+        grantsToConnectionOwner.some((membership) => membership.set_option) &&
+        memberships.every(
+          (membership) =>
+            membership.granted_role === APP_ROLE &&
+            membership.member_role === "postgres",
+        ),
+      `${APP_ROLE} must have effective SET TRUE/INHERIT FALSE access only from postgres and inherit no other role`,
     );
   } else {
     invariant(
@@ -139,14 +146,25 @@ async function assertSafeRole(sql, expectRuntimeGrant = false) {
   }
 }
 
-async function createSafeApplicationRole(sql) {
+async function seedProductionLikeApplicationRole(sql) {
   const existing = await readRole(sql);
   if (!existing) {
     await sql.unsafe(
-      `create role ${quoteIdentifier(APP_ROLE)} noinherit nologin nosuperuser nocreatedb nocreaterole noreplication nobypassrls`,
+      `create role ${quoteIdentifier(APP_ROLE)} inherit login nosuperuser nocreatedb nocreaterole noreplication nobypassrls`,
     );
   }
-  await assertSafeRole(sql);
+  // Reproduce production's separate grantor row. The migration runs as
+  // postgres and must add an effective SET path without assuming it owns or can
+  // rewrite a supabase_admin-style grant made by another grantor.
+  await sql.unsafe('create role lakeandpine_verifier_grantor superuser nologin');
+  await sql.unsafe('set role lakeandpine_verifier_grantor');
+  try {
+    await sql.unsafe(
+      `grant ${quoteIdentifier(APP_ROLE)} to postgres with admin true, inherit false, set false`,
+    );
+  } finally {
+    await sql.unsafe('reset role');
+  }
 }
 
 async function applyMigrations(sql, migrations) {
@@ -411,8 +429,19 @@ async function inspectOperationalInvariants(sql) {
     const [territory] = await transaction`
       insert into service_territories
         (code, name, timezone, status, travel_buffer_minutes, is_dev_seed)
-      values ('verifier', 'Verifier territory', 'America/Los_Angeles', 'active', 30, true)
+      values ('verifier', 'Verifier territory', 'America/Los_Angeles', 'draft', 30, true)
       returning id`;
+    await expectDatabaseError(transaction, ['23514'], 'territory activation without postal capacity', async (savepoint) => {
+      await savepoint`update service_territories set status = 'active' where id = ${territory.id}`;
+    });
+    await transaction`
+      insert into territory_postal_codes (territory_id, postal_code, status)
+      values (${territory.id}, '83814', 'active')`;
+    await expectDatabaseError(transaction, ['23514'], 'malformed territory postal code', async (savepoint) => {
+      await savepoint`
+        insert into territory_postal_codes (territory_id, postal_code, status)
+        values (${territory.id}, 'ABCDE', 'active')`;
+    });
     const cleaners = await transaction`
       insert into cleaners
         (full_name, email, status, screening_status, screening_verified_at,
@@ -424,16 +453,22 @@ async function inspectOperationalInvariants(sql) {
         ('Verifier Two', 'two@verify.invalid', 'active', 'verified', now(),
           ${territory.id}, array['delicate_finishes'], array['estate'], 600, 2400, 3, true),
         ('Verifier Capped', 'cap@verify.invalid', 'active', 'verified', now(),
-          ${territory.id}, array['estate_detail'], array['estate'], 240, 240, 1, true)
+          ${territory.id}, array['estate_detail'], array['estate'], 240, 240, 1, true),
+        ('Verifier Overflow', 'overflow@verify.invalid', 'active', 'verified', now(),
+          ${territory.id}, array['estate_detail'], array['estate'], 600, 2400, 3, true)
       returning id, email`;
     const cleanerByEmail = new Map(cleaners.map((cleaner) => [cleaner.email, cleaner.id]));
     const cleanerOne = cleanerByEmail.get('one@verify.invalid');
     const cleanerTwo = cleanerByEmail.get('two@verify.invalid');
     const cappedCleaner = cleanerByEmail.get('cap@verify.invalid');
+    const overflowCleaner = cleanerByEmail.get('overflow@verify.invalid');
 
     const startAt = '2030-07-15T16:00:00.000Z';
     const endAt = '2030-07-15T21:00:00.000Z';
-    for (const cleanerId of [cleanerOne, cappedCleaner]) {
+    await expectDatabaseError(transaction, ['23514'], 'territory activation without available cleaner capacity', async (savepoint) => {
+      await savepoint`update service_territories set status = 'active' where id = ${territory.id}`;
+    });
+    for (const cleanerId of [cleanerOne, cappedCleaner, overflowCleaner]) {
       await transaction`
         insert into cleaner_availability_rules
           (cleaner_id, territory_id, day_of_week, start_time, end_time, effective_from, status)
@@ -441,6 +476,30 @@ async function inspectOperationalInvariants(sql) {
           extract(dow from ${startAt}::timestamptz at time zone 'America/Los_Angeles')::integer,
           '08:00', '18:00', '2030-01-01', 'active')`;
     }
+    await transaction`update service_territories set status = 'active' where id = ${territory.id}`;
+    await expectDatabaseError(transaction, ['23514'], 'last active territory postal removal', async (savepoint) => {
+      await savepoint`
+        update territory_postal_codes set status = 'excluded'
+        where territory_id = ${territory.id} and postal_code = '83814'`;
+    });
+
+    const [mismatchedBooking] = await transaction`
+      insert into bookings
+        (service_id, scheduled_date, scheduled_window, status, contact, is_dev_seed,
+         service_vertical, territory_id, qualification_status,
+         estimated_duration_minutes, required_crew_size, required_skills)
+      values ('estate', '2030-07-15', 'Preference only', 'requested',
+        ${transaction.json({ name: 'Outside territory', email: 'outside@invalid.test', zip: '99999' })},
+        true, 'estate', ${territory.id}, 'approved', 300, 1, array['estate_detail'])
+      returning id`;
+    await expectDatabaseError(transaction, ['23514'], 'schedule outside active territory postal codes', async (savepoint) => {
+      await savepoint`
+        insert into job_schedules
+          (booking_id, territory_id, service_vertical, start_at, end_at, required_crew_size,
+           required_skills, labor_minutes, is_dev_seed)
+        values (${mismatchedBooking.id}, ${territory.id}, 'estate', ${startAt}, ${endAt}, 1,
+          array['estate_detail'], 300, true)`;
+    });
 
     const [booking] = await transaction`
       insert into bookings
@@ -475,10 +534,11 @@ async function inspectOperationalInvariants(sql) {
       await savepoint`update bookings set status = 'scheduled' where id = ${booking.id}`;
     });
 
-    await transaction`
+    const [assignmentOne] = await transaction`
       insert into job_assignments
         (job_schedule_id, cleaner_id, assignment_role, status, is_dev_seed)
-      values (${schedule.id}, ${cleanerOne}, 'lead', 'accepted', true)`;
+      values (${schedule.id}, ${cleanerOne}, 'lead', 'accepted', true)
+      returning id`;
 
     await expectDatabaseError(transaction, ['23514'], 'assignment outside recurring availability', async (savepoint) => {
       await savepoint`
@@ -531,8 +591,42 @@ async function inspectOperationalInvariants(sql) {
 
     await transaction`update job_schedules set status = 'confirmed' where id = ${schedule.id}`;
     const [scheduledBooking] = await transaction`
-      select status from bookings where id = ${booking.id}`;
-    invariant(scheduledBooking.status === 'scheduled', 'Confirmed schedule did not synchronize booking status');
+      select status, territory_id from bookings where id = ${booking.id}`;
+    invariant(
+      scheduledBooking.status === 'scheduled' && scheduledBooking.territory_id === territory.id,
+      'Confirmed schedule did not synchronize booking status and territory',
+    );
+    await expectDatabaseError(transaction, ['23514'], 'accepted assignment downgrade on confirmed schedule', async (savepoint) => {
+      await savepoint`update job_assignments set status = 'proposed' where id = ${assignmentOne.id}`;
+    });
+    await expectDatabaseError(transaction, ['23514'], 'accepted crew above exact schedule size', async (savepoint) => {
+      await savepoint`
+        insert into job_assignments
+          (job_schedule_id, cleaner_id, assignment_role, status, is_dev_seed)
+        values (${schedule.id}, ${overflowCleaner}, 'member', 'accepted', true)`;
+    });
+    await transaction`
+      insert into territory_postal_codes (territory_id, postal_code, status)
+      values (${territory.id}, '83815', 'active')`;
+    await expectDatabaseError(transaction, ['23514'], 'removing postal eligibility from live work', async (savepoint) => {
+      await savepoint`
+        update territory_postal_codes set status = 'excluded'
+        where territory_id = ${territory.id} and postal_code = '83814'`;
+    });
+    await expectDatabaseError(transaction, ['23514'], 'assigned cleaner deactivation', async (savepoint) => {
+      await savepoint`update cleaners set status = 'paused' where id = ${cleanerOne}`;
+    });
+    await expectDatabaseError(transaction, ['23514'], 'required cleaner skill removal', async (savepoint) => {
+      await savepoint`update cleaners set skills = '{}' where id = ${cleanerOne}`;
+    });
+    await expectDatabaseError(transaction, ['23514'], 'accepted cleaner availability removal', async (savepoint) => {
+      await savepoint`
+        update cleaner_availability_rules set status = 'paused'
+        where cleaner_id = ${cleanerOne} and territory_id = ${territory.id}`;
+    });
+    await expectDatabaseError(transaction, ['23514'], 'pausing territory with confirmed work', async (savepoint) => {
+      await savepoint`update service_territories set status = 'paused' where id = ${territory.id}`;
+    });
     await expectDatabaseError(transaction, ['23514'], 'reschedule outside recurring availability', async (savepoint) => {
       await savepoint`
         update job_schedules
@@ -543,6 +637,14 @@ async function inspectOperationalInvariants(sql) {
     const [completedBooking] = await transaction`
       select status from bookings where id = ${booking.id}`;
     invariant(completedBooking.status === 'completed', 'Completed schedule did not synchronize booking status');
+    await transaction`update service_territories set status = 'paused' where id = ${territory.id}`;
+    await transaction`update job_schedules set status = 'canceled' where id = ${capacitySchedule.id}`;
+    const [canceledCapacitySchedule] = await transaction`
+      select status from job_schedules where id = ${capacitySchedule.id}`;
+    invariant(
+      canceledCapacitySchedule.status === 'canceled',
+      'Cancellation must remain possible after territory capacity is paused',
+    );
 
     const [billing] = await transaction`
       insert into billing_records
@@ -578,6 +680,82 @@ async function inspectOperationalInvariants(sql) {
       resolvedCase.status === 'resolved' && resolvedCase.resolution_type === 'refund',
       'Processed refund did not resolve its service case',
     );
+    const [recoveryCase] = await transaction`
+      insert into service_cases
+        (public_reference, case_type, booking_id, contact, details, status, is_dev_seed)
+      values ('LP-VERIFY-RECLEAN-1', 'reclean', ${booking.id}, '{}',
+        'Verifier reclean case', 'action_planned', true)
+      returning id`;
+    const [recovery] = await transaction`
+      insert into service_recovery_actions
+        (service_case_id, booking_id, action_type, owner_label, scheduled_at,
+         status, notes, is_dev_seed)
+      values (${recoveryCase.id}, ${booking.id}, 'reclean', 'Verifier operator',
+        '2030-07-20T17:00:00.000Z', 'planned',
+        'Separate recovery target; not a main appointment.', true)
+      returning id`;
+    await expectDatabaseError(transaction, ['23514'], 'reclean-scheduled case without scheduled recovery', async (savepoint) => {
+      await savepoint`
+        update service_cases set status = 'reclean_scheduled'
+        where id = ${recoveryCase.id}`;
+    });
+    await expectDatabaseError(transaction, ['23514'], 'invalid recovery lifecycle jump', async (savepoint) => {
+      await savepoint`
+        update service_recovery_actions
+        set status = 'completed', approved_by_label = 'Verifier', completed_at = now()
+        where id = ${recovery.id}`;
+    });
+    await transaction`
+      update service_recovery_actions
+      set status = 'approved', approved_by_label = 'Verifier'
+      where id = ${recovery.id}`;
+    await transaction`
+      update service_recovery_actions set status = 'scheduled'
+      where id = ${recovery.id}`;
+    await transaction`
+      update service_recovery_actions set status = 'completed', completed_at = now()
+      where id = ${recovery.id}`;
+    const [completedRecovery] = await transaction`
+      select status, completed_at from service_recovery_actions where id = ${recovery.id}`;
+    invariant(
+      completedRecovery.status === 'completed' && completedRecovery.completed_at,
+      'Recovery action lifecycle did not preserve completion evidence',
+    );
+    await transaction`
+      update service_cases set status = 'reclean_scheduled'
+      where id = ${recoveryCase.id}`;
+    await transaction`
+      update service_cases set status = 'resolved', resolution_type = 'reclean',
+        resolution_summary = 'Verifier recovery completed.', resolved_at = now()
+      where id = ${recoveryCase.id}`;
+
+    const [capacityTerritory] = await transaction`
+      insert into service_territories
+        (code, name, timezone, status, travel_buffer_minutes, is_dev_seed)
+      values ('capacity-pause', 'Capacity pause territory', 'America/Los_Angeles', 'draft', 30, true)
+      returning id`;
+    await transaction`
+      insert into territory_postal_codes (territory_id, postal_code, status)
+      values (${capacityTerritory.id}, '83815', 'active')`;
+    const [capacityCleaner] = await transaction`
+      insert into cleaners
+        (full_name, email, status, screening_status, screening_verified_at,
+         home_territory_id, skills, vertical_experience, is_dev_seed)
+      values ('Capacity Only', 'capacity-only@verify.invalid', 'active', 'verified', now(),
+        ${capacityTerritory.id}, array['estate_detail'], array['estate'], true)
+      returning id`;
+    await transaction`
+      insert into cleaner_availability_rules
+        (cleaner_id, territory_id, day_of_week, start_time, end_time, effective_from, status)
+      values (${capacityCleaner.id}, ${capacityTerritory.id}, 1, '08:00', '18:00', '2030-01-01', 'active')`;
+    await transaction`update service_territories set status = 'active' where id = ${capacityTerritory.id}`;
+    await transaction`update cleaners set status = 'paused' where id = ${capacityCleaner.id}`;
+    const [pausedCapacityTerritory] = await transaction`
+      select status from service_territories where id = ${capacityTerritory.id}`;
+    invariant(
+      pausedCapacityTerritory.status === 'paused',
+      'Territory did not auto-pause after losing its last screened, available cleaner',
+    );
   });
 }
 
@@ -611,7 +789,7 @@ try {
     `Verification requires a fresh database; found public tables: ${existingTables.map((row) => row.table_name).join(", ")}`,
   );
 
-  await createSafeApplicationRole(sql);
+  await seedProductionLikeApplicationRole(sql);
   await applyMigrations(sql, migrations);
   await assertSafeRole(sql, true);
 
@@ -647,7 +825,7 @@ try {
     atomicIntakeFunctions: atomicIntake.functions.length > 0
       ? atomicIntake.functions.map((candidate) => candidate.signature)
       : "none discovered; add a function name matching create*booking/booking*create or an 'atomic intake' function comment",
-    operationalInvariants: "labor, lifecycle, availability, capacity, time off, and refund guards verified",
+    operationalInvariants: "postal eligibility, territory capacity, labor, schedule and recovery lifecycle, availability, cancellation, time off, and refund guards verified",
   }, null, 2));
 } finally {
   await sql.end({ timeout: 5 });

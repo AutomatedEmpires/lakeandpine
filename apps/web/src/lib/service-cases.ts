@@ -139,6 +139,87 @@ export async function createCustomerRescheduleCase(customerId: string, bookingId
   });
 }
 
+export async function createAuthenticatedServiceCase(input: {
+  customerId: string;
+  bookingId: string | null;
+  caseType: ServiceCaseType;
+  details: string;
+}) {
+  return sql.begin(async (transaction) => {
+    const customers = await transaction<
+      { email: string | null; full_name: string | null; phone: string | null }[]
+    >`
+      select email, full_name, phone from customers
+      where id = ${input.customerId} for update`;
+    if (!customers[0]) throw new Error("Customer account was not found");
+
+    let booking: {
+      id: string;
+      status: string;
+      contact: postgres.JSONValue;
+      is_dev_seed: boolean;
+    } | null = null;
+    if (input.bookingId) {
+      const bookings = await transaction<
+        {
+          id: string;
+          status: string;
+          contact: postgres.JSONValue;
+          is_dev_seed: boolean;
+        }[]
+      >`
+        select id, status, contact, is_dev_seed from bookings
+        where id = ${input.bookingId} and customer_id = ${input.customerId}
+        for update`;
+      booking = bookings[0] ?? null;
+      if (!booking) throw new Error("Choose a booking from this account");
+    }
+
+    if (
+      ["reschedule", "cancel", "reclean", "refund_review", "damage"].includes(
+        input.caseType,
+      ) &&
+      !booking
+    ) {
+      throw new Error("This request type must be linked to a booking");
+    }
+    if (
+      ["reschedule", "cancel"].includes(input.caseType) &&
+      booking &&
+      ["completed", "follow_up", "canceled"].includes(booking.status)
+    ) {
+      throw new Error("That booking is no longer eligible for a schedule change");
+    }
+
+    const contact: postgres.JSONValue =
+      booking?.contact ??
+      ({
+        name: customers[0].full_name,
+        email: customers[0].email,
+        phone: customers[0].phone,
+      } as postgres.JSONValue);
+    const rows = await transaction<
+      { id: string; public_reference: string }[]
+    >`
+      insert into service_cases
+        (public_reference, case_type, booking_id, customer_id, contact, details,
+         status, consent_snapshot, consented_at, first_response_due_at, is_dev_seed)
+      values (${publicReference()}, ${input.caseType}, ${booking?.id ?? null},
+        ${input.customerId}, ${transaction.json(contact)}, ${input.details}, 'submitted',
+        ${transaction.json({ source: "authenticated_dashboard_support" })}, now(),
+        now() + interval '4 hours', ${booking?.is_dev_seed ?? false})
+      returning id, public_reference`;
+    await transaction`
+      insert into notification_outbox
+        (service_case_id, customer_id, notification_type, channel, recipient_kind,
+         template_key, template_data, deduplication_key, is_dev_seed)
+      values (${rows[0].id}, ${input.customerId}, 'ops_notification', 'email', 'ops',
+        'ops-service-case', ${transaction.json({ serviceCaseId: rows[0].id })},
+        ${`service-case:${rows[0].id}:ops_notification`}, ${booking?.is_dev_seed ?? false})`;
+    return { ...rows[0], duplicate: false };
+  });
+}
+
 export async function recordServiceCaseNotificationDelivery(
   serviceCaseId: string,
   outcome: "sent" | "suppressed" | "skipped" | "failed",
