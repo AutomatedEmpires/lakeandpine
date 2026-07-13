@@ -25,7 +25,7 @@ export type BookingConfirmationInput = {
 };
 
 export type OpsNotificationInput = {
-  kind: "booking" | "lead";
+  kind: "booking" | "lead" | "service_case" | "cleaner_application";
   summary: string;
   detailLines: string[];
 };
