@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start -p 3010",
     "lint": "eslint .",
+    "test": "node --experimental-strip-types --test src/**/*.test.ts",
     "typecheck": "tsc --noEmit",
     "ops:seed-content": "node scripts/seed-content.mjs",
     "ops:seed-dev": "node scripts/seed-dev.mjs",

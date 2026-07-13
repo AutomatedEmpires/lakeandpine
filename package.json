@@ -9,6 +9,7 @@
     "dev": "pnpm --dir apps/web dev",
     "build": "pnpm --dir apps/web build",
     "lint": "pnpm --dir apps/web lint",
+    "test": "pnpm --dir apps/web test",
     "typecheck": "pnpm --dir apps/web typecheck",
     "ops:seed-content": "pnpm --dir apps/web ops:seed-content",
     "ops:seed-dev": "pnpm --dir apps/web ops:seed-dev",
