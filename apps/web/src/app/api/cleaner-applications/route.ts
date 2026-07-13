@@ -88,4 +88,3 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "We couldn't record that application. Please try again shortly." }, { status: 503 });
   }
 }
-

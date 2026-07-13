@@ -60,4 +60,3 @@ test("fixed windows align without leaking across boundaries", () => {
     "2026-07-13T12:00:00.000Z",
   );
 });
-

@@ -135,4 +135,3 @@ export async function requestTimeOff(input: {
     insert into cleaner_time_off (cleaner_id, start_at, end_at, reason_category, status)
     values (${input.cleanerId}, ${input.startAt}, ${input.endAt}, ${input.reasonCategory}, 'requested')`;
 }
-

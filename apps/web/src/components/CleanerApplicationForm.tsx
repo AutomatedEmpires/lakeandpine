@@ -113,4 +113,3 @@ export function CleanerApplicationForm({ applicationsEnabled }: { applicationsEn
     </form>
   );
 }
-

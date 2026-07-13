@@ -129,4 +129,3 @@ export default async function CrewPage() {
     </main>
   );
 }
-

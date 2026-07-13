@@ -167,4 +167,3 @@ Every feature should answer at least one of these questions better:
 3. Which qualified team and feasible window should be recommended, and why?
 4. What was agreed, completed, changed, or missed?
 5. What action is owed next, by whom, and by when?
-

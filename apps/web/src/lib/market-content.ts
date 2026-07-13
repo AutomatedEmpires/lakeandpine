@@ -173,4 +173,3 @@ export const PUBLIC_ROUTE_LINKS = [
   { href: "/pricing", label: "Pricing" },
   { href: "/areas", label: "Areas" },
 ];
-
