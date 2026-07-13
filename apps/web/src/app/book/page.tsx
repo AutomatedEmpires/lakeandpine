@@ -1,8 +1,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 
-import { BookingFlow } from "@/components/BookingFlow";
-import { getAddons, getServices } from "@/lib/data";
+import { PremiumRequestFlow } from "@/components/PremiumRequestFlow";
 import { requestIntakeEnabled } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
@@ -15,8 +14,6 @@ export const metadata: Metadata = {
 };
 
 export default async function BookPage() {
-  const [services, addons] = await Promise.all([getServices(), getAddons()]);
-
   return (
     <div className="route-page">
       <div className="container page-hero">
@@ -35,7 +32,7 @@ export default async function BookPage() {
       <section className="section" style={{ paddingTop: 20 }}>
         <div className="container">
           <Suspense>
-            <BookingFlow services={services} addons={addons} intakeEnabled={requestIntakeEnabled} />
+            <PremiumRequestFlow intakeEnabled={requestIntakeEnabled} />
           </Suspense>
         </div>
       </section>
