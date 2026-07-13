@@ -5,9 +5,9 @@ import { useEffect, useRef, useState } from "react";
 type Message = { role: "bot" | "user"; text: string };
 
 const STARTERS = [
-  "What service is right for me?",
-  "How much does a deep clean cost?",
-  "Do you clean homes with pets?",
+  "Which property program fits?",
+  "How does a custom proposal work?",
+  "What happens after a request?",
 ];
 
 export function ChatDock() {
@@ -17,7 +17,7 @@ export function ChatDock() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "bot",
-      text: "Ask what clean you need, what affects the estimate, how pet notes work, or what happens after a request.",
+      text: "Ask which property program fits, what shapes a proposal, how timing is confirmed, or what happens after a request.",
     },
   ]);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -45,7 +45,7 @@ export function ChatDock() {
           role: "bot",
           text:
             data.reply ??
-            "I hit a snag — the fastest path is the estimate studio on the home page or the booking flow.",
+            "I hit a snag — the fastest path is the consultation request or the service overview.",
         },
       ]);
     } catch {
@@ -53,7 +53,7 @@ export function ChatDock() {
         ...prev,
         {
           role: "bot",
-          text: "I hit a snag — the fastest path is the estimate studio on the home page or the booking flow.",
+          text: "I hit a snag — the fastest path is the consultation request or the service overview.",
         },
       ]);
     } finally {
@@ -63,7 +63,12 @@ export function ChatDock() {
 
   return (
     <div className="chat-dock">
-      <div className={`chat-panel${open ? " open" : ""}`}>
+      <div
+        className={`chat-panel${open ? " open" : ""}`}
+        id="pine-concierge-panel"
+        aria-hidden={!open}
+        inert={!open}
+      >
         <div className="chat-head">
           <strong>🤖 Pine Concierge</strong>
           <button className="icon-btn" onClick={() => setOpen(false)} aria-label="Close chat">
@@ -104,7 +109,9 @@ export function ChatDock() {
       <button
         className="chat-button"
         onClick={() => setOpen((o) => !o)}
-        aria-label="Open Pine Concierge"
+        aria-label={open ? "Close Pine Concierge" : "Open Pine Concierge"}
+        aria-expanded={open}
+        aria-controls="pine-concierge-panel"
       >
         🤖
       </button>

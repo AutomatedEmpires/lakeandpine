@@ -14,8 +14,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const area = await getServiceArea(slug);
   if (!area) return {};
   return {
-    title: `${area.city} area planning preview`,
-    description: `A non-public planning page for possible service requests in ${area.city}. Availability is not confirmed.`,
+    title: `${area.city} Service Area Review`,
+    description: `How Lake & Pine reviews property, route, and schedule fit for requests near ${area.city}. Availability is confirmed individually.`,
+    alternates: { canonical: `/areas/${slug}` },
     robots: { index: false },
   };
 }
@@ -32,14 +33,14 @@ export default async function AreaPage({ params }: Props) {
           <span className="eyebrow">
             {area.city}, {area.state}
           </span>
-          <h1>{area.city} planning preview.</h1>
-          <p className="lead">This recovered local page does not confirm that Lake &amp; Pine serves this area. An operator must verify coverage before accepting a request.</p>
+          <h1>Planning a property request near {area.city}.</h1>
+          <p className="lead">This page provides regional context, not a blanket availability promise. An operator reviews the property type, scope, travel, crew time, and preferred window before confirming service.</p>
           <div className="hero-actions">
             <Link className="btn btn-primary" href="/book">
-              Preview request planning
+              Check a property
             </Link>
-            <Link className="btn btn-soft" href="/#quote">
-              Get instant estimate
+            <Link className="btn btn-soft" href="/pricing">
+              How proposals work
             </Link>
           </div>
         </div>
@@ -48,9 +49,9 @@ export default async function AreaPage({ params }: Props) {
       <section className="section" style={{ paddingTop: 20 }}>
         <div className="container map-section">
           <div className="card" style={{ padding: 28 }}>
-            <span className="eyebrow">Local planning context</span>
+            <span className="eyebrow">Regional context</span>
             <h2 className="section-title" style={{ fontSize: 44 }}>
-              Neighborhood references from the recovered prototype.
+              Nearby place names help start a route review.
             </h2>
             <div className="tag-row" style={{ margin: "16px 0 22px" }}>
               {area.neighborhoods.map((n) => (
@@ -59,7 +60,7 @@ export default async function AreaPage({ params }: Props) {
                 </span>
               ))}
             </div>
-            <p className="copy">Coverage, credentials, cleaner screening, and follow-up policy all require founder confirmation before they are published as service claims.</p>
+            <p className="copy">A listed place does not confirm coverage. Exact availability follows a property and schedule review, and secure access details should be shared only after an operator follows up.</p>
           </div>
           <AreaMap areas={allAreas} highlight={area.city} />
         </div>
@@ -68,16 +69,16 @@ export default async function AreaPage({ params }: Props) {
       <section className="section">
         <div className="container final-cta card">
           <div>
-            <span className="eyebrow">Planning only</span>
-            <h2 className="section-title">Build the request. Confirm the area later.</h2>
-            <p className="copy">Public intake is disabled by default, and this page makes no availability promise.</p>
+            <span className="eyebrow">Confirm before scheduling</span>
+            <h2 className="section-title">Start with the property, scope, and two timing options.</h2>
+            <p className="copy">The request can be previewed without payment. An address and preferred window are not treated as a confirmed appointment.</p>
           </div>
           <div className="hero-actions">
             <Link className="btn btn-primary" href="/book">
-              Preview the planning flow
+              Request route review
             </Link>
             <Link className="btn btn-ghost" href="/areas">
-              All area previews
+              Area planning
             </Link>
           </div>
         </div>
