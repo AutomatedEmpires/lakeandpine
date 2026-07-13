@@ -8,6 +8,7 @@ import { Nav } from "@/components/Nav";
 import { StickyCta } from "@/components/StickyCta";
 import { Toast } from "@/components/Toast";
 import { APP_URL, authEnabled, BUSINESS_EMAIL, BUSINESS_PHONE, BUSINESS_PHONE_TEL } from "@/lib/env";
+import { serializeJsonLd } from "@/lib/json-ld";
 
 import "./globals.css";
 
@@ -79,7 +80,7 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeInit }} />
         <script
           type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(localBusinessJsonLd) }}
+          dangerouslySetInnerHTML={{ __html: serializeJsonLd(localBusinessJsonLd) }}
         />
         <div className="grain" />
         <div className="aurora" />

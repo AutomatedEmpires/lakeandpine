@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import { AreaMap } from "@/components/AreaMap";
 import { FaqList } from "@/components/FaqList";
 import { getServiceArea, getServiceAreas } from "@/lib/data";
+import { serializeJsonLd } from "@/lib/json-ld";
 
 export const dynamic = "force-dynamic";
 
@@ -37,7 +38,7 @@ export default async function AreaPage({ params }: Props) {
     <div className="route-page">
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(serviceJsonLd) }}
+        dangerouslySetInnerHTML={{ __html: serializeJsonLd(serviceJsonLd) }}
       />
       <div className="container page-hero">
         <div className="page-panel">
