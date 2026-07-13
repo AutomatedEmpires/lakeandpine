@@ -6,6 +6,7 @@ import { createBooking, createQuote, getCustomerByEmail, upsertCustomerFromClerk
 import { sendBookingConfirmation, sendOpsNotification } from "@/lib/email";
 import { authEnabled } from "@/lib/env";
 import { calculateEstimate, ESTIMATE_SERVICES } from "@/lib/pricing";
+import { getRuntimeSmokeDisposition } from "@/lib/runtime-smoke-request";
 import { isBookableDate, isBookableWindow } from "@/lib/scheduling";
 
 const bookingSchema = z.object({
@@ -32,6 +33,11 @@ const bookingSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const smokeDisposition = getRuntimeSmokeDisposition(request.headers);
+  if (smokeDisposition === "rejected") {
+    return NextResponse.json({ error: "Invalid runtime smoke authorization" }, { status: 403 });
+  }
+
   const body = await request.json().catch(() => null);
   const parsed = bookingSchema.safeParse(body);
   if (!parsed.success) {
@@ -108,25 +114,31 @@ export async function POST(request: Request) {
 
   const serviceTitle =
     ESTIMATE_SERVICES.find((s) => s.id === input.serviceId)?.label ?? input.serviceId;
-  await sendBookingConfirmation({
-    to: input.contact.email,
-    name: input.contact.name,
-    serviceTitle,
-    date: input.scheduledDate,
-    window: input.scheduledWindow,
-    estimateDollars: estimate.dollars,
-    bookingId: booking.id,
-  });
-  await sendOpsNotification({
-    kind: "booking",
-    summary: `${serviceTitle} · ${input.scheduledDate} ${input.scheduledWindow} · $${estimate.dollars}+`,
-    detailLines: [
-      `Customer: ${input.contact.name} (${input.contact.email}, ${input.contact.phone}, ${input.contact.zip})`,
-      `Frequency: ${input.frequency} · Add-ons: ${input.addonIds.join(", ") || "none"}`,
-      `Home: ${input.home.sizeBand} · ${input.home.bedrooms} bd · ${input.home.bathrooms} ba · pets ${input.home.pets} · ${input.home.condition}`,
-      `Booking: ${booking.id}`,
-    ],
-  });
+  await sendBookingConfirmation(
+    {
+      to: input.contact.email,
+      name: input.contact.name,
+      serviceTitle,
+      date: input.scheduledDate,
+      window: input.scheduledWindow,
+      estimateDollars: estimate.dollars,
+      bookingId: booking.id,
+    },
+    { suppress: smokeDisposition === "authorized" },
+  );
+  await sendOpsNotification(
+    {
+      kind: "booking",
+      summary: `${serviceTitle} · ${input.scheduledDate} ${input.scheduledWindow} · $${estimate.dollars}+`,
+      detailLines: [
+        `Customer: ${input.contact.name} (${input.contact.email}, ${input.contact.phone}, ${input.contact.zip})`,
+        `Frequency: ${input.frequency} · Add-ons: ${input.addonIds.join(", ") || "none"}`,
+        `Home: ${input.home.sizeBand} · ${input.home.bedrooms} bd · ${input.home.bathrooms} ba · pets ${input.home.pets} · ${input.home.condition}`,
+        `Booking: ${booking.id}`,
+      ],
+    },
+    { suppress: smokeDisposition === "authorized" },
+  );
 
   return NextResponse.json({ id: booking.id, estimate: estimate.dollars });
 }

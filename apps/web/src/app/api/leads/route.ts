@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { createLead } from "@/lib/data";
 import { sendOpsNotification } from "@/lib/email";
+import { getRuntimeSmokeDisposition } from "@/lib/runtime-smoke-request";
 
 const leadSchema = z.object({
   fullName: z.string().min(1).max(200),
@@ -14,20 +15,28 @@ const leadSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const smokeDisposition = getRuntimeSmokeDisposition(request.headers);
+  if (smokeDisposition === "rejected") {
+    return NextResponse.json({ error: "Invalid runtime smoke authorization" }, { status: 403 });
+  }
+
   const body = await request.json().catch(() => null);
   const parsed = leadSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid lead" }, { status: 400 });
   }
   const lead = await createLead(parsed.data);
-  await sendOpsNotification({
-    kind: "lead",
-    summary: `${parsed.data.fullName} · ${parsed.data.zip}`,
-    detailLines: [
-      `Service: ${parsed.data.serviceId ?? "unspecified"}`,
-      `Preferred date: ${parsed.data.preferredDate ?? "unspecified"}`,
-      `Lead: ${lead.id}`,
-    ],
-  });
+  await sendOpsNotification(
+    {
+      kind: "lead",
+      summary: `${parsed.data.fullName} · ${parsed.data.zip}`,
+      detailLines: [
+        `Service: ${parsed.data.serviceId ?? "unspecified"}`,
+        `Preferred date: ${parsed.data.preferredDate ?? "unspecified"}`,
+        `Lead: ${lead.id}`,
+      ],
+    },
+    { suppress: smokeDisposition === "authorized" },
+  );
   return NextResponse.json({ id: lead.id });
 }

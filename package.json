@@ -5,6 +5,11 @@
   "engines": {
     "node": "24.16.0"
   },
+  "pnpm": {
+    "overrides": {
+      "postcss": "8.5.16"
+    }
+  },
   "scripts": {
     "dev": "pnpm --dir apps/web dev",
     "build": "pnpm --dir apps/web build",
@@ -13,6 +18,7 @@
     "typecheck": "pnpm --dir apps/web typecheck",
     "ops:seed-content": "pnpm --dir apps/web ops:seed-content",
     "ops:seed-dev": "pnpm --dir apps/web ops:seed-dev",
-    "ops:purge-dev-seed": "pnpm --dir apps/web ops:purge-dev-seed"
+    "ops:purge-dev-seed": "pnpm --dir apps/web ops:purge-dev-seed",
+    "ops:smoke-runtime": "pnpm --dir apps/web ops:smoke-runtime"
   }
 }
