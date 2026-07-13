@@ -1,5 +1,6 @@
 export type EmailMessage = {
   from: string;
+  replyTo: string;
   to: string;
   subject: string;
   html: string;
@@ -35,6 +36,7 @@ export function createEmailService(config: {
   businessEmail: string;
   businessPhone?: string;
   from: string;
+  replyTo: string;
   formatLongDate(isoDate: string): string;
   createTransport(apiKey: string): EmailTransport;
   log?(message: string): void;
@@ -90,6 +92,7 @@ export function createEmailService(config: {
     await deliver(
       {
         from: config.from,
+        replyTo: config.replyTo,
         to: input.to,
         subject,
         html: `
@@ -129,6 +132,7 @@ export function createEmailService(config: {
     await deliver(
       {
         from: config.from,
+        replyTo: config.replyTo,
         to: config.businessEmail,
         subject,
         html: `<div style="font-family:ui-monospace,monospace;color:#061f1b"><h2>${escapeHtml(subject)}</h2><ul>${input.detailLines
