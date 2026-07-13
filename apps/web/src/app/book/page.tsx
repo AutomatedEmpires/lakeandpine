@@ -26,7 +26,7 @@ export default async function BookPage() {
             times are not confirmed until an operator reviews scope, route fit, and capacity.
           </p>
           <div className="honest-proof-row"><span>Private estates</span><span>Construction handoffs</span><span>Marine interiors</span><span>Select commercial</span></div>
-          <p className="scope-note">Rapid-turnover vacation-rental cleaning is not our focus. Keep door codes, payment details, and other unnecessary sensitive information out of this form.</p>
+          <p className="scope-note">Keep door codes, payment details, and other unnecessary sensitive information out of this form. Secure access planning happens only after fit is reviewed.</p>
         </div>
       </div>
       <section className="section" style={{ paddingTop: 20 }}>

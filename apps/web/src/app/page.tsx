@@ -85,9 +85,9 @@ export default function HomePage() {
               <h2 className="section-title">One standard: understand the property before promising the work.</h2>
             </div>
             <p className="copy">
-              Lake &amp; Pine is moving away from rapid vacation-rental turnovers. The focus is
-              premium residential care, construction handoffs, marine interiors, and select
-              professional spaces.
+              Lake &amp; Pine is built for premium residential care, construction handoffs,
+              marine interiors, and select professional spaces where planning, finish knowledge,
+              and accountable closeout materially improve the outcome.
             </p>
           </div>
           <div className="program-grid">

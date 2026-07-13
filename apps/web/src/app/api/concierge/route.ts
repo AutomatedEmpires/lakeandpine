@@ -52,7 +52,7 @@ export async function POST(request: Request) {
   }
   if (has("estate", "home", "residential", "house", "seasonal")) {
     return reply(
-      "Private Estate Care is for large primary and seasonal residences, arrival or departure preparation, detailed resets, and recurring care that benefits from a durable room-and-finish plan. Rapid-turnover vacation-rental cleaning is not Lake & Pine's focus.",
+      "Private Estate Care is for large primary and seasonal residences, arrival or departure preparation, detailed resets, and recurring care that benefits from a durable room-and-finish plan.",
     );
   }
   if (has("construction", "builder", "renovation", "dust", "handoff", "walkthrough")) {

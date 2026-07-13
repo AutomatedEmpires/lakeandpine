@@ -44,6 +44,10 @@ export function getIntakeReadinessIssues(): string[] {
   if ((optionalEnv("REQUEST_FINGERPRINT_SECRET")?.length ?? 0) < 32) {
     issues.push("request_protection_unconfigured");
   }
+  const bookingReferenceSecret = optionalEnv("BOOKING_REFERENCE_SECRET") || optionalEnv("REQUEST_FINGERPRINT_SECRET");
+  if ((bookingReferenceSecret?.length ?? 0) < 32) {
+    issues.push("booking_reference_protection_unconfigured");
+  }
   if (!optionalEnv("RESEND_API_KEY")) issues.push("email_transport_unconfigured");
   if (!optionalEnv("RESEND_FROM") && !optionalEnv("RESEND_FROM_EMAIL")) {
     issues.push("email_sender_unconfigured");

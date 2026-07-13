@@ -20,7 +20,7 @@ test("premium market content covers the four approved service programs", () => {
 test("public positioning avoids unsupported credentials and hard promises", () => {
   const copy = JSON.stringify({ MARKET_PROGRAMS, OPERATING_POLICIES, PRICING_FACTORS });
   assert.doesNotMatch(copy, /licensed|bonded|insured|background.checked|guaranteed|same.day/i);
-  assert.match(copy, /not our focus/i);
+  assert.match(copy, /continuity expectations/i);
   assert.match(copy, /no result is automatic before review/i);
 });
 

@@ -30,7 +30,7 @@ export const MARKET_PROGRAMS: MarketProgram[] = [
       "Closeout notes and issue follow-up",
     ],
     boundaries:
-      "Rapid-turnover vacation-rental cleaning is not our focus. An operator reviews the home, requested frequency, access, and specialty surfaces before confirming fit.",
+      "An operator reviews the home, requested frequency, access, specialty surfaces, and continuity expectations before confirming fit.",
   },
   {
     slug: "construction",

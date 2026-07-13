@@ -965,6 +965,52 @@ textarea { height: 116px !important; padding-top: 14px !important; resize: verti
 .availability-list strong, .availability-list span { display: block; }
 .availability-list span { margin-top: 4px; color: var(--muted); font-size: 12px; }
 .time-off-form { display: grid; gap: 10px; margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+.operations-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
+.operations-tabs a { min-height: 42px; display: inline-flex; align-items: center; padding: 0 14px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-weight: 850; font-size: 12px; }
+.operations-section { scroll-margin-top: 90px; }
+.operations-grid { display: grid; grid-template-columns: minmax(0,.75fr) minmax(0,1.25fr); gap: 18px; align-items: start; }
+.ops-list { display: grid; gap: 12px; }
+.ops-list > h3 { margin: 0 0 4px; }
+.ops-row { display: grid; gap: 13px; }
+.ops-row h3, .ops-row p { margin: 0; }
+.ops-row-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.ops-row-head small { display: block; margin-top: 5px; color: var(--muted); line-height: 1.4; }
+.ops-form { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; margin-top: 16px; }
+.ops-form .full, .ops-form > .btn { grid-column: 1 / -1; }
+.ops-form.compact { grid-template-columns: repeat(3,minmax(0,1fr)) auto; align-items: end; }
+.ops-form.compact > .btn { grid-column: auto; }
+.ops-form input, .ops-form select, .inline-ops-form input, .inline-ops-form select, .qualification-form select, .postal-list select { min-height: 44px; width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 0 11px; color: var(--ink); background: rgba(255,255,255,.52); }
+[data-theme="night"] .ops-form input, [data-theme="night"] .ops-form select, [data-theme="night"] .inline-ops-form input, [data-theme="night"] .inline-ops-form select, [data-theme="night"] .qualification-form select, [data-theme="night"] .postal-list select { background: rgba(255,255,255,.05); }
+.inline-ops-form { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: center; }
+.postal-list { display: grid; gap: 7px; }
+.postal-list form { display: grid; grid-template-columns: 80px minmax(0,1fr) auto; gap: 8px; align-items: center; }
+.postal-list span { font-weight: 900; }
+.timeoff-ops { margin-top: 18px; }
+.timeoff-ops > div { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+.timeoff-ops span { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; }
+.timeoff-ops form { display: flex; gap: 8px; }
+.qualification-list { margin-bottom: 20px; }
+.qualification-form { display: grid; grid-template-columns: minmax(0,1fr) 220px auto; gap: 10px; align-items: end; }
+.qualification-checks { display: flex; flex-wrap: wrap; gap: 8px; }
+.qualification-checks label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 800; }
+.schedule-console { display: grid; grid-template-columns: minmax(280px,.65fr) minmax(0,1.35fr); gap: 18px; align-items: start; }
+.schedule-list { display: grid; gap: 7px; margin-top: 14px; }
+.schedule-entry { padding: 12px; border: 1px solid var(--line); border-radius: 14px; }
+.schedule-entry > a { display: block; color: var(--ink); }
+.schedule-entry.selected { border-color: var(--pine); background: rgba(5,95,79,.08); }
+.schedule-list span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+.schedule-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.schedule-actions .btn { min-height: 36px; padding: 0 10px; font-size: 11px; }
+.crew-suggestion { margin-top: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 16px; }
+.crew-suggestion.eligible { border-color: rgba(5,95,79,.35); }
+.crew-suggestion.blocked { opacity: .72; }
+.crew-suggestion > div { display: flex; justify-content: space-between; gap: 12px; }
+.crew-suggestion p { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.outbox-summary { display: grid; gap: 7px; margin-top: 14px; }
+.outbox-summary > div { display: flex; justify-content: space-between; padding: 9px 0; border-top: 1px solid var(--line); }
+.outbox-queue { display: grid; gap: 8px; margin-top: 16px; }
+.outbox-queue form { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding-top: 10px; border-top: 1px solid var(--line); }
+.outbox-queue span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
 
 /* --- Responsive --- */
 @media (max-width: 1120px) {
@@ -986,6 +1032,7 @@ textarea { height: 116px !important; padding-top: 14px !important; resize: verti
   .workflow-grid { grid-template-columns: repeat(2,1fr); }
   .planning-story, .operator-hero, .operator-workbench { grid-template-columns: 1fr; }
   .crew-dashboard-grid { grid-template-columns: 1fr; }
+  .operations-grid, .schedule-console { grid-template-columns: 1fr; }
   .premium-promise, .pricing-method-grid, .not-for-grid, .service-program { grid-template-columns: 1fr; }
   .service-program-intro { position: static; }
   .audience-detail { grid-template-columns: 1fr 1fr; }
@@ -1059,6 +1106,11 @@ textarea { height: 116px !important; padding-top: 14px !important; resize: verti
   .follow-up-queue > div, .follow-up-queue > div > div { align-items: flex-start; flex-direction: column; }
   .privacy-preferences { right: 12px; bottom: 76px; width: calc(100vw - 24px); grid-template-columns: 1fr; }
   .privacy-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .ops-form, .ops-form.compact, .qualification-form { grid-template-columns: 1fr; }
+  .ops-form .full, .ops-form > .btn, .ops-form.compact > .btn { grid-column: auto; }
+  .inline-ops-form, .postal-list form { grid-template-columns: 1fr; }
+  .timeoff-ops > div { align-items: flex-start; flex-direction: column; }
+  .outbox-queue form { align-items: flex-start; flex-direction: column; }
 }
 @keyframes phoneFloatMobile {
   0%, 100% { transform: translateX(-50%) rotateY(-4deg) rotateX(3deg) translateY(0); }

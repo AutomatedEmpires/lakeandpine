@@ -5,7 +5,7 @@ import { sendOpsNotification } from "@/lib/email";
 import { getIntakeReadinessIssues, requestIntakeEnabled } from "@/lib/env";
 import { checkRequestRateLimit } from "@/lib/rate-limit";
 import { isHoneypotFilled, readJsonBody, RequestBodyError } from "@/lib/request-security";
-import { createServiceCase, SERVICE_CASE_TYPES } from "@/lib/service-cases";
+import { createServiceCase, recordServiceCaseNotificationDelivery, SERVICE_CASE_TYPES } from "@/lib/service-cases";
 
 const optionalDate = z.preprocess(
   (value) => (value === "" || value === null ? undefined : value),
@@ -80,7 +80,7 @@ export async function POST(request: Request) {
   try {
     const serviceCase = await createServiceCase(parsed.data);
     if (!serviceCase.duplicate) {
-      await sendOpsNotification(
+      const outcome = await sendOpsNotification(
         {
           kind: "service_case",
           summary: `${parsed.data.caseType} · ${serviceCase.reference}`,
@@ -93,6 +93,7 @@ export async function POST(request: Request) {
         },
         { suppress: false },
       );
+      await recordServiceCaseNotificationDelivery(serviceCase.id, outcome);
     }
     return NextResponse.json({ reference: serviceCase.reference });
   } catch {
@@ -102,4 +103,3 @@ export async function POST(request: Request) {
     );
   }
 }
-

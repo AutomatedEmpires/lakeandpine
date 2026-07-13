@@ -108,6 +108,22 @@ update faqs set answer = 'The service policy is being finalized. Any follow-up o
 update faqs set answer = 'The online flow creates a service request with property details, preferences, and preferred timing. An operator confirms scope, availability, and final pricing before an appointment is scheduled.'
   where question = 'Can I schedule online?';
 
+update service_areas set
+  seo_phrase = 'Premium property cleaning planning in ' || city,
+  headline = 'Reviewed Premium Property Care Planning in ' || city,
+  intro = city || ' is inside Lake & Pine''s planning corridor for private estate, completed construction, marine interior, and select commercial requests. Exact coverage depends on property scope, safe access, travel, qualified crew, and the requested window; a city listing is not a capacity promise.',
+  highlights = jsonb_build_array(
+    jsonb_build_object('title', 'Property + program fit', 'body', 'The operator reviews the property type, scale, condition, specialty finishes, access, and requested outcome.'),
+    jsonb_build_object('title', 'Qualified crew capacity', 'body', 'Skills, program experience, availability, time off, workload, duration, and travel buffers are checked before confirmation.'),
+    jsonb_build_object('title', 'Honest scheduling', 'body', 'Preferred dates remain preferences until scope, territory, and a feasible crew plan are confirmed.')
+  ),
+  faqs = jsonb_build_array(
+    jsonb_build_array('Is this a confirmed service area?', 'It is a planning area. Exact coverage and timing require property, route, and capacity review.'),
+    jsonb_build_array('Can I reserve a date here?', 'No. Submit a preferred date and alternate; an operator confirms a feasible window after review.'),
+    jsonb_build_array('What should I share first?', 'Share the program, general location, property scale, priorities, and timing. Do not send access codes or payment details in the public form.')
+  )
+where slug in ('coeur-dalene', 'spokane', 'post-falls', 'hayden', 'liberty-lake', 'spokane-valley', 'rathdrum');
+
 -- Premium operating model ----------------------------------------------------
 -- These are service categories, not availability, pricing, credential, or
 -- capacity claims. Each request still requires qualification and a proposal.
@@ -192,7 +208,7 @@ alter table bookings
 comment on column bookings.idempotency_key is
   'SHA-256 hex digest of the caller idempotency key; never store the original key.';
 comment on column bookings.public_reference_token_hash is
-  'SHA-256 hex digest of a guest self-service secret; the original token is returned once and never stored.';
+  'SHA-256 hex digest of a guest self-service reference derived by the server from the booking ID; the reference is never stored.';
 comment on column bookings.consent_snapshot is
   'Exact application-supplied consent labels and policy references shown at intake; no legal version is fabricated by the database.';
 
@@ -314,6 +330,7 @@ create table cleaner_time_off (
   private_note text,
   reviewed_by_label text,
   reviewed_at timestamptz,
+  is_dev_seed boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   check (end_at > start_at)
@@ -405,6 +422,7 @@ create table service_case_events (
   to_status text,
   actor_label text not null default 'System',
   event_data jsonb not null default '{}',
+  is_dev_seed boolean not null default false,
   created_at timestamptz not null default now()
 );
 
@@ -473,6 +491,7 @@ create table notification_outbox (
   locked_at timestamptz,
   sent_at timestamptz,
   last_error_code text,
+  is_dev_seed boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   check (booking_id is not null or customer_id is not null or service_case_id is not null)
@@ -524,6 +543,7 @@ create table operations_state_events (
   to_state text,
   actor_role text not null default current_user,
   event_data jsonb not null default '{}',
+  is_dev_seed boolean not null default false,
   created_at timestamptz not null default now()
 );
 
@@ -591,6 +611,8 @@ declare
   booking_qualification text;
   booking_vertical text;
   assigned_cleaner record;
+  accepted_count integer;
+  accepted_skills text[];
 begin
   select qualification_status, service_vertical into booking_qualification, booking_vertical
     from bookings
@@ -604,6 +626,21 @@ begin
   if new.status in ('confirmed', 'en_route', 'in_progress', 'quality_review', 'completed') then
     if booking_qualification is distinct from 'approved' then
       raise exception 'Booking % must be qualification-approved before schedule confirmation', new.booking_id
+        using errcode = '23514';
+    end if;
+    select count(distinct a.cleaner_id)::integer,
+           coalesce(array_agg(distinct skill) filter (where skill is not null), '{}')
+      into accepted_count, accepted_skills
+    from job_assignments a
+    join cleaners c on c.id = a.cleaner_id
+    left join lateral unnest(c.skills) skill on true
+    where a.job_schedule_id = new.id and a.status in ('accepted', 'confirmed');
+    if accepted_count < new.required_crew_size then
+      raise exception 'Schedule % needs % accepted cleaners before confirmation; found %',
+        new.id, new.required_crew_size, accepted_count using errcode = '23514';
+    end if;
+    if not new.required_skills <@ accepted_skills then
+      raise exception 'Accepted crew for schedule % does not cover every required skill', new.id
         using errcode = '23514';
     end if;
   end if;
@@ -649,6 +686,26 @@ $$;
 create trigger job_schedules_readiness_guard
 before insert or update on job_schedules
 for each row execute function validate_job_schedule_readiness();
+
+create function validate_premium_booking_confirmation() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  if new.service_vertical is not null
+     and new.status in ('confirmed', 'scheduled', 'in_progress', 'completed', 'follow_up')
+     and new.qualification_status is distinct from 'approved' then
+    raise exception 'Premium booking % must be qualification-approved before confirmation', new.id
+      using errcode = '23514';
+  end if;
+  return new;
+end
+$$;
+
+create trigger premium_booking_confirmation_guard
+before insert or update of status, qualification_status on bookings
+for each row execute function validate_premium_booking_confirmation();
 
 create function validate_job_assignment_capacity() returns trigger
 language plpgsql
@@ -720,14 +777,15 @@ as $$
 begin
   if tg_op = 'INSERT' then
     insert into service_case_events
-      (service_case_id, event_type, from_status, to_status, actor_label, event_data)
+      (service_case_id, event_type, from_status, to_status, actor_label, event_data, is_dev_seed)
     values
-      (new.id, 'case_submitted', null, new.status, current_user, jsonb_build_object('caseType', new.case_type));
+      (new.id, 'case_submitted', null, new.status, current_user,
+       jsonb_build_object('caseType', new.case_type), new.is_dev_seed);
   elsif old.status is distinct from new.status then
     insert into service_case_events
-      (service_case_id, event_type, from_status, to_status, actor_label)
+      (service_case_id, event_type, from_status, to_status, actor_label, is_dev_seed)
     values
-      (new.id, 'status_changed', old.status, new.status, current_user);
+      (new.id, 'status_changed', old.status, new.status, current_user, new.is_dev_seed);
   end if;
   return new;
 end
@@ -764,9 +822,10 @@ begin
   end;
 
   insert into operations_state_events
-    (entity_type, entity_id, booking_id, service_case_id, field_name, from_state, to_state)
+    (entity_type, entity_id, booking_id, service_case_id, field_name, from_state, to_state, is_dev_seed)
   values
-    (tg_table_name, new.id, booking_ref, case_ref, tg_argv[0], old_state, new_state);
+    (tg_table_name, new.id, booking_ref, case_ref, tg_argv[0], old_state, new_state,
+     coalesce((to_jsonb(new) ->> 'is_dev_seed')::boolean, false));
   return new;
 end
 $$;
@@ -805,6 +864,9 @@ security invoker
 set search_path = public, pg_temp
 as $$
 begin
+  if coalesce((to_jsonb(old) ->> 'is_dev_seed')::boolean, false) then
+    return old;
+  end if;
   raise exception '% is append-only', tg_table_name using errcode = '55000';
 end
 $$;

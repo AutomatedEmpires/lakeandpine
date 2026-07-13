@@ -97,6 +97,7 @@ export default async function OperatorPage({ searchParams }: { searchParams: Pro
             <span className="eyebrow">{identity.state === "preview" ? "Demo operations · seeded records only" : "Private operations"}</span>
             <h1>Service desk</h1>
             <p className="lead">Review scope, move work through the pipeline, run the checklist, and stage human follow-up without sending messages automatically.</p>
+            <Link className="btn btn-soft" href="/operator/operations">Open operations control</Link>
           </div>
           <div className="operator-summary card">
             <span>Open work</span><strong>{bookings.length}</strong>

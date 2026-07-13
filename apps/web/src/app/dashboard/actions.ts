@@ -3,8 +3,10 @@
 import { revalidatePath } from "next/cache";
 
 import { resolveDashboardIdentity } from "@/lib/auth";
-import { addSupportMessage, requestReschedule, saveHomeNotes } from "@/lib/data";
+import { addSupportMessage, saveHomeNotes } from "@/lib/data";
+import { sendOpsNotification } from "@/lib/email";
 import { requestIntakeEnabled } from "@/lib/env";
+import { createCustomerRescheduleCase, recordServiceCaseNotificationDelivery } from "@/lib/service-cases";
 
 async function requireCustomer() {
   if (!requestIntakeEnabled) throw new Error("Customer-data intake is disabled");
@@ -36,15 +38,25 @@ export async function rescheduleAction(formData: FormData) {
   const customer = await requireCustomer();
   const bookingId = String(formData.get("bookingId") ?? "");
   if (!bookingId) return;
-  await requestReschedule(
-    bookingId,
-    customer.id,
-    "Customer requested a reschedule from the dashboard.",
-  );
+  const serviceCase = await createCustomerRescheduleCase(customer.id, bookingId);
+  if (!serviceCase.duplicate) {
+    const outcome = await sendOpsNotification(
+      {
+        kind: "service_case",
+        summary: `authenticated reschedule · ${serviceCase.public_reference}`,
+        detailLines: [
+          `Reference: ${serviceCase.public_reference}`,
+          "Open operations control to review the requested schedule change.",
+        ],
+      },
+      { suppress: false },
+    );
+    await recordServiceCaseNotificationDelivery(serviceCase.id, outcome);
+  }
   await addSupportMessage(
     customer.id,
     "concierge",
-    "Got it — your reschedule request is in. We'll text you new window options shortly.",
+    `Your reschedule request ${serviceCase.public_reference} is in the operator queue. The current visit remains unchanged until a new window is confirmed.`,
   );
   revalidatePath("/dashboard");
 }

@@ -6,6 +6,7 @@ import { connect } from "./_db.mjs";
 const sql = connect();
 const EMAIL = "dev-preview@lakeandpinecleaning.com";
 const OPERATOR_EMAIL = "operator-preview@lakeandpinecleaning.com";
+const CLEANER_EMAIL = "cleaner-preview@lakeandpinecleaning.com";
 
 // customers has no BEFORE INSERT triggers, but keep the sibling-venture rule
 // anyway: select-then-insert instead of relying on ON CONFLICT.
@@ -191,5 +192,103 @@ if (!intakeRequest) {
     values (${intakeRequest.id}, 'Demo note: verify cabinet buildup and whether shower glass needs hard-water treatment.', true)`;
 }
 
-console.log(`dev-seed ready: customer ${customer.id} (${EMAIL}); operator ${operator.id} (${OPERATOR_EMAIL})`);
+// Premium operations demo: one capacity-backed territory, one verified cleaner,
+// one qualification-approved estate request, a tentative job, an application,
+// and an open service case/refund review. No provider action is performed.
+let [territory] = await sql`select id from service_territories where code = 'dev_cda_core'`;
+if (!territory) {
+  [territory] = await sql`insert into service_territories
+    (code, name, status, travel_buffer_minutes, is_dev_seed)
+    values ('dev_cda_core', 'Demo Coeur d''Alene Core', 'draft', 30, true) returning id`;
+  await sql`insert into territory_postal_codes (territory_id, postal_code, status, evidence_note)
+    values (${territory.id}, '83814', 'active', 'Synthetic preview coverage only')`;
+}
+
+let [cleaner] = await sql`select id from cleaners where email = ${CLEANER_EMAIL}`;
+if (!cleaner) {
+  [cleaner] = await sql`insert into cleaners
+    (full_name, email, status, screening_status, screening_verified_at,
+     home_territory_id, skills, vertical_experience, is_dev_seed)
+    values ('Cedar Crew Preview', ${CLEANER_EMAIL}, 'active', 'verified', now(),
+      ${territory.id}, ${["estate-care", "finish-awareness", "quality-review"]},
+      ${["estate"]}, true) returning id`;
+  const scheduleDay = await sql`select extract(dow from current_date + 5)::int as day`;
+  await sql`insert into cleaner_availability_rules
+    (cleaner_id, territory_id, day_of_week, start_time, end_time, status)
+    values (${cleaner.id}, ${territory.id}, ${scheduleDay[0].day}, '08:00', '17:30', 'active')`;
+}
+await sql`update service_territories set status = 'active' where id = ${territory.id}`;
+
+if ((await sql`select 1 from cleaner_applications where public_reference = 'TEAM-DEMO-001'`).length === 0) {
+  await sql`insert into cleaner_applications
+    (public_reference, full_name, email, home_base, transportation_confirmed,
+     service_interests, territory_interests, availability_summary, experience_summary,
+     status, consent_snapshot, consented_at, is_dev_seed)
+    values ('TEAM-DEMO-001', 'Applicant Preview', 'applicant-preview@example.invalid',
+      'Post Falls', true, ${["estate", "construction"]}, ${["Coeur d'Alene"]},
+      'Weekdays and selected weekends', 'Synthetic premium property experience summary.',
+      'reviewing', ${sql.json({ privacy: true, version: "dev-seed" })}, now(), true)`;
+}
+
+let [premiumBooking] = await sql`select id from bookings
+  where customer_id = ${customer.id} and service_vertical = 'estate' and is_dev_seed`;
+if (!premiumBooking) {
+  [premiumBooking] = await sql`insert into bookings
+    (customer_id, home_id, service_id, service_vertical, frequency, scheduled_date,
+     scheduled_window, status, contact, home_details, property_profile, room_plan,
+     cleaning_preferences, special_instructions, planning_direction, planning_score,
+     qualification_status, estimated_duration_minutes, required_crew_size, required_skills,
+     qualification_requirements, request_source, consent_snapshot, consented_at,
+     consent_version, consent_notice_date, is_dev_seed)
+    values (${customer.id}, ${home.id}, 'estate', 'estate', 'monthly', current_date + 5,
+      'Morning', 'requested',
+      ${sql.json({ name: "Devon Preview", phone: "", email: EMAIL, zip: "83814" })},
+      ${sql.json({ requestedCadence: "monthly", alternateDates: [] })},
+      ${sql.json({ program: "estate", context: "seasonal_home", sizeBand: "large", condition: "maintained", zoneCount: 12 })},
+      ${sql.json([{ id: "property_scope", label: "Approved property scope", selected: true, note: "Seasonal arrival reset" }])},
+      ${["finish-sensitive scope"]}, 'Synthetic natural-stone and millwork care note.',
+      'operator call · 360 labor minutes · 1 suggested crew', 58, 'approved', 360, 1,
+      ${["estate-care", "finish-awareness"]},
+      ${sql.json({ siteReady: true, utilitiesReady: true, finishRestrictionsAcknowledged: true, deadlineCritical: false })},
+      'import', ${sql.json({ privacy: true, requestTerms: true })}, now(), 'dev-seed',
+      current_date, true) returning id`;
+  await sql`insert into booking_events (booking_id, type, data)
+    values (${premiumBooking.id}, 'requested', ${sql.json({ via: "dev-seed-premium" })})`;
+  await sql`insert into checklist_items (booking_id, room_label, label, sort, is_dev_seed) values
+    (${premiumBooking.id}, null, 'Confirm scope, access, and finish plan', 0, true),
+    (${premiumBooking.id}, null, 'Complete approved estate-care scope', 1, true),
+    (${premiumBooking.id}, null, 'Operator quality review', 2, true)`;
+}
+
+let [demoSchedule] = await sql`select id from job_schedules where booking_id = ${premiumBooking.id}`;
+if (!demoSchedule) {
+  [demoSchedule] = await sql`insert into job_schedules
+    (booking_id, territory_id, service_vertical, start_at, end_at, status,
+     required_crew_size, required_skills, labor_minutes, travel_buffer_minutes, is_dev_seed)
+    values (${premiumBooking.id}, ${territory.id}, 'estate',
+      ((current_date + 5) + time '09:00') at time zone 'America/Los_Angeles',
+      ((current_date + 5) + time '15:00') at time zone 'America/Los_Angeles',
+      'tentative', 1, ${["estate-care", "finish-awareness"]}, 360, 30, true) returning id`;
+}
+
+let [demoCase] = await sql`select id from service_cases where public_reference = 'LP-CASE-DEMO-001'`;
+if (!demoCase) {
+  [demoCase] = await sql`insert into service_cases
+    (public_reference, case_type, booking_id, customer_id, contact, details, status,
+     priority, consent_snapshot, consented_at, is_dev_seed)
+    values ('LP-CASE-DEMO-001', 'complaint', ${premiumBooking.id}, ${customer.id},
+      ${sql.json({ name: "Devon Preview", email: EMAIL })},
+      'Synthetic preview: entry stone was not closed out to the agreed finish standard.',
+      'triaged', 'high', ${sql.json({ privacy: true, version: "dev-seed" })}, now(), true)
+    returning id`;
+}
+if ((await sql`select 1 from refund_records where service_case_id = ${demoCase.id}`).length === 0) {
+  await sql`insert into refund_records
+    (service_case_id, booking_id, amount_cents, reason_code, status, provider,
+     requested_by_label, is_dev_seed)
+    values (${demoCase.id}, ${premiumBooking.id}, 12500, 'scope_exception_review',
+      'requested', 'manual', 'Demo operator', true)`;
+}
+
+console.log(`dev-seed ready: customer ${customer.id}; operator ${operator.id}; cleaner ${cleaner.id}`);
 await sql.end();

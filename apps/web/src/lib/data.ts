@@ -1,7 +1,12 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import type postgres from "postgres";
 
+import {
+  deriveBookingReference,
+  hashBookingReference,
+} from "./booking-reference";
 import { jsonb, sql } from "./db";
 import type { JobStatus, PropertyProfile, RoomPlan } from "./service-planning";
 
@@ -50,7 +55,12 @@ export type ServiceArea = {
   sort: number;
 };
 
-export type Faq = { id: number; question: string; answer: string; sort: number };
+export type Faq = {
+  id: number;
+  question: string;
+  answer: string;
+  sort: number;
+};
 
 export type Review = {
   id: string;
@@ -86,7 +96,9 @@ export async function getServiceAreas(): Promise<ServiceArea[]> {
     from service_areas where active order by sort`;
 }
 
-export async function getServiceArea(slug: string): Promise<ServiceArea | null> {
+export async function getServiceArea(
+  slug: string,
+): Promise<ServiceArea | null> {
   const rows = await sql<ServiceArea[]>`
     select slug, city, state, seo_phrase, headline, intro, neighborhoods,
            highlights, faqs, lat, lng, sort
@@ -95,7 +107,9 @@ export async function getServiceArea(slug: string): Promise<ServiceArea | null> 
 }
 
 export async function getFaqs(): Promise<Faq[]> {
-  return sql<Faq[]>`select id, question, answer, sort from faqs where active order by sort`;
+  return sql<
+    Faq[]
+  >`select id, question, answer, sort from faqs where active order by sort`;
 }
 
 export async function getReviews(limit?: number): Promise<Review[]> {
@@ -106,87 +120,74 @@ export async function getReviews(limit?: number): Promise<Review[]> {
     ${limit ? sql`limit ${limit}` : sql``}`;
 }
 
-// --- Conversion writes -------------------------------------------------------
-
-export async function createQuote(input: {
-  serviceId: string;
-  inputs: Record<string, unknown>;
-  estimateCents: number;
-  email?: string | null;
-  source?: string;
-}): Promise<{ id: string }> {
-  const rows = await sql<{ id: string }[]>`
-    insert into quotes (service_id, inputs, estimate_cents, email, source)
-    values (${input.serviceId}, ${jsonb(input.inputs)}, ${input.estimateCents},
-            ${input.email ?? null}, ${input.source ?? "estimate_studio"})
-    returning id`;
-  return rows[0];
-}
-
-export async function createLead(input: {
-  fullName: string;
-  zip: string;
-  serviceId?: string | null;
-  preferredDate?: string | null;
-  email?: string | null;
-  phone?: string | null;
-}): Promise<{ id: string }> {
-  const rows = await sql<{ id: string }[]>`
-    insert into leads (full_name, zip, service_id, preferred_date, email, phone)
-    values (${input.fullName}, ${input.zip}, ${input.serviceId ?? null},
-            ${input.preferredDate ?? null}, ${input.email ?? null}, ${input.phone ?? null})
-    returning id`;
-  return rows[0];
-}
-
 export async function createBooking(input: {
   serviceId: string;
-  addonIds: string[];
   frequency: string;
   scheduledDate: string;
   scheduledWindow: string;
-  estimateCents: number;
-  quoteId?: string | null;
   customerId?: string | null;
   contact: { name: string; phone: string; email: string; zip: string };
   homeDetails: Record<string, unknown>;
   accessNotes?: string | null;
-  propertyProfile: PropertyProfile;
+  propertyProfile: Record<string, unknown>;
   roomPlan: RoomPlan[];
   cleaningPreferences: string[];
-  petNotes?: string | null;
   specialInstructions?: string | null;
   planningDirection: string;
   planningScore: number;
+  estimatedDurationMinutes: number;
+  requiredCrewSize: number;
+  requiredSkills: string[];
+  qualificationStatus: "requested" | "walkthrough_needed";
+  qualificationRequirements: Record<string, unknown>;
+  requestSource: "web_booking" | "runtime_smoke";
+  isDevSeed: boolean;
+  idempotencyKeyHash: string;
+  consentSnapshot: Record<string, unknown>;
+  consentVersion: string;
+  consentNoticeDate: string;
   checklist: { roomLabel: string | null; label: string }[];
-}): Promise<{ id: string }> {
-  const serviceVertical = ["estate", "construction", "marine", "commercial"].includes(input.serviceId)
-    ? input.serviceId
-    : null;
+}): Promise<{ id: string; duplicate: boolean }> {
+  const bookingId = randomUUID();
+  const publicReferenceHash = hashBookingReference(
+    deriveBookingReference(bookingId),
+  );
   return sql.begin(async (tx) => {
     const txJson = (value: unknown) => tx.json(value as postgres.JSONValue);
     const rows = await tx<{ id: string }[]>`
       insert into bookings
-        (service_id, service_vertical, addon_ids, frequency, scheduled_date, scheduled_window,
-         estimate_cents, quote_id, customer_id, contact, home_details, access_notes,
-         property_profile, room_plan, cleaning_preferences, pet_notes,
-         special_instructions, planning_direction, planning_score)
+        (id, service_id, service_vertical, frequency, scheduled_date, scheduled_window,
+         customer_id, contact, home_details, access_notes, property_profile, room_plan,
+         cleaning_preferences, special_instructions, planning_direction, planning_score,
+         qualification_status, estimated_duration_minutes, required_crew_size, required_skills,
+         qualification_requirements, request_source, idempotency_key,
+         public_reference_token_hash, consent_snapshot, consented_at, consent_version,
+         consent_notice_date, is_dev_seed)
       values
-        (${input.serviceId}, ${serviceVertical}, ${input.addonIds}, ${input.frequency}, ${input.scheduledDate},
-         ${input.scheduledWindow}, ${input.estimateCents}, ${input.quoteId ?? null},
-         ${input.customerId ?? null}, ${txJson(input.contact)},
-         ${txJson(input.homeDetails)}, ${input.accessNotes ?? null},
-         ${txJson(input.propertyProfile)}, ${txJson(input.roomPlan)},
-         ${input.cleaningPreferences}, ${input.petNotes ?? null},
-         ${input.specialInstructions ?? null}, ${input.planningDirection},
-         ${input.planningScore})
+        (${bookingId}, ${input.serviceId}, ${input.serviceId}, ${input.frequency}, ${input.scheduledDate},
+         ${input.scheduledWindow}, ${input.customerId ?? null}, ${txJson(input.contact)},
+         ${txJson(input.homeDetails)}, ${input.accessNotes ?? null}, ${txJson(input.propertyProfile)},
+         ${txJson(input.roomPlan)}, ${input.cleaningPreferences}, ${input.specialInstructions ?? null},
+         ${input.planningDirection}, ${input.planningScore}, ${input.qualificationStatus},
+         ${input.estimatedDurationMinutes}, ${input.requiredCrewSize}, ${input.requiredSkills},
+         ${txJson(input.qualificationRequirements)}, ${input.requestSource}, ${input.idempotencyKeyHash},
+         ${publicReferenceHash}, ${txJson(input.consentSnapshot)}, now(), ${input.consentVersion},
+         ${input.consentNoticeDate}, ${input.isDevSeed})
+      on conflict (idempotency_key) do nothing
       returning id`;
+    if (!rows[0]) {
+      const existing = await tx<{ id: string }[]>`
+        select id from bookings where idempotency_key = ${input.idempotencyKeyHash} limit 1`;
+      if (!existing[0]) throw new Error("Idempotent booking lookup failed");
+      return { id: existing[0].id, duplicate: true };
+    }
     const booking = rows[0];
     await tx`
       insert into booking_events (booking_id, type, data)
       values (${booking.id}, 'requested', ${txJson({
-        via: "web_booking_flow",
+        via: "premium_request_flow",
         planningScore: input.planningScore,
+        qualificationStatus: input.qualificationStatus,
       })})`;
 
     if (input.checklist.length) {
@@ -205,17 +206,40 @@ export async function createBooking(input: {
     await tx`
       insert into notification_outbox
         (booking_id, customer_id, notification_type, channel, recipient_kind,
-         recipient_address, template_key, template_data, deduplication_key)
+         recipient_address, template_key, template_data, deduplication_key, is_dev_seed)
       values
         (${booking.id}, ${input.customerId ?? null}, 'customer_confirmation', 'email',
          'customer', ${input.contact.email}, 'booking-request-received',
-         ${txJson({ bookingId: booking.id })}, ${`booking:${booking.id}:customer_confirmation`}),
+         ${txJson({ bookingId: booking.id })}, ${`booking:${booking.id}:customer_confirmation`}, ${input.isDevSeed}),
         (${booking.id}, ${input.customerId ?? null}, 'ops_notification', 'email',
          'ops', null, 'ops-booking-request', ${txJson({ bookingId: booking.id })},
-         ${`booking:${booking.id}:ops_notification`})`;
+         ${`booking:${booking.id}:ops_notification`}, ${input.isDevSeed})`;
 
-    return booking;
+    return { id: booking.id, duplicate: false };
   });
+}
+
+export async function recordBookingNotificationDelivery(
+  bookingId: string,
+  notificationType: "customer_confirmation" | "ops_notification",
+  outcome: "sent" | "suppressed" | "skipped" | "failed",
+) {
+  const status =
+    outcome === "sent"
+      ? "sent"
+      : outcome === "suppressed"
+        ? "canceled"
+        : outcome === "failed"
+          ? "retry"
+          : "failed";
+  await sql`
+    update notification_outbox
+    set status = ${status},
+        attempt_count = attempt_count + 1,
+        sent_at = case when ${status} = 'sent' then now() else sent_at end,
+        next_attempt_at = case when ${status} = 'retry' then now() + interval '15 minutes' else next_attempt_at end,
+        last_error_code = case when ${status} = 'sent' then null else ${outcome} end
+    where booking_id = ${bookingId} and notification_type = ${notificationType}`;
 }
 
 // --- Customer / dashboard ----------------------------------------------------
@@ -230,14 +254,18 @@ export type Customer = {
   referral_credit_cents: number;
 };
 
-export async function getCustomerByClerkId(clerkUserId: string): Promise<Customer | null> {
+export async function getCustomerByClerkId(
+  clerkUserId: string,
+): Promise<Customer | null> {
   const rows = await sql<Customer[]>`
     select id, clerk_user_id, email, full_name, phone, role, referral_credit_cents
     from customers where clerk_user_id = ${clerkUserId}`;
   return rows[0] ?? null;
 }
 
-export async function getCustomerByEmail(email: string): Promise<Customer | null> {
+export async function getCustomerByEmail(
+  email: string,
+): Promise<Customer | null> {
   const rows = await sql<Customer[]>`
     select id, clerk_user_id, email, full_name, phone, role, referral_credit_cents
     from customers where email = ${email}`;
@@ -276,7 +304,9 @@ export type BookingRow = {
   created_at: string;
 };
 
-export async function getCustomerBookings(customerId: string): Promise<BookingRow[]> {
+export async function getCustomerBookings(
+  customerId: string,
+): Promise<BookingRow[]> {
   return sql<BookingRow[]>`
     select b.id, b.service_id, s.title as service_title, b.addon_ids, b.frequency,
            to_char(b.scheduled_date, 'YYYY-MM-DD') as scheduled_date,
@@ -286,7 +316,9 @@ export async function getCustomerBookings(customerId: string): Promise<BookingRo
     order by b.scheduled_date desc`;
 }
 
-export async function getNextBooking(customerId: string): Promise<BookingRow | null> {
+export async function getNextBooking(
+  customerId: string,
+): Promise<BookingRow | null> {
   const rows = await sql<BookingRow[]>`
     select b.id, b.service_id, s.title as service_title, b.addon_ids, b.frequency,
            to_char(b.scheduled_date, 'YYYY-MM-DD') as scheduled_date,
@@ -335,7 +367,9 @@ export type BillingRecord = {
   occurred_at: string;
 };
 
-export async function getBillingRecords(customerId: string): Promise<BillingRecord[]> {
+export async function getBillingRecords(
+  customerId: string,
+): Promise<BillingRecord[]> {
   return sql<BillingRecord[]>`
     select id, description, amount_cents, status, occurred_at::text
     from billing_records where customer_id = ${customerId}
@@ -349,7 +383,9 @@ export type SupportMessage = {
   created_at: string;
 };
 
-export async function getSupportThread(customerId: string): Promise<SupportMessage[]> {
+export async function getSupportThread(
+  customerId: string,
+): Promise<SupportMessage[]> {
   return sql<SupportMessage[]>`
     select id, sender, body, created_at::text
     from support_messages where customer_id = ${customerId}
@@ -364,22 +400,6 @@ export async function addSupportMessage(
   await sql`
     insert into support_messages (customer_id, sender, body)
     values (${customerId}, ${sender}, ${body})`;
-}
-
-export async function requestReschedule(
-  bookingId: string,
-  customerId: string,
-  note: string,
-): Promise<boolean> {
-  const rows = await sql<{ id: string }[]>`
-    select id from bookings
-    where id = ${bookingId} and customer_id = ${customerId}
-      and status in ('requested', 'confirmed')`;
-  if (!rows[0]) return false;
-  await sql`
-    insert into booking_events (booking_id, type, data)
-    values (${bookingId}, 'reschedule_requested', ${jsonb({ note })})`;
-  return true;
 }
 
 // --- Operator workspace -----------------------------------------------------
@@ -421,7 +441,9 @@ export type FollowUp = {
   scheduled_for: string | null;
 };
 
-export async function getOperatorBookings(devOnly: boolean): Promise<OperatorBooking[]> {
+export async function getOperatorBookings(
+  devOnly: boolean,
+): Promise<OperatorBooking[]> {
   return sql<OperatorBooking[]>`
     select b.id, b.service_id, s.title as service_title, b.addon_ids, b.frequency,
            to_char(b.scheduled_date, 'YYYY-MM-DD') as scheduled_date,

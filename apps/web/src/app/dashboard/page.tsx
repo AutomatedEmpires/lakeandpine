@@ -9,7 +9,6 @@ import {
   getSupportThread,
 } from "@/lib/data";
 import { authEnabled, requestIntakeEnabled } from "@/lib/env";
-import { formatDollars } from "@/lib/pricing";
 import { formatLongDate } from "@/lib/scheduling";
 
 import { rescheduleAction, saveNotesAction, supportMessageAction } from "./actions";
@@ -24,7 +23,7 @@ export const metadata: Metadata = {
 const TABS = [
   ["overview", "🏠 Overview"],
   ["bookings", "📅 Bookings"],
-  ["notes", "⚙️ Home notes"],
+  ["notes", "⚙️ Property notes"],
   ["support", "💬 Support"],
 ] as const;
 
@@ -64,11 +63,11 @@ export default async function DashboardPage({
               ) : (
                 <>
                   <Link className="btn btn-primary" href="/book">
-                    Book your first clean
+                    Request a consultation
                   </Link>
                   <p className="copy" style={{ alignSelf: "center" }}>
-                    Accounts activate at launch — book now and your dashboard will be ready
-                    with this email.
+                    A private workspace becomes useful after an operator has reviewed your first
+                    property request.
                   </p>
                 </>
               )}
@@ -90,8 +89,6 @@ export default async function DashboardPage({
     getSupportThread(customer.id),
   ]);
 
-  const recurring = bookings.find((b) => b.frequency !== "onetime");
-
   return (
     <div className="route-page">
       <div className="container page-hero">
@@ -101,7 +98,7 @@ export default async function DashboardPage({
           </span>
           <h1>Welcome back{customer.full_name ? `, ${customer.full_name.split(" ")[0]}` : ""}.</h1>
           <p className="lead">
-            See requested and confirmed work, keep home preferences organized, and understand
+            See requested and confirmed work, keep property care notes organized, and understand
             what happens next.
           </p>
         </div>
@@ -126,27 +123,27 @@ export default async function DashboardPage({
               <>
                 <div className="dash-grid">
                   <div className="dash-metric card">
-                    <span className="eyebrow">Next clean</span>
+                    <span className="eyebrow">Requested window</span>
                     <b>
                       {nextBooking
                         ? formatLongDate(nextBooking.scheduled_date).replace(/^[^,]+, /, "")
                         : "—"}
                     </b>
                     <p className="copy">
-                      {nextBooking ? `${nextBooking.scheduled_window} arrival` : "Nothing scheduled"}
+                      {nextBooking ? `${nextBooking.scheduled_window} preference` : "No active request"}
                     </p>
                   </div>
                   <div className="dash-metric card">
-                    <span className="eyebrow">Plan</span>
-                    <b>{recurring ? formatDollars(recurring.estimate_cents ?? 0) : "—"}</b>
+                    <span className="eyebrow">Program</span>
+                    <b>{nextBooking?.service_title ?? "—"}</b>
                     <p className="copy">
-                      {recurring ? `${recurring.frequency} reset` : "No recurring plan yet"}
+                      {nextBooking ? "Scope reviewed before confirmation" : "No program selected"}
                     </p>
                   </div>
                   <div className="dash-metric card">
-                    <span className="eyebrow">Credit</span>
-                    <b>{formatDollars(customer.referral_credit_cents)}</b>
-                    <p className="copy">Referral balance</p>
+                    <span className="eyebrow">Confirmation</span>
+                    <b>{nextBooking ? nextBooking.status : "—"}</b>
+                    <p className="copy">No time or price is implied by a request</p>
                   </div>
                   <div className="dash-metric card">
                     <span className="eyebrow">Requests</span>
@@ -159,10 +156,10 @@ export default async function DashboardPage({
                     <div className="timeline-row card">
                       <span className="timeline-dot" />
                       <div>
-                        <h3>Upcoming {nextBooking.service_title}</h3>
+                        <h3>{nextBooking.service_title} request</h3>
                         <p className="copy">
                           {formatLongDate(nextBooking.scheduled_date)} · {nextBooking.scheduled_window}{" "}
-                          arrival · <StatusBadge status={nextBooking.status} />
+                          preference · <StatusBadge status={nextBooking.status} />
                         </p>
                         {requestIntakeEnabled ? (
                           <form action={rescheduleAction} style={{ marginTop: 12 }}>
@@ -177,7 +174,7 @@ export default async function DashboardPage({
                     <div className="timeline-row card">
                       <span className="timeline-dot" />
                       <div>
-                        <h3>Cleaner notes</h3>
+                        <h3>Property care notes</h3>
                         <p className="copy">{home.cleaner_notes}</p>
                       </div>
                     </div>
@@ -186,10 +183,10 @@ export default async function DashboardPage({
                     <div className="timeline-row card">
                       <span className="timeline-dot" />
                       <div>
-                        <h3>No clean on the calendar</h3>
-                        <p className="copy">Build a room-by-room request for operator review.</p>
+                        <h3>No active property request</h3>
+                        <p className="copy">Build a scoped property brief for operator review.</p>
                         <Link className="btn btn-primary" style={{ marginTop: 12 }} href="/book">
-                          Book a clean
+                          Request consultation
                         </Link>
                       </div>
                     </div>
@@ -205,7 +202,7 @@ export default async function DashboardPage({
                     <span className="timeline-dot" />
                     <div>
                       <h3>No bookings yet</h3>
-                      <p className="copy">Your visits will appear here with live status.</p>
+                      <p className="copy">Your reviewed requests and confirmed service will appear here.</p>
                     </div>
                   </div>
                 )}
@@ -217,9 +214,7 @@ export default async function DashboardPage({
                         {formatLongDate(booking.scheduled_date)} · <StatusBadge status={booking.status} />
                       </h3>
                       <p className="copy">
-                        {booking.service_title} · {booking.scheduled_window} ·{" "}
-                        {booking.estimate_cents ? `${formatDollars(booking.estimate_cents)} anchor` : "quoted"}
-                        {booking.addon_ids.length > 0 && ` · add-ons: ${booking.addon_ids.join(", ")}`}
+                        {booking.service_title} · {booking.scheduled_window} preference · {booking.frequency}
                       </p>
                     </div>
                   </div>
@@ -229,9 +224,9 @@ export default async function DashboardPage({
 
             {tab === "notes" && (
               <div className="card" style={{ padding: 28 }}>
-                <h2>Home preferences</h2>
+                <h2>Property preferences</h2>
                 <p className="copy">
-                  Durable preferences so the cleaning feels personal every time.
+                  Durable finish, access, and care notes for consistent service planning.
                 </p>
                 {home ? (
                   <>
@@ -247,7 +242,7 @@ export default async function DashboardPage({
                     {requestIntakeEnabled ? <form action={saveNotesAction}>
                       <input type="hidden" name="homeId" value={home.id} />
                       <div className="field">
-                        <label htmlFor="notes">Cleaner notes</label>
+                        <label htmlFor="notes">Property care notes</label>
                         <textarea id="notes" name="notes" defaultValue={home.cleaner_notes ?? ""} />
                       </div>
                       <button className="btn btn-primary" style={{ marginTop: 14 }}>
@@ -257,7 +252,7 @@ export default async function DashboardPage({
                   </>
                 ) : (
                   <p className="copy" style={{ marginTop: 14 }}>
-                    Your home profile is created with your first booking.
+                    Your property profile is created after an operator reviews your first request.
                   </p>
                 )}
               </div>
@@ -269,8 +264,8 @@ export default async function DashboardPage({
                 <div style={{ display: "grid", gap: 10, margin: "18px 0" }}>
                   {support.length === 0 && (
                     <div className="msg bot">
-                      Need help adding an add-on or moving your date? Send a message — a real
-                      person replies.
+                      Need to adjust a requested window, report a concern, or clarify scope? Send
+                      a message and an operator will review it.
                     </div>
                   )}
                   {support.map((message) => (

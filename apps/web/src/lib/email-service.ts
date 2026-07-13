@@ -20,9 +20,12 @@ export type BookingConfirmationInput = {
   serviceTitle: string;
   date: string;
   window: string;
-  estimateDollars: number;
+  estimateDollars?: number;
   bookingId: string;
+  publicReference?: string;
 };
+
+export type EmailDeliveryOutcome = "sent" | "suppressed" | "skipped" | "failed";
 
 export type OpsNotificationInput = {
   kind: "booking" | "lead" | "service_case" | "cleaner_application";
@@ -60,33 +63,43 @@ export function createEmailService(config: {
     message: Omit<EmailMessage, "from" | "replyTo">,
     delivery: EmailDeliveryContext,
     skippedDescription: string,
-  ): Promise<void> {
+  ): Promise<EmailDeliveryOutcome> {
     if (delivery.suppress) {
-      log(`[email:suppressed] authorized runtime smoke — ${skippedDescription}`);
-      return;
+      log(
+        `[email:suppressed] authorized runtime smoke — ${skippedDescription}`,
+      );
+      return "suppressed";
     }
 
     const client = getTransport();
     if (!client || !config.from || !config.replyTo || !message.to) {
-      log(`[email:skipped] transactional email is not fully configured — ${skippedDescription}`);
-      return;
+      log(
+        `[email:skipped] transactional email is not fully configured — ${skippedDescription}`,
+      );
+      return "skipped";
     }
 
     try {
-      await client.send({ ...message, from: config.from, replyTo: config.replyTo });
+      await client.send({
+        ...message,
+        from: config.from,
+        replyTo: config.replyTo,
+      });
+      return "sent";
     } catch (error) {
       // Email must never fail a booking or lead write.
       logError("[email:error]", error);
+      return "failed";
     }
   }
 
   async function sendBookingConfirmation(
     input: BookingConfirmationInput,
     delivery: EmailDeliveryContext,
-  ): Promise<void> {
+  ): Promise<EmailDeliveryOutcome> {
     const longDate = config.formatLongDate(input.date);
     const subject = `Booking request received — ${input.serviceTitle}, ${longDate}`;
-    await deliver(
+    return deliver(
       {
         to: input.to,
         subject,
@@ -98,9 +111,11 @@ export function createEmailService(config: {
               ${escapeHtml(longDate)} · ${escapeHtml(input.window)} arrival window.
             </p>
             <p style="color:#607a75;font-size:16px;line-height:1.5">
-              Starting estimate: <strong>$${input.estimateDollars}</strong>. This is a starting
-              planning anchor. Your requested window is not an appointment; an operator reviews
-              scope and capacity before confirming service.
+              ${
+                input.estimateDollars == null
+                  ? "This is a service request, not an appointment or price. An operator reviews scope, access, territory, crew qualifications, and capacity before sending a proposal."
+                  : `Starting planning estimate: <strong>$${input.estimateDollars}</strong>. Your requested window is not an appointment; an operator reviews scope and capacity before confirming service.`
+              }
             </p>
             <p style="margin:28px 0">
               <a href="${config.appUrl}/dashboard"
@@ -110,7 +125,7 @@ export function createEmailService(config: {
             </p>
             <p style="color:#88a39d;font-size:13px">
               ${emailFooterParts.map((part) => escapeHtml(String(part))).join(" · ")}
-              <br />Reference: ${escapeHtml(input.bookingId)}
+              <br />Reference: ${escapeHtml(input.publicReference ?? input.bookingId)}
             </p>
           </div>`,
       },
@@ -122,9 +137,9 @@ export function createEmailService(config: {
   async function sendOpsNotification(
     input: OpsNotificationInput,
     delivery: EmailDeliveryContext,
-  ): Promise<void> {
+  ): Promise<EmailDeliveryOutcome> {
     const subject = `New ${input.kind}: ${input.summary}`;
-    await deliver(
+    return deliver(
       {
         to: config.businessEmail ?? "",
         subject,
