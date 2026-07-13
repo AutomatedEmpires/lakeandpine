@@ -24,10 +24,11 @@ export async function checkRequestRateLimit(
 
   const rows = await sql<{ request_count: number }[]>`
     insert into request_rate_limits
-      (scope, request_key, window_started_at, request_count, expires_at)
+      (scope, key_hash, window_start, window_seconds, request_count, expires_at)
     values
-      (${input.scope}, ${requestKey}, ${windowStartedAt.toISOString()}, 1, ${expiresAt.toISOString()})
-    on conflict (scope, request_key, window_started_at)
+      (${input.scope}, ${requestKey}, ${windowStartedAt.toISOString()},
+       ${Math.ceil(input.windowMs / 1000)}, 1, ${expiresAt.toISOString()})
+    on conflict (scope, key_hash, window_start)
     do update set request_count = request_rate_limits.request_count + 1
     returning request_count`;
 
@@ -42,4 +43,3 @@ export async function checkRequestRateLimit(
 
   return { allowed: true, remaining: Math.max(0, input.limit - count) };
 }
-

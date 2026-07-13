@@ -1,6 +1,6 @@
 import "server-only";
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import { sql } from "./db";
 
@@ -33,6 +33,10 @@ function publicReference() {
   return `LP-${date}-${randomBytes(4).toString("hex").toUpperCase()}`;
 }
 
+function sha256(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 export async function createServiceCase(
   input: CreateServiceCaseInput,
 ): Promise<{ id: string; reference: string; duplicate: boolean }> {
@@ -40,7 +44,7 @@ export async function createServiceCase(
     const existing = await transaction<{ id: string; public_reference: string }[]>`
       select id, public_reference
       from service_cases
-      where idempotency_key = ${input.idempotencyKey}
+      where idempotency_key = ${sha256(input.idempotencyKey)}
       limit 1`;
     if (existing[0]) {
       return {
@@ -56,7 +60,7 @@ export async function createServiceCase(
       const bookings = await transaction<{ id: string }[]>`
         select id
         from bookings
-        where public_reference = ${normalizedReference}
+        where public_reference_token_hash = ${sha256(normalizedReference)}
           and lower(contact ->> 'email') = lower(${input.email})
         limit 1`;
       bookingId = bookings[0]?.id ?? null;
@@ -69,18 +73,18 @@ export async function createServiceCase(
          booking_reference_input, contact, details, preferred_date, alternate_date,
          status, consent_snapshot, consented_at)
       values
-        (${reference}, ${input.idempotencyKey}, ${input.caseType}, ${bookingId},
+        (${reference}, ${sha256(input.idempotencyKey)}, ${input.caseType}, ${bookingId},
          ${normalizedReference}, ${transaction.json({
            name: input.name,
            email: input.email,
            phone: input.phone || null,
          })}, ${input.details}, ${input.preferredDate || null}, ${input.alternateDate || null},
-         'open', ${transaction.json({ privacy: true, version: "2026-07-13" })}, now())
+         'submitted', ${transaction.json({ privacy: true, version: "2026-07-13" })}, now())
       returning id, public_reference`;
 
     const serviceCase = rows[0];
     await transaction`
-      insert into service_case_events (service_case_id, type, data)
+      insert into service_case_events (service_case_id, event_type, event_data)
       values (
         ${serviceCase.id},
         'submitted',
@@ -90,4 +94,3 @@ export async function createServiceCase(
     return { id: serviceCase.id, reference: serviceCase.public_reference, duplicate: false };
   });
 }
-
