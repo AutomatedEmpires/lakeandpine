@@ -7,13 +7,25 @@ import { randomUUID } from "node:crypto";
 import { connect } from "./_db.mjs";
 
 const baseUrl = (process.env.RUNTIME_SMOKE_BASE_URL || "http://127.0.0.1:3010").replace(/\/$/, "");
+const smokeToken = process.env.RUNTIME_SMOKE_TOKEN;
+const forceFailure = process.env.RUNTIME_SMOKE_FORCE_FAILURE;
 const runId = randomUUID();
 const email = `runtime-smoke-${runId}@example.invalid`;
-const sql = connect();
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
+
+assert(
+  smokeToken && smokeToken.length >= 32,
+  "RUNTIME_SMOKE_TOKEN must be set to the same 32+ character value in the app server and smoke process",
+);
+assert(
+  !forceFailure || forceFailure === "after-booking",
+  "RUNTIME_SMOKE_FORCE_FAILURE only supports after-booking",
+);
+
+const sql = connect();
 
 async function getPage(path, marker) {
   const response = await fetch(`${baseUrl}${path}`);
@@ -26,7 +38,10 @@ async function getPage(path, marker) {
 async function postJson(path, body) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "x-lake-pine-runtime-smoke-token": smokeToken,
+    },
     body: JSON.stringify(body),
   });
   const text = await response.text();
@@ -116,6 +131,9 @@ try {
     accessNotes: "Synthetic non-production runtime smoke; discard",
   });
   assert(booking.id && booking.estimate === 427, "booking response did not match the canonical estimate");
+  if (forceFailure === "after-booking") {
+    throw new Error("Forced runtime smoke failure after booking persistence");
+  }
 
   const concierge = await postJson("/api/concierge", {
     message: "How much is a deep clean?",
