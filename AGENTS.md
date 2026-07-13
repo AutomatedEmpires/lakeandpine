@@ -121,7 +121,7 @@ Missing optional keys must preserve honest fallbacks. Do not provision a provide
 ### Money
 
 - Preserve “starting estimate; final quote confirmed before service.” Do not present an estimate as a guaranteed final price.
-- Stripe sandbox/test mode and inactive product/price/Checkout configuration are available for development. Stop before configuration is exposed to real customers, enables a real charge/subscription/capture/refund, or otherwise activates live money.
+- Stripe sandbox/test mode and inactive product/price/Checkout configuration are available for development. Stop before configuration can create a real charge/subscription/capture/refund or otherwise activates live money.
 - A manual estimate, confirmation, or invoice path is a valid launch strategy.
 
 ### Email and contact routing
