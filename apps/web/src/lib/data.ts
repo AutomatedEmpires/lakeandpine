@@ -1,5 +1,7 @@
 import "server-only";
 
+import type postgres from "postgres";
+
 import { jsonb, sql } from "./db";
 import type { JobStatus, PropertyProfile, RoomPlan } from "./service-planning";
 
@@ -158,35 +160,62 @@ export async function createBooking(input: {
   planningScore: number;
   checklist: { roomLabel: string | null; label: string }[];
 }): Promise<{ id: string }> {
-  const rows = await sql<{ id: string }[]>`
-    insert into bookings
-      (service_id, addon_ids, frequency, scheduled_date, scheduled_window,
-       estimate_cents, quote_id, customer_id, contact, home_details, access_notes,
-       property_profile, room_plan, cleaning_preferences, pet_notes,
-       special_instructions, planning_direction, planning_score)
-    values
-      (${input.serviceId}, ${input.addonIds}, ${input.frequency}, ${input.scheduledDate},
-       ${input.scheduledWindow}, ${input.estimateCents}, ${input.quoteId ?? null},
-       ${input.customerId ?? null}, ${jsonb(input.contact)},
-       ${jsonb(input.homeDetails)}, ${input.accessNotes ?? null},
-       ${jsonb(input.propertyProfile)}, ${jsonb(input.roomPlan)},
-       ${input.cleaningPreferences}, ${input.petNotes ?? null},
-       ${input.specialInstructions ?? null}, ${input.planningDirection},
-       ${input.planningScore})
-    returning id`;
-  const booking = rows[0];
-  await sql`
-    insert into booking_events (booking_id, type, data)
-    values (${booking.id}, 'requested', ${jsonb({
-      via: "web_booking_flow",
-      planningScore: input.planningScore,
-    })})`;
-  for (const [sort, item] of input.checklist.entries()) {
-    await sql`
-      insert into checklist_items (booking_id, room_label, label, sort)
-      values (${booking.id}, ${item.roomLabel}, ${item.label}, ${sort})`;
-  }
-  return booking;
+  const serviceVertical = ["estate", "construction", "marine", "commercial"].includes(input.serviceId)
+    ? input.serviceId
+    : null;
+  return sql.begin(async (tx) => {
+    const txJson = (value: unknown) => tx.json(value as postgres.JSONValue);
+    const rows = await tx<{ id: string }[]>`
+      insert into bookings
+        (service_id, service_vertical, addon_ids, frequency, scheduled_date, scheduled_window,
+         estimate_cents, quote_id, customer_id, contact, home_details, access_notes,
+         property_profile, room_plan, cleaning_preferences, pet_notes,
+         special_instructions, planning_direction, planning_score)
+      values
+        (${input.serviceId}, ${serviceVertical}, ${input.addonIds}, ${input.frequency}, ${input.scheduledDate},
+         ${input.scheduledWindow}, ${input.estimateCents}, ${input.quoteId ?? null},
+         ${input.customerId ?? null}, ${txJson(input.contact)},
+         ${txJson(input.homeDetails)}, ${input.accessNotes ?? null},
+         ${txJson(input.propertyProfile)}, ${txJson(input.roomPlan)},
+         ${input.cleaningPreferences}, ${input.petNotes ?? null},
+         ${input.specialInstructions ?? null}, ${input.planningDirection},
+         ${input.planningScore})
+      returning id`;
+    const booking = rows[0];
+    await tx`
+      insert into booking_events (booking_id, type, data)
+      values (${booking.id}, 'requested', ${txJson({
+        via: "web_booking_flow",
+        planningScore: input.planningScore,
+      })})`;
+
+    if (input.checklist.length) {
+      const checklistRows = input.checklist.map((item, sort) => ({
+        room_label: item.roomLabel,
+        label: item.label,
+        sort,
+      }));
+      await tx`
+        insert into checklist_items (booking_id, room_label, label, sort)
+        select ${booking.id}, item.room_label, item.label, item.sort
+        from jsonb_to_recordset(${txJson(checklistRows)}::jsonb)
+          as item(room_label text, label text, sort integer)`;
+    }
+
+    await tx`
+      insert into notification_outbox
+        (booking_id, customer_id, notification_type, channel, recipient_kind,
+         recipient_address, template_key, template_data, deduplication_key)
+      values
+        (${booking.id}, ${input.customerId ?? null}, 'customer_confirmation', 'email',
+         'customer', ${input.contact.email}, 'booking-request-received',
+         ${txJson({ bookingId: booking.id })}, ${`booking:${booking.id}:customer_confirmation`}),
+        (${booking.id}, ${input.customerId ?? null}, 'ops_notification', 'email',
+         'ops', null, 'ops-booking-request', ${txJson({ bookingId: booking.id })},
+         ${`booking:${booking.id}:ops_notification`})`;
+
+    return booking;
+  });
 }
 
 // --- Customer / dashboard ----------------------------------------------------

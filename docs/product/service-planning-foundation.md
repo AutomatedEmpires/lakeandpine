@@ -45,6 +45,11 @@ The existing `bookings` table remains the service-request/job spine. The Phase 1
 planning snapshots, planning score/direction, expanded job states, and contact status. New
 private tables model durable home rooms, checklist items, internal notes, and follow-ups.
 
+The premium operations extension adds qualification, territory, duration, crew capacity,
+scheduling, assignments, service cases, recovery/refund records, an outbox, idempotency receipts,
+and rate-limit counters. See `premium-operations-domain.md` for the full workflow and rollback
+contract.
+
 RLS is enabled on every new table. No `anon` or `authenticated` Data API policies or grants are
-created; the server-side database role remains the only application path, matching the existing
-repository pattern.
+created. The explicit non-owner `lakeandpine_app` server role receives the grants and role-targeted
+policies needed by the application; it remains non-superuser and cannot bypass RLS.
