@@ -1,58 +1,128 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 
-import { ServiceShowcase } from "@/components/ServiceShowcase";
-import { getServices } from "@/lib/data";
+import { MARKET_PROGRAMS, OPERATING_POLICIES, SERVICE_STAGES } from "@/lib/market-content";
 
-export const dynamic = "force-dynamic";
+export const metadata: Metadata = {
+  alternates: { canonical: "/" },
+};
 
-const WORKFLOW = [
-  { number: "01", title: "Request", body: "Choose a service and describe the property without making a payment." },
-  { number: "02", title: "Plan", body: "Room notes, preferences, pets, and access details shape a draft checklist." },
-  { number: "03", title: "Review", body: "A human operator checks scope, estimate direction, timing, and open questions." },
-  { number: "04", title: "Confirm", body: "Only then does a preferred window become a scheduled service." },
-];
-
-export default async function HomePage() {
-  const services = await getServices();
-
+export default function HomePage() {
   return (
     <div className="route-page">
       <section className="hero home-hero">
-        <div className="container hero-grid">
+        <div className="container hero-grid premium-hero-grid">
           <div className="home-hero-copy">
-            <span className="eyebrow">Cleaning, carefully planned</span>
-            <h1>A cleaner home starts with a better handoff.</h1>
+            <span className="eyebrow">Private homes · projects · vessels · workplaces</span>
+            <h1>Interior care for exceptional properties.</h1>
             <p className="lead">
-              Lake &amp; Pine helps a homeowner describe what matters, turns those details into
-              a practical service plan, and gives an operator one calm place to manage the work.
+              From final walkthrough to ready-for-arrival, Lake &amp; Pine builds a defined
+              cleaning plan around the property, its finishes, its access, and the people who
+              use it.
             </p>
             <div className="hero-actions">
-              <Link className="btn btn-primary" href="/book">Build a service request</Link>
-              <Link className="btn btn-soft" href="/services">See the service menu</Link>
+              <Link className="btn btn-primary" href="/book">
+                Request a private consultation
+              </Link>
+              <Link className="btn btn-soft" href="/who-we-serve">
+                See who we serve
+              </Link>
             </div>
-            <div className="honest-proof-row">
-              <span>Room-by-room planning</span>
+            <div className="honest-proof-row" aria-label="Service principles">
+              <span>Scope reviewed first</span>
+              <span>Preferred + alternate timing</span>
               <span>Human confirmation</span>
               <span>No online payment</span>
-              <span>Status visibility</span>
             </div>
           </div>
 
-          <div className="service-plan-preview card">
+          <div className="service-plan-preview card premium-brief" aria-label="Example project brief">
             <div className="plan-preview-head">
-              <div><span className="eyebrow">Draft service plan</span><h2>Saturday home reset</h2></div>
-              <span className="status-badge reviewing">reviewing</span>
+              <div>
+                <span className="eyebrow">Illustrative scope brief</span>
+                <h2>Residence arrival plan</h2>
+              </div>
+              <span className="status-badge reviewing">scope review</span>
             </div>
             <div className="plan-preview-property">
-              <span>Property profile</span><strong>House · 3 bed · 2 bath · one floor</strong>
+              <span>Program</span>
+              <strong>Private estate care · seasonal arrival</strong>
             </div>
             <div className="plan-preview-rooms">
-              {["Kitchen", "Bathrooms", "Living room", "Primary bedroom"].map((room, index) => <div key={room}><span>{String(index + 1).padStart(2, "0")}</span><strong>{room}</strong><small>{index === 0 ? "Focus floors + cabinet fronts" : "Standard room scope"}</small></div>)}
+              {[
+                ["Arrival spaces", "Entry, kitchen, primary suite"],
+                ["Finish notes", "Stone, wood, glass, owner products"],
+                ["Access", "Gate, parking, property contact"],
+                ["Timing", "Preferred window + alternate"],
+              ].map(([label, detail], index) => (
+                <div key={label}>
+                  <span>{String(index + 1).padStart(2, "0")}</span>
+                  <strong>{label}</strong>
+                  <small>{detail}</small>
+                </div>
+              ))}
             </div>
             <div className="plan-preview-bottom">
-              <div><span>Preferences</span><p>Unscented · shoes off · friendly dog</p></div>
-              <div className="plan-score"><span>Plan score</span><strong>38</strong><small>standard</small></div>
+              <div>
+                <span>Next decision</span>
+                <p>Confirm scope, route fit, crew time, and arrival window.</p>
+              </div>
+              <div className="plan-score premium-mark">
+                <span>Lake</span>
+                <strong>&amp;</strong>
+                <small>Pine</small>
+              </div>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="section audience-section">
+        <div className="container">
+          <div className="section-head">
+            <div>
+              <span className="eyebrow">Four focused programs</span>
+              <h2 className="section-title">One standard: understand the property before promising the work.</h2>
+            </div>
+            <p className="copy">
+              Lake &amp; Pine is moving away from rapid vacation-rental turnovers. The focus is
+              premium residential care, construction handoffs, marine interiors, and select
+              professional spaces.
+            </p>
+          </div>
+          <div className="program-grid">
+            {MARKET_PROGRAMS.map((program, index) => (
+              <article className="card program-card" key={program.slug}>
+                <span className="program-number">0{index + 1}</span>
+                <span className="eyebrow">{program.eyebrow}</span>
+                <h3>{program.title}</h3>
+                <p>{program.summary}</p>
+                <Link href={`/who-we-serve#${program.slug}`}>Explore this program <span aria-hidden>→</span></Link>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="section pine-band">
+        <div className="container premium-promise">
+          <div>
+            <span className="eyebrow">Premium means specific</span>
+            <h2 className="section-title">Care is a plan, not a slogan.</h2>
+          </div>
+          <div className="premium-principles">
+            <article>
+              <strong>Property-specific</strong>
+              <p>Rooms, zones, finishes, access, occupancy, and priorities stay attached to the request.</p>
+            </article>
+            <article>
+              <strong>Confirmation before commitment</strong>
+              <p>A preferred time is not presented as an appointment until scope and capacity are reviewed.</p>
+            </article>
+            <article>
+              <strong>Boundaries in writing</strong>
+              <p>Included work, exclusions, open questions, and the closeout path should be understood before service.</p>
+            </article>
           </div>
         </div>
       </section>
@@ -60,43 +130,90 @@ export default async function HomePage() {
       <section className="section workflow-section">
         <div className="container">
           <div className="section-head">
-            <div><span className="eyebrow">One service workflow</span><h2 className="section-title">The website and the operation share the same plan.</h2></div>
-            <p className="copy">The customer does not disappear into a generic contact form. The operator receives structured scope and a first checklist.</p>
+            <div>
+              <span className="eyebrow">The service journey</span>
+              <h2 className="section-title">Request, scope, confirm, close out.</h2>
+            </div>
+            <p className="copy">
+              The public experience and the operating handoff share the same facts—so a
+              consultation can become a usable service plan instead of a vague inbox message.
+            </p>
           </div>
-          <div className="workflow-grid">{WORKFLOW.map((item) => <article key={item.number} className="card workflow-card"><span>{item.number}</span><h3>{item.title}</h3><p>{item.body}</p></article>)}</div>
-        </div>
-      </section>
-
-      <section className="section">
-        <div className="container">
-          <div className="section-head"><div><span className="eyebrow">Service menu</span><h2 className="section-title">Start with the closest fit. Refine the scope together.</h2></div><p className="copy">Prices are starting planning anchors. Condition, access, rooms, add-ons, and special work can change the final quote.</p></div>
-          <ServiceShowcase services={services} />
+          <div className="workflow-grid">
+            {SERVICE_STAGES.map((item) => (
+              <article key={item.number} className="card workflow-card">
+                <span>{item.number}</span>
+                <h3>{item.title}</h3>
+                <p>{item.body}</p>
+              </article>
+            ))}
+          </div>
         </div>
       </section>
 
       <section className="section">
         <div className="container planning-story card">
-          <div><span className="eyebrow">Built for real homes</span><h2 className="section-title">The details a cleaner actually needs.</h2><p className="copy">A useful plan remembers the primary shower glass, the dog by the back door, the surface that needs unscented product, and the room that can wait.</p><Link className="btn btn-primary" href="/book">Preview the planning flow</Link></div>
+          <div>
+            <span className="eyebrow">A more useful first conversation</span>
+            <h2 className="section-title">The details a premium crew actually needs.</h2>
+            <p className="copy">
+              A great handoff records the fragile finish, the occupied wing, the marina gate,
+              the active trade, the presentation deadline, and the room that matters most.
+            </p>
+            <Link className="btn btn-primary" href="/book">
+              Build a consultation request
+            </Link>
+          </div>
           <div className="planning-story-list">
-            <article><span>01</span><div><strong>Property profile</strong><p>Type, size, rooms, floors, and current condition.</p></div></article>
-            <article><span>02</span><div><strong>Room notes</strong><p>Scope and priorities where the work happens.</p></div></article>
-            <article><span>03</span><div><strong>Pets + access</strong><p>Arrival context without asking for a door code in preview.</p></div></article>
-            <article><span>04</span><div><strong>Checklist direction</strong><p>A draft the operator can review before service.</p></div></article>
+            {[
+              ["01", "Property profile", "Type, scale, condition, zones, and current project phase."],
+              ["02", "Finish + room notes", "Material sensitivity, owner products, and priority spaces."],
+              ["03", "Access + timing", "Arrival, parking, dock, gate, occupancy, and preferred windows."],
+              ["04", "Closeout direction", "Walkthrough target, open questions, and concern-resolution path."],
+            ].map(([number, title, body]) => (
+              <article key={number}>
+                <span>{number}</span>
+                <div><strong>{title}</strong><p>{body}</p></div>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="section service-policy-section">
+        <div className="container">
+          <div className="section-head">
+            <div>
+              <span className="eyebrow">After the request</span>
+              <h2 className="section-title">Clear next steps when plans change.</h2>
+            </div>
+            <p className="copy">These are operating expectations, not automatic guarantees or a substitute for a confirmed service agreement.</p>
+          </div>
+          <div className="policy-grid">
+            {OPERATING_POLICIES.map((policy) => (
+              <article className="card policy-card" key={policy.title}>
+                <h3>{policy.title}</h3>
+                <p>{policy.body}</p>
+              </article>
+            ))}
           </div>
         </div>
       </section>
 
       <section className="section">
-        <div className="container dual-experience">
-          <article className="card"><span className="eyebrow">For the homeowner</span><h2>One place to see what happens next.</h2><ul className="checks"><li>Requested versus confirmed timing</li><li>Saved home and cleaning preferences</li><li>Service status and reschedule requests</li><li>A human support thread when enabled</li></ul><Link className="btn btn-soft" href="/dashboard">Preview customer dashboard</Link></article>
-          <article className="card operator-teaser"><span className="eyebrow">For the operator</span><h2>A queue built around the job, not the lead.</h2><ul className="checks"><li>Scope review and planning score</li><li>Private room, pet, and access notes</li><li>Service checklist and internal notes</li><li>Manual follow-up and review request queue</li></ul><p className="copy">The operator route is private and demo-only until staff access is configured.</p></article>
-        </div>
-      </section>
-
-      <section className="section">
         <div className="container final-cta card">
-          <div><span className="eyebrow">Phase 1 · request + planning</span><h2 className="section-title">Build the plan before booking the visit.</h2><p className="copy">Preview the full request experience. Public data intake stays off until the founder approves it, and no payment is collected.</p></div>
-          <div className="hero-actions"><Link className="btn btn-primary" href="/book">Start a plan</Link><Link className="btn btn-soft" href="/services">Compare services</Link></div>
+          <div>
+            <span className="eyebrow">Begin with fit</span>
+            <h2 className="section-title">Tell us what the property needs to be ready for.</h2>
+            <p className="copy">
+              Share a preferred window and an alternate. No card is charged and no appointment
+              is promised until an operator confirms the scope and schedule.
+            </p>
+          </div>
+          <div className="hero-actions">
+            <Link className="btn btn-primary" href="/book">Request a consultation</Link>
+            <Link className="btn btn-soft" href="/pricing">How pricing works</Link>
+          </div>
         </div>
       </section>
     </div>

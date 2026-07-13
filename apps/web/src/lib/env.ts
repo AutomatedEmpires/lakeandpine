@@ -10,16 +10,25 @@ export function optionalEnv(name: string): string | undefined {
   return process.env[name] || undefined;
 }
 
-export const BUSINESS_PHONE = optionalEnv("NEXT_PUBLIC_BUSINESS_PHONE");
+const configuredBusinessPhone = optionalEnv("NEXT_PUBLIC_BUSINESS_PHONE");
+const businessPhoneDigits = configuredBusinessPhone?.replace(/\D/g, "") ?? "";
+const isKnownPlaceholderPhone = businessPhoneDigits.endsWith("2085550198");
+
+export const BUSINESS_PHONE = isKnownPlaceholderPhone ? undefined : configuredBusinessPhone;
 export const BUSINESS_PHONE_TEL = BUSINESS_PHONE ? `tel:1${BUSINESS_PHONE.replace(/\D/g, "")}` : undefined;
-export const BUSINESS_EMAIL = optionalEnv("NEXT_PUBLIC_BUSINESS_EMAIL");
+const configuredBusinessEmail = optionalEnv("NEXT_PUBLIC_BUSINESS_EMAIL")?.trim();
+export const BUSINESS_EMAIL = configuredBusinessEmail?.toLowerCase() === "hello@lakepinecleaning.com"
+  ? undefined
+  : configuredBusinessEmail;
+export const PUBLIC_BUSINESS_EMAIL = BUSINESS_EMAIL;
 
 const PRODUCTION_APP_URL = "https://lakeandpinecleaning.com";
 const configuredAppUrl = optionalEnv("NEXT_PUBLIC_APP_URL");
 export const APP_URL =
   process.env.VERCEL_ENV === "production"
     ? PRODUCTION_APP_URL
-    : configuredAppUrl ||
+    : optionalEnv("NEXT_PUBLIC_CANONICAL_URL") ||
+      (configuredAppUrl?.includes("lakeandpine.vercel.app") ? undefined : configuredAppUrl) ||
       (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3010");
 
 export const authEnabled = Boolean(
