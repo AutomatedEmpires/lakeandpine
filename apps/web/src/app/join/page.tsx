@@ -11,7 +11,7 @@ export const metadata: Metadata = {
 
 export default function JoinPage() {
   return (
-    <main className="route-page">
+    <div className="route-page">
       <section className="container page-hero">
         <div className="page-panel">
           <span className="eyebrow">Work with Lake & Pine</span>
@@ -22,6 +22,6 @@ export default function JoinPage() {
       <section className="container section" style={{ paddingTop: 0 }}>
         <CleanerApplicationForm applicationsEnabled={cleanerApplicationsEnabled} />
       </section>
-    </main>
+    </div>
   );
 }

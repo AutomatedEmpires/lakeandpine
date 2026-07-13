@@ -1,6 +1,6 @@
 # Lake & Pine — Venture Operating Contract
 
-This contract is binding for every human and automated contributor. Lake & Pine should move faster than the portfolio marketplaces: ship a trustworthy local-service experience, and add platform complexity only when it improves the service journey.
+This contract is binding for every human and automated contributor. Lake & Pine should deliver a trustworthy premium property-care experience, and add platform complexity only when it improves scope quality, crew readiness, scheduling, or service recovery.
 
 ## Operating doctrine
 
@@ -10,45 +10,46 @@ The operating default is **execute, verify, document, and open a PR**. Lack of r
 
 ## Venture thesis
 
-Lake & Pine can win as a premium local home-cleaning and service brand by making trust, pricing expectations, and contact simpler than the local alternatives. The website is a conversion and operating surface for Coeur d'Alene, Spokane, and nearby Inland Northwest markets—not a venture marketplace and not generic home-services SaaS.
+Lake & Pine can win as a premium interior-care operator for private estates, construction handoffs, lake and marine interiors, and carefully selected professional spaces. The differentiator is disciplined scoping, finish awareness, qualified crews, capacity-backed scheduling, accountable closeout, and responsive service recovery. The website is a consultation and operating surface for evidenced Inland Northwest service corridors—not a rapid-turnover/Airbnb service, a mass-market maid marketplace, or generic home-services SaaS.
 
 The shortest useful journey is:
 
 ```text
-local visitor -> trust -> estimate -> contact/book -> confirmed service -> repeat relationship
+property decision-maker -> trust -> property brief -> qualification -> capacity-backed plan -> custom proposal/confirmation -> service -> closeout/recovery
 ```
 
 ## Primary user and buyer
 
-- **Primary user/buyer:** a homeowner, vacation-rental operator, or small-office decision-maker within an evidenced service area who wants a reliable cleaning service.
-- **Secondary user:** a Lake & Pine operator who needs qualified leads, accurate job context, manageable scheduling, and clean follow-up.
+- **Primary user/buyer:** an estate owner or manager, construction owner/representative, general contractor, vessel owner or marina decision-maker, or select commercial/property leader within an evidenced service corridor who values careful execution over commodity speed.
+- **Secondary users:** a Lake & Pine operator who needs qualified requests, accurate property context, defensible crew and territory capacity, auditable scheduling, and service recovery; and a screened cleaner who needs clear assignments, availability, and time-off controls.
+- **Deprioritized segment:** Airbnb and other high-churn short-term-rental turnovers where speed and unit volume dominate finish-aware, relationship-based property care.
 - **Not the target:** vendors seeking a marketplace, anonymous software users, or visitors who need an account before they can understand or contact the business.
 
 ## What the product must become
 
 Build a fast, local, credible public site that:
 
-- explains real service types, scope, starting estimates, and service areas;
-- routes visitors to a low-friction estimate, contact, or booking outcome;
-- supports honest local SEO pages with distinct, useful area content;
-- captures enough context to qualify and respond to a lead without oversharing;
-- preserves a clear manual fallback when scheduling, email, auth, or payment providers are absent;
-- can grow into scheduling, customer follow-up, and repeat-service tools only as operations justify them.
+- explains the four real service programs, scope boundaries, custom-proposal process, and service-corridor review;
+- routes visitors to a low-friction consultation request without pretending to offer an instant appointment or public price;
+- captures enough property, finish, access, timing, and outcome context to qualify a request without collecting access codes or other unnecessary sensitive data;
+- supports cleaner onboarding, capability records, recurring availability, time off, territory fit, crew proposals, scheduling, booking changes, complaints, recleans, cancellations, and refund decisions as accountable operating surfaces;
+- confirms service only after qualification, realistic duration, travel, required skills, crew acceptance, and daily/weekly capacity checks;
+- preserves a clear operator-visible fallback when scheduling, email, auth, or payment providers are absent.
 
-Authentication and online payment are optional capabilities, not measures of product maturity. A good marketing and lead-capture release may precede both.
+Authentication and online payment are optional capabilities, not measures of product maturity. A credible consultation, manual proposal, and operator-confirmed service path may precede live payment.
 
 ## Current stage
 
-As of 2026-07-12, the portfolio has **zero real Lake & Pine customers/users**. The repository contains a public Next.js app, estimate logic, persisted booking flow, customer-dashboard concepts, Pine Concierge, local-service pages, provider-gated integrations, and recovered product/design evidence. A disposable booking runtime proof merged in PR #3 after this standards branch diverged from `main`.
+As of 2026-07-13, the portfolio has **zero confirmed real Lake & Pine customers/users**. The repository contains a public Next.js app, premium property-request flow, customer and cleaner workspaces, a private operations console, capacity-aware scheduling foundations, service-case/refund decision workflows, Pine Concierge, service-corridor pages, provider-gated integrations, and recovered product/design evidence. Legacy public starting-price and rapid-turnover positioning is retired; do not restore it.
 
-This is a pre-customer validation and marketing-launch stage. The right goal is to prove the full public journey and operating handoff—not to defend today's implementation as if it were a mature production system. Refresh repository and PR facts before relying on this snapshot.
+This is a pre-customer premium-operations launch stage. The right goal is to prove the full consultation, qualification, crew, scheduling, service, closeout, and recovery journey—not to defend today's implementation as if it were a mature production system. Refresh repository and PR facts before relying on this snapshot.
 
 ## Execution authority — act without founder approval
 
 Within a scoped branch, agents may independently:
 
-- fix bugs, security findings, accessibility issues, responsive behavior, broken links, metadata, structured data, and local SEO defects;
-- improve public copy, information architecture, calls to action, estimate clarity, contact routing, service-area pages, and honest trust content;
+- fix bugs, security findings, accessibility issues, responsive behavior, broken links, metadata, structured data, and service-corridor search defects;
+- improve public copy, information architecture, calls to action, consultation clarity, contact routing, service-program/area pages, and honest trust content;
 - add or improve tests, fixtures, validation scripts, runbooks, CI, dependency patches, and observability code that remains inactive without keys;
 - refactor app-local code while preserving behavior and the product/design evidence;
 - create static assets and source-backed service content;
@@ -81,21 +82,24 @@ A hard stop blocks only the gated action. Prepare code, migration plans, screens
 
 ## High-value work to prioritize
 
-1. Make the mobile and desktop path from landing page to estimate/contact unmistakable.
-2. Validate estimate inputs and preserve the distinction between a starting estimate and a confirmed quote.
-3. Build accurate, differentiated service and service-area pages for local search intent.
-4. Make lead capture resilient: validation, duplicate prevention, error states, consent, delivery fallback, and operator-visible handoff.
-5. Prove the complete guest journey without requiring Clerk, Stripe, PostHog, or Mapbox.
-6. Improve page speed, semantic HTML, keyboard/screen-reader behavior, and local-business structured data.
-7. Replace placeholder reviews or unsupported claims with honest empty states or sourced facts before public launch.
-8. Keep operations simple enough that one local operator can understand and run them.
+1. Make the mobile and desktop path from program discovery to a complete property brief unmistakable.
+2. Preserve the distinction between a consultation request, an operator-qualified scope, a custom proposal, and a confirmed schedule; never imply instant booking or a public fixed price.
+3. Prove qualification, territory fit, realistic labor duration, required capabilities, crew acceptance, travel buffers, and daily/weekly capacity before schedule confirmation.
+4. Make request capture resilient: validation, duplicate prevention, error states, consent, delivery fallback, and operator-visible handoff.
+5. Give cleaners clear, private assignment, availability, profile, and time-off surfaces; do not treat an application or proposed assignment as verified or accepted.
+6. Make reschedules, cancellations, complaints, recleans, damage reports, recovery actions, and refund decisions auditable without automatically moving money.
+7. Build accurate, differentiated program and service-corridor pages for estate, construction, marine, and select-commercial intent.
+8. Prove the complete guest and operating journey without requiring Clerk, Stripe, PostHog, or Mapbox for public understanding or request capture.
+9. Improve page speed, semantic HTML, keyboard/screen-reader behavior, and honest structured data.
+10. Keep operations legible enough that one accountable operator can understand and run them without bypassing hard capacity or qualification gates.
 
 ## Low-value work to avoid
 
+- Reintroducing Airbnb/rapid-turnover positioning, commodity maid-service language, public starting prices, or instant-slot promises.
 - Building a marketplace, vendor network, multi-tenant platform, or generic admin suite before the service business needs one.
-- Forcing sign-in, payment, dashboards, chat, or AI into a journey that works better with a form and clear callback expectation.
+- Forcing sign-in, payment, dashboards, chat, or AI into a consultation journey that works better with a property brief and clear operator-review expectation.
 - Chasing optional provider completeness instead of a working public journey.
-- Writing generic lifestyle copy, duplicated city pages, fake urgency, fake reviews, or SEO pages with no local value.
+- Writing generic luxury copy, duplicated city pages, fake urgency, fake reviews, or SEO pages with no program or corridor value.
 - Replacing a scoped implementation with another readiness audit or speculative roadmap.
 - Replatforming or redesigning the entire site while solving a focused issue.
 
@@ -114,15 +118,15 @@ Missing optional keys must preserve honest fallbacks. Do not provision a provide
 ### Data
 
 - Keep Postgres access server-side and preserve authorization/RLS boundaries.
-- Recalculate price and quote-sensitive values on the server; never trust browser totals as authoritative.
+- Derive labor direction, crew size, qualification gates, and any proposal-sensitive values on the server; never trust browser planning totals or schedule eligibility as authoritative.
 - Use synthetic or clearly marked dev records in tests and previews. Do not use live names, addresses, contact details, booking notes, or payment data.
 - Local/dev/preview migrations must be non-destructive, idempotent where practical, and paired with rollback or forward-fix notes. Destructive production work is a hard stop.
 
 ### Money
 
-- Preserve “starting estimate; final quote confirmed before service.” Do not present an estimate as a guaranteed final price.
+- Preserve “custom proposal after scope review.” Do not publish a starting price, present a planning direction as a quote, or present a request as a confirmed appointment.
 - Stripe sandbox/test mode and inactive product/price/Checkout configuration are available for development. Stop before configuration can create a real charge/subscription/capture/refund or otherwise activates live money.
-- A manual estimate, confirmation, or invoice path is a valid launch strategy.
+- A manual proposal, confirmation, invoice, and externally executed refund path is a valid launch strategy.
 
 ### Email and contact routing
 
@@ -131,7 +135,7 @@ Missing optional keys must preserve honest fallbacks. Do not provision a provide
 
 ### Auth
 
-- Public marketing, estimates, contact, and guest booking should work without Clerk unless an account is essential to the feature.
+- Public marketing, consultation requests, contact, and service support should work without Clerk unless an account is essential to the feature.
 - Local identities are not production identities. Assigned reversible auth configuration may proceed with least privilege, rollback, synthetic identities, and unauthorized-path tests; do not rotate credentials or transfer ownership.
 
 ### Claims and privacy
@@ -144,7 +148,7 @@ Missing optional keys must preserve honest fallbacks. Do not provision a provide
 
 The recovered prototype and product-recovery documents are evidence for the intended direction. Preserve the premium pine/lake/cream palette, editorial serif display style, rounded/glass surfaces, local landscape tone, strong mobile navigation, sticky mobile CTA, and calm, accessible behavior unless a scoped design task says otherwise.
 
-The experience should feel like a dependable local service, not a SaaS dashboard or generic marketplace. Design improvements are welcome; incidental full redesigns and unsupported visual claims are not.
+The public experience should feel like a discreet, dependable premium property-care service, not a SaaS dashboard, generic marketplace, or rushed turnover company. Private operator and cleaner surfaces should favor legibility and accountability over decorative luxury. Design improvements are welcome; incidental full redesigns and unsupported visual claims are not.
 
 ## Branch and multi-agent coordination
 
@@ -168,7 +172,7 @@ pnpm build
 git diff --check
 ```
 
-Run focused tests during iteration, then the full relevant sequence before requesting review. UI changes require screenshots at relevant mobile/desktop widths and an accessibility pass. Quote, booking, authorization, or rendering changes require focused regression coverage.
+Run focused tests during iteration, then the full relevant sequence before requesting review. UI changes require screenshots at relevant mobile/desktop widths and an accessibility pass. Property-request, qualification, scheduling, authorization, recovery, refund-ledger, or rendering changes require focused regression coverage.
 
 For Markdown-only work, `git diff --check` plus a focused content/link review is sufficient; state why app checks were skipped. `ops:seed-content`, `ops:seed-dev`, and `ops:purge-dev-seed` are operations commands, not routine validation. Never aim them at live state to make CI pass.
 
@@ -178,7 +182,7 @@ PRs must explain the user/operating outcome, scope, evidence, provider/data impa
 
 Work is done when:
 
-- the intended visitor or operator outcome works end to end, including empty/error/fallback states;
+- the intended visitor, cleaner, customer, or operator outcome works end to end, including empty/error/fallback states;
 - behavior is covered by focused tests and the required relevant checks pass;
 - mobile, desktop, accessibility, and honest-copy implications were reviewed when applicable;
 - no unsupported business claim, secret, private data, real charge, or real send was introduced;
@@ -198,11 +202,11 @@ Still protect secrets, provider ownership, public claims, prospective lead priva
 
 Refreshed 2026-07-13 UTC:
 
-- Draft PR #4, `docs: add agent operating standards`, is this contract branch.
-- PR #3, `test: prove disposable booking runtime`, has merged into `main`; this local branch was synchronized with that revision during the standards pass. Refresh before changing booking/runtime/data files.
-- No other open PRs were reported at refresh.
+- Draft PR #7, `feat: complete Lake & Pine premium operations launch surfaces`, is the active integrated launch branch. Refresh its review and check state before changing overlapping files.
+- Draft PRs #4, #5, and #6 are superseded integration attempts; do not treat them as the current release candidate.
+- PR #3, `test: prove disposable booking runtime`, has merged into `main` and remains historical runtime-proof context.
 
-Before a public marketing launch, resolve or explicitly disposition unsupported service claims, contact-routing ownership, real service areas/availability, privacy/legal copy, and any required runtime/provider keys. Optional auth/payment/analytics/maps are blockers only for features that truly need them—not for a strong public service and lead-capture site.
+Before opening public intake or cleaner applications, verify the owned phone/inbox and reply path, monitoring, runtime database role, migration state, real territory/crew capacity, privacy/legal copy, and required provider keys. Keep public intake flags disabled until those dependencies are evidenced. Optional live payment, analytics, and maps are blockers only for features that truly need them—not for a strong premium consultation and operations surface.
 
 ## Output format for future agents
 

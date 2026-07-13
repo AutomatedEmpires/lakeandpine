@@ -203,10 +203,18 @@ export function PremiumRequestFlow({ intakeEnabled }: { intakeEnabled: boolean }
     <form className="booking-shell" onSubmit={submit}>
       <aside className="card booking-rail">
         <div className="booking-progress"><span>Step {step + 1} of {STEPS.length}</span><span>{Math.round(((step + 1) / STEPS.length) * 100)}%</span></div>
-        <div className="booking-progress-track"><span style={{ width: `${((step + 1) / STEPS.length) * 100}%` }} /></div>
+        <div
+          className="booking-progress-track"
+          role="progressbar"
+          aria-label="Consultation request progress"
+          aria-valuemin={1}
+          aria-valuemax={STEPS.length}
+          aria-valuenow={step + 1}
+          aria-valuetext={`Step ${step + 1} of ${STEPS.length}: ${STEPS[step]}`}
+        ><span style={{ width: `${((step + 1) / STEPS.length) * 100}%` }} /></div>
         <div className="booking-step-list">
           {STEPS.map((label, index) => (
-            <button key={label} type="button" className={`rail-btn${index === step ? " active" : ""}${index < step ? " complete" : ""}`} onClick={() => index < step && setStep(index)}>
+            <button key={label} type="button" className={`rail-btn${index === step ? " active" : ""}${index < step ? " complete" : ""}`} onClick={() => index < step && setStep(index)} aria-current={index === step ? "step" : undefined}>
               <span className="step-num">{index < step ? "✓" : index + 1}</span>{label}
             </button>
           ))}
@@ -226,8 +234,8 @@ export function PremiumRequestFlow({ intakeEnabled }: { intakeEnabled: boolean }
           <span className="eyebrow">01 · Choose the operating program</span>
           <h2>What kind of property needs to be ready?</h2>
           <p className="copy">Choose the closest fit. Each program has its own scope, safety, access, scheduling, and crew-qualification checks.</p>
-          <div className="choice-grid">
-            {MARKET_PROGRAMS.map((item) => <button key={item.slug} type="button" className={`choice-card${program === item.slug ? " selected" : ""}`} onClick={() => chooseProgram(item.slug)}>
+          <div className="choice-grid" role="group" aria-label="Property care program">
+            {MARKET_PROGRAMS.map((item) => <button key={item.slug} type="button" className={`choice-card${program === item.slug ? " selected" : ""}`} onClick={() => chooseProgram(item.slug)} aria-pressed={program === item.slug}>
               <span className="eyebrow">{item.eyebrow}</span><strong>{item.title}</strong><p>{item.summary}</p>
             </button>)}
           </div>

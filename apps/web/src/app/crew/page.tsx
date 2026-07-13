@@ -29,7 +29,7 @@ export default async function CrewPage() {
   const identity = await resolveCleanerIdentity();
   if (identity.state !== "authed" && identity.state !== "preview") {
     return (
-      <main className="route-page">
+      <div className="route-page">
         <section className="container page-hero">
           <div className="page-panel operator-locked">
             <span className="eyebrow">Private crew workspace</span>
@@ -38,7 +38,7 @@ export default async function CrewPage() {
             <Link className="btn btn-primary" href="/sign-in?redirect_url=/crew">Sign in</Link>
           </div>
         </section>
-      </main>
+      </div>
     );
   }
 
@@ -50,7 +50,7 @@ export default async function CrewPage() {
   ]);
 
   return (
-    <main className="route-page operator-page">
+    <div className="route-page operator-page">
       <section className="container page-hero">
         {identity.state === "preview" && <div className="preview-banner"><strong>Cleaner preview:</strong> only synthetic assignments are visible and write actions are restricted.</div>}
         <div className="operator-hero">
@@ -126,6 +126,6 @@ export default async function CrewPage() {
           </aside>
         </div>
       </section>
-    </main>
+    </div>
   );
 }

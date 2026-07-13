@@ -116,7 +116,7 @@ export default async function OperationsPage({
   const identity = await resolveOperatorIdentity();
   if (identity.state !== "authed" && identity.state !== "preview") {
     return (
-      <main className="route-page">
+      <div className="route-page">
         <section className="container page-hero">
           <div className="page-panel operator-locked">
             <span className="eyebrow">Private operations control</span>
@@ -137,7 +137,7 @@ export default async function OperationsPage({
             </Link>
           </div>
         </section>
-      </main>
+      </div>
     );
   }
 
@@ -160,7 +160,7 @@ export default async function OperationsPage({
   );
 
   return (
-    <main className="route-page operator-page operations-control">
+    <div className="route-page operator-page operations-control">
       <section className="container page-hero">
         {identity.state === "preview" && (
           <div className="preview-banner">
@@ -285,12 +285,21 @@ export default async function OperationsPage({
                         value={postal.code}
                       />
                       <span>{postal.code}</span>
-                      <select name="status" defaultValue={postal.status}>
+                      <select
+                        name="status"
+                        defaultValue={postal.status}
+                        aria-label={`Status for postal code ${postal.code} in ${territory.name}`}
+                      >
                         <option value="review">review</option>
                         <option value="active">active</option>
                         <option value="excluded">excluded</option>
                       </select>
-                      <button className="btn btn-soft">Save</button>
+                      <button
+                        className="btn btn-soft"
+                        aria-label={`Save status for postal code ${postal.code}`}
+                      >
+                        Save
+                      </button>
                     </form>
                   ))}
                 </div>
@@ -303,12 +312,21 @@ export default async function OperationsPage({
                     name="territoryId"
                     value={territory.id}
                   />
-                  <select name="status" defaultValue={territory.status}>
+                  <select
+                    name="status"
+                    defaultValue={territory.status}
+                    aria-label={`Status for territory ${territory.name}`}
+                  >
                     <option value="draft">draft</option>
                     <option value="active">active</option>
                     <option value="paused">paused</option>
                   </select>
-                  <button className="btn btn-soft">Update territory</button>
+                  <button
+                    className="btn btn-soft"
+                    aria-label={`Update territory ${territory.name}`}
+                  >
+                    Update territory
+                  </button>
                 </form>
               </article>
             ))}
@@ -380,7 +398,11 @@ export default async function OperationsPage({
                       name="from"
                       value={application.status}
                     />
-                    <select name="to" defaultValue="">
+                    <select
+                      name="to"
+                      defaultValue=""
+                      aria-label={`Next application decision for ${application.full_name}`}
+                    >
                       <option value="" disabled>
                         Next decision
                       </option>
@@ -392,7 +414,12 @@ export default async function OperationsPage({
                         ),
                       )}
                     </select>
-                    <button className="btn btn-soft">Record decision</button>
+                    <button
+                      className="btn btn-soft"
+                      aria-label={`Record application decision for ${application.full_name}`}
+                    >
+                      Record decision
+                    </button>
                   </form>
                   {application.status === "offer" && (
                     <form
@@ -404,7 +431,12 @@ export default async function OperationsPage({
                         name="applicationId"
                         value={application.id}
                       />
-                      <select name="territoryId" required defaultValue="">
+                      <select
+                        name="territoryId"
+                        required
+                        defaultValue=""
+                        aria-label={`Home territory for ${application.full_name}`}
+                      >
                         <option value="" disabled>
                           Home territory
                         </option>
@@ -414,7 +446,10 @@ export default async function OperationsPage({
                           </option>
                         ))}
                       </select>
-                      <button className="btn btn-primary">
+                      <button
+                        className="btn btn-primary"
+                        aria-label={`Create onboarding profile for ${application.full_name}`}
+                      >
                         Create onboarding profile
                       </button>
                     </form>
@@ -456,22 +491,31 @@ export default async function OperationsPage({
                   >
                     <input type="hidden" name="cleanerId" value={cleaner.id} />
                     <div className="field">
-                      <label>Capability codes</label>
+                      <label htmlFor={`cleaner-skills-${cleaner.id}`}>
+                        Capability codes
+                      </label>
                       <input
+                        id={`cleaner-skills-${cleaner.id}`}
                         name="skills"
                         defaultValue={cleaner.skills.join(", ")}
                         placeholder="estate-care, finish-awareness"
                       />
                     </div>
                     <div className="field">
-                      <label>Verified program experience</label>
+                      <label htmlFor={`cleaner-programs-${cleaner.id}`}>
+                        Verified program experience
+                      </label>
                       <input
+                        id={`cleaner-programs-${cleaner.id}`}
                         name="verticalExperience"
                         defaultValue={cleaner.vertical_experience.join(", ")}
                         placeholder="estate, construction"
                       />
                     </div>
-                    <button className="btn btn-soft">
+                    <button
+                      className="btn btn-soft"
+                      aria-label={`Record reviewed capabilities for ${cleaner.full_name}`}
+                    >
                       Record reviewed capabilities
                     </button>
                   </form>
@@ -488,7 +532,10 @@ export default async function OperationsPage({
                           name="attestation"
                           value="verified"
                         />
-                        <button className="btn btn-soft">
+                        <button
+                          className="btn btn-soft"
+                          aria-label={`Attest verified screening for ${cleaner.full_name}`}
+                        >
                           Attest verified screening
                         </button>
                       </form>
@@ -508,7 +555,10 @@ export default async function OperationsPage({
                         name="territoryId"
                         value={cleaner.home_territory_id}
                       />
-                      <select name="dayOfWeek" aria-label="Day of week">
+                      <select
+                        name="dayOfWeek"
+                        aria-label={`Availability day for ${cleaner.full_name}`}
+                      >
                         {DAYS.map((day, index) => (
                           <option key={day} value={index}>
                             {day}
@@ -519,15 +569,20 @@ export default async function OperationsPage({
                         name="startTime"
                         type="time"
                         required
-                        aria-label="Availability start"
+                        aria-label={`Availability start for ${cleaner.full_name}`}
                       />
                       <input
                         name="endTime"
                         type="time"
                         required
-                        aria-label="Availability end"
+                        aria-label={`Availability end for ${cleaner.full_name}`}
                       />
-                      <button className="btn btn-soft">Add availability</button>
+                      <button
+                        className="btn btn-soft"
+                        aria-label={`Add availability for ${cleaner.full_name}`}
+                      >
+                        Add availability
+                      </button>
                     </form>
                   )}
                   <form
@@ -537,6 +592,7 @@ export default async function OperationsPage({
                     <input type="hidden" name="cleanerId" value={cleaner.id} />
                     <select
                       name="status"
+                      aria-label={`Status for cleaner ${cleaner.full_name}`}
                       defaultValue={
                         cleaner.status === "onboarding"
                           ? "active"
@@ -547,7 +603,12 @@ export default async function OperationsPage({
                       <option value="paused">paused</option>
                       <option value="inactive">inactive</option>
                     </select>
-                    <button className="btn btn-soft">Update status</button>
+                    <button
+                      className="btn btn-soft"
+                      aria-label={`Update status for cleaner ${cleaner.full_name}`}
+                    >
+                      Update status
+                    </button>
                   </form>
                 </article>
               ))}
@@ -579,6 +640,7 @@ export default async function OperationsPage({
                       className="btn btn-soft"
                       name="status"
                       value="declined"
+                      aria-label={`Decline time-off request for ${item.cleaner_name}`}
                     >
                       Decline
                     </button>
@@ -586,6 +648,7 @@ export default async function OperationsPage({
                       className="btn btn-primary"
                       name="status"
                       value="approved"
+                      aria-label={`Approve time-off request for ${item.cleaner_name}`}
                     >
                       Approve
                     </button>
@@ -680,7 +743,12 @@ export default async function OperationsPage({
                       </label>
                     )}
                   </div>
-                  <select name="to" required defaultValue="">
+                  <select
+                    name="to"
+                    required
+                    defaultValue=""
+                    aria-label={`Qualification decision for ${request.contact_name}`}
+                  >
                     <option value="" disabled>
                       Qualification decision
                     </option>
@@ -692,7 +760,12 @@ export default async function OperationsPage({
                       </option>
                     ))}
                   </select>
-                  <button className="btn btn-primary">Record review</button>
+                  <button
+                    className="btn btn-primary"
+                    aria-label={`Record qualification review for ${request.contact_name}`}
+                  >
+                    Record review
+                  </button>
                 </form>
               )}
               {request.qualification_status === "approved" &&
@@ -702,7 +775,12 @@ export default async function OperationsPage({
                     className="ops-form compact schedule-form"
                   >
                     <input type="hidden" name="bookingId" value={request.id} />
-                    <select name="territoryId" required defaultValue="">
+                    <select
+                      name="territoryId"
+                      required
+                      defaultValue=""
+                      aria-label={`Active territory for ${request.contact_name}`}
+                    >
                       <option value="" disabled>
                         Active territory
                       </option>
@@ -716,15 +794,18 @@ export default async function OperationsPage({
                       name="startAt"
                       type="datetime-local"
                       required
-                      aria-label="Schedule start"
+                      aria-label={`Schedule start for ${request.contact_name}`}
                     />
                     <input
                       name="endAt"
                       type="datetime-local"
                       required
-                      aria-label="Schedule end"
+                      aria-label={`Schedule end for ${request.contact_name}`}
                     />
-                    <button className="btn btn-primary">
+                    <button
+                      className="btn btn-primary"
+                      aria-label={`Create tentative schedule for ${request.contact_name}`}
+                    >
                       Create tentative schedule
                     </button>
                   </form>
@@ -778,7 +859,12 @@ export default async function OperationsPage({
                           name="from"
                           value={schedule.status}
                         />
-                        <button className="btn btn-soft" name="to" value={next}>
+                        <button
+                          className="btn btn-soft"
+                          name="to"
+                          value={next}
+                          aria-label={`${label(next)} schedule for ${schedule.service_vertical} in ${schedule.territory_name} starting ${formatDateTime(schedule.start_at)}`}
+                        >
                           {label(next)}
                         </button>
                       </form>
@@ -829,7 +915,10 @@ export default async function OperationsPage({
                       name="candidateId"
                       value={suggestion.candidateId}
                     />
-                    <button className="btn btn-primary">
+                    <button
+                      className="btn btn-primary"
+                      aria-label={`Propose crew ${suggestion.cleanerNames.join(" and ")}`}
+                    >
                       Propose this crew
                     </button>
                   </form>
@@ -897,7 +986,12 @@ export default async function OperationsPage({
                       name="from"
                       value={serviceCase.status}
                     />
-                    <select name="to" defaultValue="" required>
+                    <select
+                      name="to"
+                      defaultValue=""
+                      required
+                      aria-label={`Next state for service case ${serviceCase.public_reference}`}
+                    >
                       <option value="" disabled>
                         Next case state
                       </option>
@@ -907,7 +1001,12 @@ export default async function OperationsPage({
                         </option>
                       ))}
                     </select>
-                    <button className="btn btn-soft">Update case</button>
+                    <button
+                      className="btn btn-soft"
+                      aria-label={`Update service case ${serviceCase.public_reference}`}
+                    >
+                      Update case
+                    </button>
                   </form>
                   {serviceCase.case_type === "reschedule" &&
                     serviceCase.status === "action_planned" && (
@@ -924,15 +1023,18 @@ export default async function OperationsPage({
                           name="startAt"
                           type="datetime-local"
                           required
-                          aria-label="New start"
+                          aria-label={`New start for service case ${serviceCase.public_reference}`}
                         />
                         <input
                           name="endAt"
                           type="datetime-local"
                           required
-                          aria-label="New end"
+                          aria-label={`New end for service case ${serviceCase.public_reference}`}
                         />
-                        <button className="btn btn-primary">
+                        <button
+                          className="btn btn-primary"
+                          aria-label={`Apply capacity-checked reschedule for case ${serviceCase.public_reference}`}
+                        >
                           Apply capacity-checked reschedule
                         </button>
                       </form>
@@ -950,7 +1052,10 @@ export default async function OperationsPage({
                           name="confirmation"
                           value="cancel"
                         />
-                        <button className="btn btn-soft">
+                        <button
+                          className="btn btn-soft"
+                          aria-label={`Cancel booking and active schedule for case ${serviceCase.public_reference}`}
+                        >
                           Cancel booking + active schedule
                         </button>
                       </form>
@@ -962,7 +1067,10 @@ export default async function OperationsPage({
                       name="bookingId"
                       value={serviceCase.booking_id ?? ""}
                     />
-                    <select name="type">
+                    <select
+                      name="type"
+                      aria-label={`Recovery action for service case ${serviceCase.public_reference}`}
+                    >
                       <option value="reclean">Reclean</option>
                       <option value="site_visit">Site visit</option>
                       <option value="apology">Apology</option>
@@ -975,8 +1083,14 @@ export default async function OperationsPage({
                       name="notes"
                       maxLength={2000}
                       placeholder="Planned action and owner"
+                      aria-label={`Recovery notes for service case ${serviceCase.public_reference}`}
                     />
-                    <button className="btn btn-soft">Plan recovery</button>
+                    <button
+                      className="btn btn-soft"
+                      aria-label={`Plan recovery for service case ${serviceCase.public_reference}`}
+                    >
+                      Plan recovery
+                    </button>
                   </form>
                   {serviceCase.booking_id && (
                     <form
@@ -996,13 +1110,18 @@ export default async function OperationsPage({
                         step="0.01"
                         required
                         placeholder="Amount for review"
+                        aria-label={`Refund amount to review for service case ${serviceCase.public_reference}`}
                       />
                       <input
                         name="reasonCode"
                         required
                         placeholder="Reason code"
+                        aria-label={`Refund reason code for service case ${serviceCase.public_reference}`}
                       />
-                      <button className="btn btn-soft">
+                      <button
+                        className="btn btn-soft"
+                        aria-label={`Open refund review for service case ${serviceCase.public_reference}`}
+                      >
                         Open refund review
                       </button>
                     </form>
@@ -1052,9 +1171,15 @@ export default async function OperationsPage({
                           name="providerReference"
                           required
                           placeholder="External refund receipt"
+                          aria-label={`External receipt for ${label(refund.reason_code)} refund`}
                         />
                       )}
-                      <button className="btn btn-soft">{label(next)}</button>
+                      <button
+                        className="btn btn-soft"
+                        aria-label={`${label(next)} ${label(refund.reason_code)} refund for $${(refund.amount_cents / 100).toFixed(2)}`}
+                      >
+                        {label(next)}
+                      </button>
                     </form>
                   ))}
                 </article>
@@ -1091,7 +1216,12 @@ export default async function OperationsPage({
                               : ""}
                           </span>
                         </div>
-                        <button className="btn btn-soft">Retry safely</button>
+                        <button
+                          className="btn btn-soft"
+                          aria-label={`Retry ${label(item.notification_type)} notification to ${item.recipient_kind}`}
+                        >
+                          Retry safely
+                        </button>
                       </form>
                     ))}
                   </div>
@@ -1101,6 +1231,6 @@ export default async function OperationsPage({
           </div>
         </div>
       </section>
-    </main>
+    </div>
   );
 }

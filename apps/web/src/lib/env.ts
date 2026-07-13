@@ -10,12 +10,43 @@ export function optionalEnv(name: string): string | undefined {
   return process.env[name] || undefined;
 }
 
+/**
+ * Convert a configured public phone number to an E.164 `tel:` href.
+ *
+ * International numbers must include a leading `+` and country code. For the
+ * North American Numbering Plan, ten digits or eleven digits beginning with 1
+ * are also accepted. Ambiguous national-format international numbers are
+ * rejected instead of being assigned the wrong country code.
+ */
+export function normalizePhoneHref(value?: string): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+
+  const digits = trimmed.replace(/\D/g, "");
+  const normalizedDigits = trimmed.startsWith("+")
+    ? digits
+    : digits.length === 10
+      ? `1${digits}`
+      : digits.length === 11 && digits.startsWith("1")
+        ? digits
+        : "";
+
+  if (!/^[1-9]\d{7,14}$/.test(normalizedDigits)) return undefined;
+  return `tel:+${normalizedDigits}`;
+}
+
 const configuredBusinessPhone = optionalEnv("NEXT_PUBLIC_BUSINESS_PHONE");
 const businessPhoneDigits = configuredBusinessPhone?.replace(/\D/g, "") ?? "";
 const isKnownPlaceholderPhone = businessPhoneDigits.endsWith("2085550198");
+const configuredBusinessPhoneHref = normalizePhoneHref(configuredBusinessPhone);
 
-export const BUSINESS_PHONE = isKnownPlaceholderPhone ? undefined : configuredBusinessPhone;
-export const BUSINESS_PHONE_TEL = BUSINESS_PHONE ? `tel:1${BUSINESS_PHONE.replace(/\D/g, "")}` : undefined;
+export const BUSINESS_PHONE =
+  !isKnownPlaceholderPhone && configuredBusinessPhoneHref
+    ? configuredBusinessPhone?.trim()
+    : undefined;
+export const BUSINESS_PHONE_TEL = BUSINESS_PHONE
+  ? configuredBusinessPhoneHref
+  : undefined;
 const configuredBusinessEmail = optionalEnv("NEXT_PUBLIC_BUSINESS_EMAIL")?.trim();
 export const BUSINESS_EMAIL = configuredBusinessEmail?.toLowerCase() === "hello@lakepinecleaning.com"
   ? undefined
