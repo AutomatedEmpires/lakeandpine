@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "ops:seed-content": "node scripts/seed-content.mjs",
     "ops:seed-dev": "node scripts/seed-dev.mjs",
-    "ops:purge-dev-seed": "node scripts/purge-dev-seed.mjs"
+    "ops:purge-dev-seed": "node scripts/purge-dev-seed.mjs",
+    "ops:smoke-runtime": "node scripts/runtime-smoke.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.5.13",

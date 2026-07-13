@@ -24,6 +24,20 @@ pnpm ops:seed-content           # service areas + placeholder reviews
 pnpm ops:seed-dev               # demo customer for dashboard preview (is_dev_seed)
 ```
 
+Start the app against a disposable migrated database with a random 32+ character smoke
+token. Set the same token in the smoke process; mismatches fail closed before any write or
+email delivery:
+
+```bash
+RUNTIME_SMOKE_TOKEN='<same-random-32+-character-value>' pnpm dev
+RUNTIME_SMOKE_TOKEN='<same-random-32+-character-value>' \
+  RUNTIME_SMOKE_BASE_URL=http://127.0.0.1:3010 pnpm ops:smoke-runtime
+```
+
+See [the non-production runtime proof](docs/ops/non-production-runtime-proof.md) for the
+captured evidence, cleanup behavior, and the boundary between runtime-proven surfaces and
+provider- or money-gated work.
+
 Copy `.env.example` values into `apps/web/.env.local` (dev `DATABASE_URL` above).
 `pnpm ops:purge-dev-seed` removes every `is_dev_seed` row before launch.
 
