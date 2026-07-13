@@ -74,7 +74,7 @@ Stop before any of the following:
 - transferring repository, provider, domain, or account ownership;
 - making a public launch announcement or representing the business as launched without approval;
 - buying ads, starting campaigns, or sending marketing broadcasts;
-- filing legal documents or accepting legal terms on the founder's behalf;
+- filing legal documents on the founder's behalf;
 - completing an action that requires MFA when the founder is unavailable.
 
 A hard stop blocks only the gated action. Prepare code, migration plans, screenshots, checklists, rollback steps, and preview evidence so the founder can make a narrow decision.
@@ -105,7 +105,7 @@ Current integration surfaces include Vercel, Supabase/Postgres, Doppler/secrets,
 
 Agents may use existing local, test, sandbox, or protected-preview lanes when the task requires them. They may adjust repository configuration and preview-safe integration code, but must not expose secret values or borrow another venture's account, sender, project, or data.
 
-Production provider settings are not a casual coding surface. Do not change production domains/DNS, billing, RBAC, recovery settings, live webhooks, live senders, production auth policy, live payment state, or provider ownership without the applicable hard-stop approval. Preparing a change and documenting exact dashboard steps is allowed; silently performing it is not.
+Assigned agents may make reversible, non-billing provider configuration changes in established dev, preview, or production lanes when scope, least privilege, rollback, and verification are explicit. Stop only when the action crosses a listed hard stop: paid plan, live money, domain/DNS, destructive deletion, destructive production migration, credential rotation/revocation, ownership transfer, public launch/campaign, legal filing, or unavailable MFA. Preparing exact dashboard steps and validation is always allowed.
 
 Missing optional keys must preserve honest fallbacks. Do not provision a provider merely to make a preview look complete.
 
@@ -121,19 +121,18 @@ Missing optional keys must preserve honest fallbacks. Do not provision a provide
 ### Money
 
 - Preserve “starting estimate; final quote confirmed before service.” Do not present an estimate as a guaranteed final price.
-- Stripe sandbox/test mode is available for development. Real products, prices, subscriptions, captures, refunds, and production Checkout are hard stops.
+- Stripe sandbox/test mode and inactive product/price/Checkout configuration are available for development. Stop before configuration is exposed to real customers, enables a real charge/subscription/capture/refund, or otherwise activates live money.
 - A manual estimate, confirmation, or invoice path is a valid launch strategy.
 
 ### Email and contact routing
 
-- Internal delivery tests may use approved venture-scoped test recipients and non-customer data.
-- Do not activate a sender/domain or send real customer/marketing email without the appropriate launch approval.
+- Internal delivery tests may use approved venture-scoped test recipients and non-customer data. Assigned reversible transactional-email configuration may proceed with test/non-customer recipients; DNS activation, a public/marketing campaign, or a real-customer launch remains a hard stop where applicable.
 - Email failure must not erase a submitted lead; retain an operator-visible recovery path without logging private contact data.
 
 ### Auth
 
 - Public marketing, estimates, contact, and guest booking should work without Clerk unless an account is essential to the feature.
-- Local identities are not production identities. Keep admin/customer boundaries fail-closed and test unauthorized paths.
+- Local identities are not production identities. Assigned reversible auth configuration may proceed with least privilege, rollback, synthetic identities, and unauthorized-path tests; do not rotate credentials or transfer ownership.
 
 ### Claims and privacy
 
