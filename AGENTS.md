@@ -26,7 +26,7 @@ This status does not stop low-risk public copy, SEO, accessibility, or service-m
 - Agent work: `agent/<scope>-<short-description>`.
 - Other work: `feat/<short-description>`, `fix/<short-description>`, `docs/<short-description>`, or `chore/<short-description>`, in kebab-case.
 - Before editing, record `git status -sb`, branch and HEAD, inspect open PRs/issues, and confirm file ownership. One task, branch, owner, and coherent artifact set at a time.
-- Open a scoped PR against `main`; the builder is not the approver. Do not merge, force-push, rewrite history, delete branches, or overwrite another agent's work.
+- Open a scoped PR against `main`; the builder is not the approver. Implementing agents/builders do not merge their own PRs, force-push, rewrite history, delete unmerged branches, or overwrite another agent's work. A designated maintainer or approved automation may merge after independent review and green required checks, then delete the merged branch.
 
 ## 5. Required checks before PR
 
@@ -91,7 +91,7 @@ The journey should remain direct: trust → estimate → book/contact → repeat
 
 ## 10. Current known PRs and blockers
 
-Snapshot 2026-07-12: no open PRs were found. Refresh before starting work.
+Status last refreshed 2026-07-13 02:30 UTC (2026-07-12 America/Los_Angeles): draft PR #3, `test: prove disposable booking runtime`, is open and clean on `agent/verify-local-booking-runtime`. Coordinate before touching its booking/runtime/data files or acceptance criteria. Refresh before starting work.
 
 Known blockers for a full rollout claim include the DOM-XSS finding, limited rollout-grade test evidence, unresolved product scope (marketing/lead service versus more complex booking product), functional rollback/DNS/data/telemetry/support proof, and provider activation decisions. Optional integrations are gates for the features that use them, not blockers for safe public marketing/service improvements.
 
