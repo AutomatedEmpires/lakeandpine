@@ -54,42 +54,42 @@ export async function POST(request: Request) {
   // Pets
   if (has("pet", "dog", "cat")) {
     return reply(
-      `Yes — pet homes are our normal. Add pet names, room instructions, and product preferences during booking or in your dashboard, and we default to eco-conscious, pet-aware supplies (unscented on request).`,
+      `Add pet names, temperament, where they'll be during service, and any doors or gates the operator should plan around. Product preferences can also be added to the service request; the team confirms the final plan before service.`,
     );
   }
 
   // Supplies / products
   if (has("supplies", "products", "bring", "chemical", "eco")) {
     return reply(
-      `We bring everything — eco-conscious supplies are included, with unscented and pet-aware options you can save to your home notes so every visit remembers your preferences.`,
+      `Add unscented, homeowner-supplied, delicate-surface, or other product preferences to the plan. The operator will confirm what the team provides before the visit.`,
     );
   }
 
   // Scheduling / availability
   if (has("schedule", "when", "soon", "available", "book", "appointment", "today", "tomorrow")) {
     return reply(
-      `We typically have same-week windows Monday–Saturday with 8 AM, 10 AM, 12 PM, and 2 PM arrivals. The booking flow shows live selectable dates — it takes about two minutes, and you get text updates plus a dashboard for your home.`,
+      `The planning flow lets you request a preferred date and arrival window. It does not show live capacity or confirm an appointment; an operator reviews availability and scope before scheduling.`,
     );
   }
 
   // Trust
   if (has("insured", "bonded", "background", "trust", "vetted", "licensed")) {
     return reply(
-      `Every cleaner is background-checked, and the company is licensed, bonded, and insured. There's also a 24-hour make-right window: if anything misses the agreed scope, we come back and fix it.`,
+      `Company credentials and cleaner-screening details are being finalized. The operator should provide current verified information before service rather than relying on an unverified website claim.`,
     );
   }
 
   // Guarantee
   if (has("guarantee", "make-right", "satisfaction", "refund")) {
     return reply(
-      `The promise is a 24-hour make-right window — if something wasn't completed to the agreed scope, tell us within a day and we return to fix it.`,
+      `The service and follow-up policy is being finalized. Any make-right or refund terms should be confirmed in the written service scope before the visit.`,
     );
   }
 
   // Areas
   if (has("area", "spokane", "coeur", "cda", "post falls", "hayden", "liberty", "rathdrum", "where")) {
     return reply(
-      `We serve Coeur d'Alene, Spokane, Post Falls, Hayden, Liberty Lake, Spokane Valley, and Rathdrum. Each city has its own page under Areas with local details — and booking works the same everywhere.`,
+      `Area coverage has not been confirmed for public claims yet. Add your ZIP to a service request only after intake is enabled, and an operator can confirm whether service is available.`,
     );
   }
 

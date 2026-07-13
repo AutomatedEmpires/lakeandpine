@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { createLead } from "@/lib/data";
 import { sendOpsNotification } from "@/lib/email";
+import { requestIntakeEnabled } from "@/lib/env";
 import { getRuntimeSmokeDisposition } from "@/lib/runtime-smoke-request";
 
 const leadSchema = z.object({
@@ -18,6 +19,12 @@ export async function POST(request: Request) {
   const smokeDisposition = getRuntimeSmokeDisposition(request.headers);
   if (smokeDisposition === "rejected") {
     return NextResponse.json({ error: "Invalid runtime smoke authorization" }, { status: 403 });
+  }
+  if (!requestIntakeEnabled && smokeDisposition !== "authorized") {
+    return NextResponse.json(
+      { error: "Lead intake is disabled until customer-data collection is approved." },
+      { status: 503 },
+    );
   }
 
   const body = await request.json().catch(() => null);

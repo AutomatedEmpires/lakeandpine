@@ -1,6 +1,7 @@
 import "server-only";
 
 import { jsonb, sql } from "./db";
+import type { JobStatus, PropertyProfile, RoomPlan } from "./service-planning";
 
 export type Service = {
   id: string;
@@ -98,7 +99,7 @@ export async function getFaqs(): Promise<Faq[]> {
 export async function getReviews(limit?: number): Promise<Review[]> {
   return sql<Review[]>`
     select id, author_initial, author_name, city, body, rating
-    from reviews where published
+    from reviews where published and source <> 'placeholder'
     order by created_at desc
     ${limit ? sql`limit ${limit}` : sql``}`;
 }
@@ -148,21 +149,43 @@ export async function createBooking(input: {
   contact: { name: string; phone: string; email: string; zip: string };
   homeDetails: Record<string, unknown>;
   accessNotes?: string | null;
+  propertyProfile: PropertyProfile;
+  roomPlan: RoomPlan[];
+  cleaningPreferences: string[];
+  petNotes?: string | null;
+  specialInstructions?: string | null;
+  planningDirection: string;
+  planningScore: number;
+  checklist: { roomLabel: string | null; label: string }[];
 }): Promise<{ id: string }> {
   const rows = await sql<{ id: string }[]>`
     insert into bookings
       (service_id, addon_ids, frequency, scheduled_date, scheduled_window,
-       estimate_cents, quote_id, customer_id, contact, home_details, access_notes)
+       estimate_cents, quote_id, customer_id, contact, home_details, access_notes,
+       property_profile, room_plan, cleaning_preferences, pet_notes,
+       special_instructions, planning_direction, planning_score)
     values
       (${input.serviceId}, ${input.addonIds}, ${input.frequency}, ${input.scheduledDate},
        ${input.scheduledWindow}, ${input.estimateCents}, ${input.quoteId ?? null},
        ${input.customerId ?? null}, ${jsonb(input.contact)},
-       ${jsonb(input.homeDetails)}, ${input.accessNotes ?? null})
+       ${jsonb(input.homeDetails)}, ${input.accessNotes ?? null},
+       ${jsonb(input.propertyProfile)}, ${jsonb(input.roomPlan)},
+       ${input.cleaningPreferences}, ${input.petNotes ?? null},
+       ${input.specialInstructions ?? null}, ${input.planningDirection},
+       ${input.planningScore})
     returning id`;
   const booking = rows[0];
   await sql`
     insert into booking_events (booking_id, type, data)
-    values (${booking.id}, 'requested', ${jsonb({ via: "web_booking_flow" })})`;
+    values (${booking.id}, 'requested', ${jsonb({
+      via: "web_booking_flow",
+      planningScore: input.planningScore,
+    })})`;
+  for (const [sort, item] of input.checklist.entries()) {
+    await sql`
+      insert into checklist_items (booking_id, room_label, label, sort)
+      values (${booking.id}, ${item.roomLabel}, ${item.label}, ${sort})`;
+  }
   return booking;
 }
 
@@ -328,4 +351,170 @@ export async function requestReschedule(
     insert into booking_events (booking_id, type, data)
     values (${bookingId}, 'reschedule_requested', ${jsonb({ note })})`;
   return true;
+}
+
+// --- Operator workspace -----------------------------------------------------
+
+export type OperatorBooking = BookingRow & {
+  contact: { name?: string; phone?: string; email?: string; zip?: string };
+  home_details: Record<string, unknown>;
+  property_profile: PropertyProfile;
+  room_plan: RoomPlan[];
+  cleaning_preferences: string[];
+  pet_notes: string | null;
+  special_instructions: string | null;
+  planning_direction: string | null;
+  planning_score: number | null;
+  contact_status: string;
+  is_dev_seed: boolean;
+};
+
+export type ChecklistItem = {
+  id: string;
+  room_label: string | null;
+  label: string;
+  state: "pending" | "completed" | "skipped";
+  sort: number;
+};
+
+export type InternalNote = {
+  id: number;
+  author_label: string;
+  body: string;
+  created_at: string;
+};
+
+export type FollowUp = {
+  id: string;
+  kind: "service_check_in" | "review_request";
+  channel: "manual" | "email" | "sms";
+  status: "planned" | "ready" | "completed" | "canceled";
+  scheduled_for: string | null;
+};
+
+export async function getOperatorBookings(devOnly: boolean): Promise<OperatorBooking[]> {
+  return sql<OperatorBooking[]>`
+    select b.id, b.service_id, s.title as service_title, b.addon_ids, b.frequency,
+           to_char(b.scheduled_date, 'YYYY-MM-DD') as scheduled_date,
+           b.scheduled_window, b.status, b.estimate_cents, b.access_notes,
+           b.created_at::text, b.contact, b.home_details, b.property_profile,
+           b.room_plan, b.cleaning_preferences, b.pet_notes, b.special_instructions,
+           b.planning_direction, b.planning_score, b.contact_status, b.is_dev_seed
+    from bookings b join services s on s.id = b.service_id
+    where ${devOnly ? sql`b.is_dev_seed` : sql`true`}
+      and b.status <> 'canceled'
+    order by b.scheduled_date asc, b.created_at asc`;
+}
+
+export async function getBookingChecklist(
+  bookingId: string,
+  devOnly: boolean,
+): Promise<ChecklistItem[]> {
+  return sql<ChecklistItem[]>`
+    select c.id, c.room_label, c.label, c.state, c.sort
+    from checklist_items c join bookings b on b.id = c.booking_id
+    where c.booking_id = ${bookingId}
+      and ${devOnly ? sql`b.is_dev_seed` : sql`true`}
+    order by c.sort, c.created_at`;
+}
+
+export async function getBookingInternalNotes(
+  bookingId: string,
+  devOnly: boolean,
+): Promise<InternalNote[]> {
+  return sql<InternalNote[]>`
+    select n.id, n.author_label, n.body, n.created_at::text
+    from internal_notes n join bookings b on b.id = n.booking_id
+    where n.booking_id = ${bookingId}
+      and ${devOnly ? sql`b.is_dev_seed` : sql`true`}
+    order by n.created_at desc`;
+}
+
+export async function getBookingFollowUps(
+  bookingId: string,
+  devOnly: boolean,
+): Promise<FollowUp[]> {
+  return sql<FollowUp[]>`
+    select f.id, f.kind, f.channel, f.status, f.scheduled_for::text
+    from follow_ups f join bookings b on b.id = f.booking_id
+    where f.booking_id = ${bookingId}
+      and ${devOnly ? sql`b.is_dev_seed` : sql`true`}
+    order by f.scheduled_for nulls last, f.created_at`;
+}
+
+export async function updateBookingStatus(
+  bookingId: string,
+  fromStatus: JobStatus,
+  toStatus: JobStatus,
+  devOnly: boolean,
+): Promise<boolean> {
+  const rows = await sql<{ id: string }[]>`
+    update bookings set status = ${toStatus}
+    where id = ${bookingId} and status = ${fromStatus}
+      and ${devOnly ? sql`is_dev_seed` : sql`true`}
+    returning id`;
+  if (!rows[0]) return false;
+
+  await sql`
+    insert into booking_events (booking_id, type, data)
+    values (${bookingId}, 'status_changed', ${jsonb({ fromStatus, toStatus, via: "operator" })})`;
+
+  if (toStatus === "completed") {
+    await sql`
+      insert into follow_ups (booking_id, kind, scheduled_for, is_dev_seed)
+      select ${bookingId}, task.kind, task.scheduled_for, b.is_dev_seed
+      from bookings b
+      cross join (values
+        ('service_check_in'::text, now() + interval '2 hours'),
+        ('review_request'::text, now() + interval '1 day')
+      ) as task(kind, scheduled_for)
+      where b.id = ${bookingId}
+      on conflict (booking_id, kind) do nothing`;
+  }
+  return true;
+}
+
+export async function setChecklistItemState(
+  bookingId: string,
+  itemId: string,
+  state: ChecklistItem["state"],
+  devOnly: boolean,
+): Promise<boolean> {
+  const rows = await sql<{ id: string }[]>`
+    update checklist_items c
+    set state = ${state}, completed_at = case when ${state} = 'completed' then now() else null end
+    from bookings b
+    where c.id = ${itemId} and c.booking_id = ${bookingId} and b.id = c.booking_id
+      and ${devOnly ? sql`b.is_dev_seed` : sql`true`}
+    returning c.id`;
+  return Boolean(rows[0]);
+}
+
+export async function addInternalNote(
+  bookingId: string,
+  body: string,
+  devOnly: boolean,
+): Promise<boolean> {
+  const rows = await sql<{ id: string }[]>`
+    select id from bookings
+    where id = ${bookingId} and ${devOnly ? sql`is_dev_seed` : sql`true`}`;
+  if (!rows[0]) return false;
+  await sql`
+    insert into internal_notes (booking_id, body, is_dev_seed)
+    values (${bookingId}, ${body}, ${devOnly})`;
+  return true;
+}
+
+export async function completeFollowUp(
+  bookingId: string,
+  followUpId: string,
+  devOnly: boolean,
+): Promise<boolean> {
+  const rows = await sql<{ id: string }[]>`
+    update follow_ups f set status = 'completed', completed_at = now()
+    from bookings b
+    where f.id = ${followUpId} and f.booking_id = ${bookingId} and b.id = f.booking_id
+      and ${devOnly ? sql`b.is_dev_seed` : sql`true`}
+    returning f.id`;
+  return Boolean(rows[0]);
 }

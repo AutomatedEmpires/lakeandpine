@@ -1,7 +1,6 @@
-// Rule-based capacity for launch (per production-foundation.md's open decision,
-// resolved toward rules-first): bookable days are tomorrow through +35 days,
-// Monday–Saturday, four arrival windows per day. Calendar-backed availability
-// replaces this module when real team capacity exists.
+// Rule-based request horizon only: customers may express a preference for
+// tomorrow through +35 days, Monday–Saturday, in one of four arrival windows.
+// These values do not represent live capacity or confirm an appointment.
 
 export const ARRIVAL_WINDOWS = ["8:00 AM", "10:00 AM", "12:00 PM", "2:00 PM"] as const;
 
