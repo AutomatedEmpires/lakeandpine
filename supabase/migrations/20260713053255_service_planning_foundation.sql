@@ -407,7 +407,11 @@ create table service_cases (
   closed_at timestamptz,
   is_dev_seed boolean not null default false,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  check (
+    case_type not in ('reschedule', 'cancel', 'reclean', 'refund_review', 'damage')
+    or booking_id is not null
+  )
 );
 
 comment on column service_cases.idempotency_key is
@@ -663,6 +667,28 @@ $$;
 
 revoke all on function assert_service_case_recovery_consistency(uuid, text) from public;
 
+create function assert_service_case_refund_consistency(
+  service_case_to_validate uuid,
+  service_case_status text
+) returns void
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  if service_case_status <> 'refund_pending' and exists (
+    select 1 from refund_records refund
+    where refund.service_case_id = service_case_to_validate
+      and refund.status in ('requested', 'approved', 'ready_for_manual_processing', 'failed')
+  ) then
+    raise exception 'Service case % has an unfinished refund decision', service_case_to_validate
+      using errcode = '23514';
+  end if;
+end
+$$;
+
+revoke all on function assert_service_case_refund_consistency(uuid, text) from public;
+
 create function validate_service_case_recovery_state() returns trigger
 language plpgsql
 security invoker
@@ -670,6 +696,7 @@ set search_path = public, pg_temp
 as $$
 begin
   perform assert_service_case_recovery_consistency(new.id, new.status);
+  perform assert_service_case_refund_consistency(new.id, new.status);
   return new;
 end
 $$;
@@ -989,6 +1016,7 @@ set search_path = public, pg_temp
 as $$
 declare
   booking_qualification text;
+  booking_state text;
   booking_vertical text;
   booking_postal text;
   territory_state text;
@@ -998,6 +1026,10 @@ declare
   required_elapsed_minutes integer;
 begin
   if new.status = 'canceled' then
+    if tg_op = 'INSERT' then
+      raise exception 'A schedule cannot be created in canceled state'
+        using errcode = '23514';
+    end if;
     return new;
   end if;
   required_elapsed_minutes := ceil(new.labor_minutes::numeric / new.required_crew_size / 30) * 30;
@@ -1007,13 +1039,20 @@ begin
       using errcode = '23514';
   end if;
 
-  select qualification_status, service_vertical, normalize_us_postal_code(contact ->> 'zip')
-    into booking_qualification, booking_vertical, booking_postal
+  select qualification_status, status, service_vertical,
+         normalize_us_postal_code(contact ->> 'zip')
+    into booking_qualification, booking_state, booking_vertical, booking_postal
     from bookings where id = new.booking_id;
   select status into territory_state from service_territories where id = new.territory_id;
 
   if territory_state is distinct from 'active' then
     raise exception 'Schedule territory % must be active', new.territory_id
+      using errcode = '23514';
+  end if;
+
+  if (tg_op = 'INSERT' and booking_state not in ('requested', 'reviewing', 'ready'))
+     or booking_state in ('completed', 'follow_up', 'canceled') then
+    raise exception 'Booking % in state % is not eligible for schedule mutation', new.booking_id, booking_state
       using errcode = '23514';
   end if;
 
@@ -1070,6 +1109,32 @@ $$;
 create trigger job_schedules_readiness_guard
 before insert or update on job_schedules
 for each row execute function validate_job_schedule_readiness();
+
+create function validate_job_schedule_transition() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  if new.status = old.status then return new; end if;
+  if not (
+    (old.status = 'tentative' and new.status in ('held', 'canceled'))
+    or (old.status = 'held' and new.status in ('confirmed', 'tentative', 'canceled'))
+    or (old.status = 'confirmed' and new.status in ('en_route', 'held', 'canceled'))
+    or (old.status = 'en_route' and new.status in ('in_progress', 'confirmed', 'canceled'))
+    or (old.status = 'in_progress' and new.status in ('quality_review', 'confirmed'))
+    or (old.status = 'quality_review' and new.status in ('completed', 'in_progress'))
+  ) then
+    raise exception 'Invalid schedule transition from % to %', old.status, new.status
+      using errcode = '23514';
+  end if;
+  return new;
+end
+$$;
+
+create trigger job_schedules_transition_guard
+before update of status on job_schedules
+for each row execute function validate_job_schedule_transition();
 
 create function validate_premium_booking_confirmation() returns trigger
 language plpgsql
@@ -1741,6 +1806,7 @@ grant execute on function revalidate_schedule_readiness(uuid) to lakeandpine_app
 grant execute on function normalize_us_postal_code(text) to lakeandpine_app;
 grant execute on function pause_territory_without_cleaner_capacity(uuid) to lakeandpine_app;
 grant execute on function assert_service_case_recovery_consistency(uuid, text) to lakeandpine_app;
+grant execute on function assert_service_case_refund_consistency(uuid, text) to lakeandpine_app;
 
 alter default privileges in schema public revoke all on tables from public;
 alter default privileges in schema public revoke all on sequences from public;

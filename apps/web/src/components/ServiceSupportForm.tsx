@@ -13,12 +13,21 @@ const CASE_TYPES = [
   ["other", "Something else"],
 ] as const;
 
+const BOOKING_LINKED_TYPES = new Set([
+  "reschedule",
+  "cancel",
+  "reclean",
+  "refund_review",
+  "damage",
+]);
+
 export function ServiceSupportForm({ intakeEnabled }: { intakeEnabled: boolean }) {
   const idempotencyKey = useMemo(() => crypto.randomUUID(), []);
   const [caseType, setCaseType] = useState<(typeof CASE_TYPES)[number][0]>("reschedule");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [reference, setReference] = useState("");
+  const requiresBookingReference = BOOKING_LINKED_TYPES.has(caseType);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -105,8 +114,20 @@ export function ServiceSupportForm({ intakeEnabled }: { intakeEnabled: boolean }
 
       <div className="form-grid planning-form" style={{ marginTop: 18 }}>
         <div className="field">
-          <label htmlFor="support-booking-reference">Service reference, if known</label>
-          <input id="support-booking-reference" name="bookingReference" maxLength={80} />
+          <label htmlFor="support-booking-reference">
+            Service reference{requiresBookingReference ? "" : ", if known"}
+          </label>
+          <input
+            id="support-booking-reference"
+            name="bookingReference"
+            maxLength={80}
+            required={requiresBookingReference}
+            aria-describedby="support-reference-help"
+          />
+          <small id="support-reference-help">
+            Required for schedule changes, recleans, refunds, or damage concerns;
+            enter the email used on the same request.
+          </small>
         </div>
         <div className="field">
           <label htmlFor="support-name">Name</label>

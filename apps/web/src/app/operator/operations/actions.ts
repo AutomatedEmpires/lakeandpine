@@ -13,6 +13,7 @@ import {
   createRefundReview,
   createTerritoryDraft,
   proposeAssignmentCandidate,
+  removeAssignmentFromPlanningSchedule,
   rescheduleBookingFromCase,
   reviewTimeOff,
   setRecoveryStatus,
@@ -340,10 +341,21 @@ export async function proposeCrewAction(formData: FormData) {
   refresh();
 }
 
+export async function removePlanningAssignmentAction(formData: FormData) {
+  const operator = await requireOperator();
+  const changed = await removeAssignmentFromPlanningSchedule(
+    value(formData, "assignmentId"),
+    operator.devOnly,
+  );
+  if (!changed) throw new Error("Assignment changed; refresh and retry");
+  refresh();
+}
+
 export async function serviceCaseStatusAction(formData: FormData) {
   const operator = await requireOperator();
   const from = value(formData, "from") as ServiceCaseStatus;
   const to = value(formData, "to") as ServiceCaseStatus;
+  const resolutionSummary = value(formData, "resolutionSummary").slice(0, 2000);
   if (
     !SERVICE_CASE_STATUSES.includes(from) ||
     !SERVICE_CASE_STATUSES.includes(to) ||
@@ -351,10 +363,16 @@ export async function serviceCaseStatusAction(formData: FormData) {
   ) {
     throw new Error("Invalid service-case transition");
   }
+  if (["resolved", "closed"].includes(to) && !resolutionSummary) {
+    throw new Error(
+      "A customer-visible outcome is required to resolve or close a case",
+    );
+  }
   await setServiceCaseStatus(
     value(formData, "caseId"),
     from,
     to,
+    resolutionSummary || null,
     operator.devOnly,
   );
   refresh();

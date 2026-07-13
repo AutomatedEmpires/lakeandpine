@@ -18,6 +18,7 @@ import {
   onboardCleanerAction,
   postalCodeStatusAction,
   proposeCrewAction,
+  removePlanningAssignmentAction,
   qualificationStatusAction,
   recoveryAction,
   recoveryStatusAction,
@@ -161,6 +162,11 @@ export default async function OperationsPage({
     null;
   const suggestions = selectedSchedule
     ? await getScheduleSuggestions(selectedSchedule.id, identity.devOnly)
+    : [];
+  const selectedAssignments = selectedSchedule
+    ? data.assignments.filter(
+        (assignment) => assignment.job_schedule_id === selectedSchedule.id,
+      )
     : [];
   const scheduledBookingIds = new Set(
     data.schedules.map((item) => item.booking_id),
@@ -898,6 +904,34 @@ export default async function OperationsPage({
                 ? `${selectedSchedule.service_vertical} · ${formatDateTime(selectedSchedule.start_at, selectedSchedule.territory_timezone)}`
                 : "Select a schedule"}
             </h3>
+            {selectedSchedule && selectedAssignments.length > 0 && (
+              <div className="ops-list" style={{ marginBottom: 16 }}>
+                <strong>Current planning cohort</strong>
+                {selectedAssignments.map((assignment) => (
+                  <form
+                    action={removePlanningAssignmentAction}
+                    className="inline-ops-form"
+                    key={assignment.id}
+                  >
+                    <input
+                      type="hidden"
+                      name="assignmentId"
+                      value={assignment.id}
+                    />
+                    <span>
+                      {assignment.cleaner_name} ·{" "}
+                      {label(assignment.assignment_role)} · {label(assignment.status)}
+                    </span>
+                    <button
+                      className="btn btn-soft"
+                      aria-label={`Remove ${assignment.cleaner_name} from this tentative planning schedule`}
+                    >
+                      Remove from plan
+                    </button>
+                  </form>
+                ))}
+              </div>
+            )}
             {suggestions.map((suggestion) => (
               <div
                 className={`crew-suggestion ${suggestion.eligible ? "eligible" : "blocked"}`}
@@ -989,7 +1023,27 @@ export default async function OperationsPage({
                       {serviceCase.priority}
                     </span>
                   </div>
+                  <p className="copy">
+                    Private contact: {serviceCase.contact_email ?? "email not supplied"}
+                    {" · "}
+                    {serviceCase.contact_phone ?? "phone not supplied"}
+                  </p>
                   <p>{serviceCase.details}</p>
+                  {!serviceCase.booking_id && (
+                    <p className="copy">
+                      Unlinked case · no booking mutation is available. Contact the
+                      customer using the private details above and obtain a verified
+                      service reference before changing a booking.
+                    </p>
+                  )}
+                  {serviceCase.booking_id &&
+                    ["reschedule", "cancel"].includes(serviceCase.case_type) &&
+                    !serviceCase.booking_mutation_eligible && (
+                      <p className="copy">
+                        Service is already underway or closed · schedule mutation is
+                        disabled. Use complaint/recovery controls instead.
+                      </p>
+                    )}
                   <form
                     action={serviceCaseStatusAction}
                     className="inline-ops-form"
@@ -1012,8 +1066,9 @@ export default async function OperationsPage({
                       {(CASE_NEXT[serviceCase.status] ?? [])
                         .filter(
                           (next) =>
-                            next !== "reclean_scheduled" ||
-                            serviceCase.has_scheduled_reclean,
+                            !serviceCase.has_open_refund &&
+                            (next !== "reclean_scheduled" ||
+                              serviceCase.has_scheduled_reclean),
                         )
                         .map((next) => (
                         <option value={next} key={next}>
@@ -1021,6 +1076,12 @@ export default async function OperationsPage({
                         </option>
                       ))}
                     </select>
+                    <input
+                      name="resolutionSummary"
+                      maxLength={2000}
+                      placeholder="Customer-visible outcome (required to resolve or close)"
+                      aria-label={`Resolution summary for service case ${serviceCase.public_reference}`}
+                    />
                     <button
                       className="btn btn-soft"
                       aria-label={`Update service case ${serviceCase.public_reference}`}
@@ -1028,7 +1089,14 @@ export default async function OperationsPage({
                       Update case
                     </button>
                   </form>
+                  {serviceCase.has_open_refund && (
+                    <p className="copy">
+                      Finish, decline, or cancel the open refund decision before
+                      changing this case state.
+                    </p>
+                  )}
                   {serviceCase.case_type === "reschedule" &&
+                    serviceCase.booking_mutation_eligible &&
                     !serviceCase.has_schedule &&
                     serviceCase.status === "action_planned" && (
                       <form
@@ -1052,6 +1120,7 @@ export default async function OperationsPage({
                       </form>
                     )}
                   {serviceCase.case_type === "reschedule" &&
+                    serviceCase.booking_mutation_eligible &&
                     serviceCase.has_schedule &&
                     serviceCase.status === "action_planned" && (
                       <form
@@ -1088,6 +1157,7 @@ export default async function OperationsPage({
                       </form>
                     )}
                   {serviceCase.case_type === "cancel" &&
+                    serviceCase.booking_mutation_eligible &&
                     serviceCase.status === "action_planned" && (
                       <form action={cancelCaseBookingAction}>
                         <input
@@ -1108,6 +1178,9 @@ export default async function OperationsPage({
                         </button>
                       </form>
                     )}
+                  {!["resolved", "closed", "declined", "canceled"].includes(
+                    serviceCase.status,
+                  ) && (
                   <form action={recoveryAction} className="ops-form compact">
                     <input type="hidden" name="caseId" value={serviceCase.id} />
                     <select
@@ -1153,6 +1226,7 @@ export default async function OperationsPage({
                       Plan recovery
                     </button>
                   </form>
+                  )}
                   {serviceCase.refund_eligible && (
                     <form
                       action={requestRefundReviewAction}

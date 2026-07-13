@@ -38,13 +38,14 @@ events, checklist, and notification-outbox rows in a `finally` block. Use
 
 - All three repository migrations applied in filename order with `ON_ERROR_STOP=1` on
   PostgreSQL 17. The premium operations migration SHA-256 was
-  `8c2d9e8d17c17ce1d2059b84078a84bfa7d0ac6390a8aef5e6090ca0797e69a7`.
+  `56ee7e34986dd03d2ba5df991f9f66ad213e7fcf17e880d6e7561ee90e7c791d`.
 - The verifier proved `lakeandpine_app` is a non-superuser, cannot bypass RLS, owns no
   operational tables, and has only the intended table privileges. A second physical
   Postgres.js connection opened as `postgres` and reported `current_user =
   lakeandpine_app` through the same startup-role mechanism used by the web runtime.
 - Database integration probes rejected malformed or ineligible ZIPs, active territories
-  without screened capacity, undersized labor windows, booking-only schedule claims,
+  without screened capacity, unlinked booking-mutating cases, undersized labor windows,
+  booking-only schedule claims,
   overstaffing, assignments outside recurring availability, daily/weekly/job-count cap
   violations, time-off approval over accepted work, capacity-invalid reschedules,
   unfinished recovery claims, and over-refunds. Confirmed/completed schedules synchronized
@@ -69,8 +70,9 @@ events, checklist, and notification-outbox rows in a `finally` block. Use
   choices, and validation alerts were exposed in the accessibility tree.
 - The private operator page displayed capacity-backed territories, applicant screening,
   cleaner readiness/availability, qualification, timezone-aware crew suggestions,
-  exact-capacity schedule lifecycle, owned/dated recovery actions, and a
-  non-money-moving refund ledger.
+  exact-capacity schedule lifecycle with pre-confirmation crew removal, private case
+  contact/outcome handling, owned/dated recovery actions, and a non-money-moving refund
+  ledger.
 - The cleaner workspace displayed scoped skills, territory timezone, capacity, recurring
   availability, assignments, and DST-safe time-away controls. The customer workspace
   distinguished preferences from confirmed windows and routed reschedules, cancellations,

@@ -173,12 +173,18 @@ export default async function DashboardPage({
                           {formatLongDate(nextBooking.scheduled_date)} · {windowLabel(nextBooking)} ·{" "}
                           <StatusBadge status={nextBooking.status} />
                         </p>
-                        {requestIntakeEnabled ? (
+                        {requestIntakeEnabled && [
+                          "requested",
+                          "reviewing",
+                          "ready",
+                          "confirmed",
+                          "scheduled",
+                        ].includes(nextBooking.status) ? (
                           <form action={rescheduleAction} style={{ marginTop: 12 }}>
                             <input type="hidden" name="bookingId" value={nextBooking.id} />
                             <button className="btn btn-primary">Request reschedule</button>
                           </form>
-                        ) : <p className="copy" style={{ marginTop: 12 }}>Request changes are disabled while customer-data intake is in preview.</p>}
+                        ) : !requestIntakeEnabled ? <p className="copy" style={{ marginTop: 12 }}>Request changes are disabled while customer-data intake is in preview.</p> : null}
                         {requestIntakeEnabled && (
                           <Link
                             className="btn btn-soft"

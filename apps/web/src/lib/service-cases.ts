@@ -17,7 +17,26 @@ export const SERVICE_CASE_TYPES = [
   "other",
 ] as const;
 
+export const BOOKING_LINKED_CASE_TYPES: readonly ServiceCaseType[] = [
+  "reschedule",
+  "cancel",
+  "reclean",
+  "refund_review",
+  "damage",
+];
+
 export type ServiceCaseType = (typeof SERVICE_CASE_TYPES)[number];
+
+export class ServiceCaseBookingReferenceError extends Error {}
+export class ServiceCaseBookingLifecycleError extends Error {}
+
+const PRE_SERVICE_BOOKING_STATUSES = [
+  "requested",
+  "reviewing",
+  "ready",
+  "confirmed",
+  "scheduled",
+];
 
 export type CreateServiceCaseInput = {
   idempotencyKey: string;
@@ -62,13 +81,37 @@ export async function createServiceCase(
     let bookingId: string | null = null;
     const normalizedReference = input.bookingReference?.trim() || null;
     if (normalizedReference) {
-      const bookings = await transaction<{ id: string }[]>`
-        select id
-        from bookings
+      const bookings = await transaction<
+        { id: string; status: string; schedule_status: string | null }[]
+      >`
+        select booking.id, booking.status, schedule.status as schedule_status
+        from bookings booking
+        left join job_schedules schedule on schedule.booking_id = booking.id
         where public_reference_token_hash = ${hashBookingReference(normalizedReference)}
-          and lower(contact ->> 'email') = lower(${input.email})
+          and lower(booking.contact ->> 'email') = lower(${input.email})
         limit 1`;
       bookingId = bookings[0]?.id ?? null;
+      if (
+        bookings[0] &&
+        ["reschedule", "cancel"].includes(input.caseType) &&
+        (!PRE_SERVICE_BOOKING_STATUSES.includes(bookings[0].status) ||
+          (bookings[0].schedule_status !== null &&
+            !["tentative", "held", "confirmed"].includes(
+              bookings[0].schedule_status,
+            )))
+      ) {
+        throw new ServiceCaseBookingLifecycleError(
+          "Booking is no longer eligible for a schedule mutation",
+        );
+      }
+    }
+    if (
+      BOOKING_LINKED_CASE_TYPES.includes(input.caseType) &&
+      !bookingId
+    ) {
+      throw new ServiceCaseBookingReferenceError(
+        "Booking-linked service case could not be verified",
+      );
     }
 
     const reference = publicReference();
@@ -118,7 +161,8 @@ export async function createCustomerRescheduleCase(customerId: string, bookingId
 
     const bookings = await transaction<{ id: string; contact: postgres.JSONValue }[]>`
       select id, contact from bookings where id = ${bookingId} and customer_id = ${customerId}
-        and status not in ('completed', 'follow_up', 'canceled') limit 1`;
+        and status in ('requested', 'reviewing', 'ready', 'confirmed', 'scheduled')
+        limit 1`;
     if (!bookings[0]) throw new Error("Booking is not eligible for reschedule review");
     const rows = await transaction<{ id: string; public_reference: string }[]>`
       insert into service_cases
@@ -186,7 +230,7 @@ export async function createAuthenticatedServiceCase(input: {
     if (
       ["reschedule", "cancel"].includes(input.caseType) &&
       booking &&
-      ["completed", "follow_up", "canceled"].includes(booking.status)
+      !PRE_SERVICE_BOOKING_STATUSES.includes(booking.status)
     ) {
       throw new Error("That booking is no longer eligible for a schedule change");
     }

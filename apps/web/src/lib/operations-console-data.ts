@@ -83,18 +83,30 @@ export type ScheduleRow = {
   is_dev_seed: boolean;
 };
 
+export type AssignmentOpsRow = {
+  id: string;
+  job_schedule_id: string;
+  cleaner_name: string;
+  assignment_role: string;
+  status: string;
+};
+
 export type ServiceCaseRow = {
   id: string;
   public_reference: string;
   case_type: string;
   booking_id: string | null;
+  booking_mutation_eligible: boolean;
   contact_name: string;
+  contact_email: string | null;
+  contact_phone: string | null;
   status: string;
   priority: string;
   details: string;
   created_at: string;
   refundable_balance_cents: number;
   refund_eligible: boolean;
+  has_open_refund: boolean;
   has_schedule: boolean;
   has_scheduled_reclean: boolean;
   territory_timezone: string;
@@ -156,6 +168,7 @@ export async function getOperationsConsole(devOnly: boolean) {
     applications,
     qualifications,
     schedules,
+    assignments,
     serviceCases,
     recoveries,
     refunds,
@@ -197,6 +210,7 @@ export async function getOperationsConsole(devOnly: boolean) {
       from bookings
       where service_vertical is not null and (${devOnly} = false or is_dev_seed)
         and qualification_status not in ('declined')
+        and status not in ('completed', 'follow_up', 'canceled')
       order by created_at desc limit 60`,
     sql<ScheduleRow[]>`
       select s.id, s.booking_id, s.service_vertical, s.territory_id, t.name as territory_name,
@@ -210,10 +224,34 @@ export async function getOperationsConsole(devOnly: boolean) {
         and s.end_at >= now() - interval '7 days'
       group by s.id, t.name, t.timezone
       order by s.start_at asc limit 60`,
+    sql<AssignmentOpsRow[]>`
+      select assignment.id, assignment.job_schedule_id,
+             cleaner.full_name as cleaner_name, assignment.assignment_role,
+             assignment.status
+      from job_assignments assignment
+      join job_schedules schedule on schedule.id = assignment.job_schedule_id
+      join cleaners cleaner on cleaner.id = assignment.cleaner_id
+      where assignment.status in ('proposed', 'accepted', 'confirmed')
+        and schedule.status in ('tentative', 'held')
+        and (${devOnly} = false or (assignment.is_dev_seed and schedule.is_dev_seed))
+      order by assignment.assigned_at asc`,
     sql<ServiceCaseRow[]>`
       select c.id, c.public_reference, c.case_type, c.booking_id,
              coalesce(contact ->> 'name', 'Unnamed customer') as contact_name,
+             nullif(contact ->> 'email', '') as contact_email,
+             nullif(contact ->> 'phone', '') as contact_phone,
              c.status, c.priority, c.details, c.created_at::text, c.is_dev_seed,
+             (c.booking_id is not null
+               and exists (
+                 select 1 from bookings booking
+                 where booking.id = c.booking_id
+                   and booking.status in ('requested', 'reviewing', 'ready', 'confirmed', 'scheduled')
+               )
+               and not exists (
+                 select 1 from job_schedules schedule
+                 where schedule.booking_id = c.booking_id
+                   and schedule.status not in ('tentative', 'held', 'confirmed')
+               )) as booking_mutation_eligible,
              exists(select 1 from job_schedules schedule where schedule.booking_id = c.booking_id)
                as has_schedule,
              exists(
@@ -233,7 +271,17 @@ export async function getOperationsConsole(devOnly: boolean) {
              (c.booking_id is not null
                and c.case_type in ('refund_review', 'complaint', 'reclean', 'damage')
                and c.status = 'refund_pending'
-               and coalesce(refundable.balance_cents, 0) > 0) as refund_eligible
+               and coalesce(refundable.balance_cents, 0) > 0
+               and not exists (
+                 select 1 from refund_records refund
+                 where refund.service_case_id = c.id
+                   and refund.status in ('requested', 'approved', 'ready_for_manual_processing', 'failed')
+               )) as refund_eligible,
+             exists(
+               select 1 from refund_records refund
+               where refund.service_case_id = c.id
+                 and refund.status in ('requested', 'approved', 'ready_for_manual_processing', 'failed')
+             ) as has_open_refund
       from service_cases c
       left join lateral (
         select sum(greatest(billing.amount_cents - coalesce(committed.amount_cents, 0), 0)) as balance_cents
@@ -302,6 +350,7 @@ export async function getOperationsConsole(devOnly: boolean) {
     applications,
     qualifications,
     schedules,
+    assignments,
     serviceCases,
     recoveries,
     refunds,
@@ -381,7 +430,7 @@ export async function getScheduleSuggestions(
       sql<(CapacityRow & { full_name: string })[]>`
       select id, full_name, skills, vertical_experience, max_daily_minutes,
              max_weekly_minutes, max_daily_jobs, home_territory_id
-      from cleaners where status = 'active'
+      from cleaners where status = 'active' and screening_status = 'verified'
         and home_territory_id = ${schedule.territory_id}
         and (${devOnly} = false or is_dev_seed)
       order by full_name limit 20`,
@@ -720,6 +769,7 @@ export async function createJobSchedule(input: {
     >`
       select service_vertical, required_crew_size, required_skills, estimated_duration_minutes, is_dev_seed
       from bookings where id = ${input.bookingId} and qualification_status = 'approved'
+        and status in ('requested', 'reviewing', 'ready')
         and (${input.devOnly} = false or is_dev_seed) for update`;
     if (!bookings[0]?.service_vertical)
       throw new Error(
@@ -833,15 +883,64 @@ export async function proposeAssignmentCandidate(
   });
 }
 
+export async function removeAssignmentFromPlanningSchedule(
+  assignmentId: string,
+  devOnly: boolean,
+) {
+  return sql.begin(async (tx) => {
+    const rows = await tx<{ id: string }[]>`
+      select assignment.id
+      from job_assignments assignment
+      join job_schedules schedule on schedule.id = assignment.job_schedule_id
+      where assignment.id = ${assignmentId}
+        and assignment.status in ('proposed', 'accepted', 'confirmed')
+        and schedule.status in ('tentative', 'held')
+        and (${devOnly} = false or (assignment.is_dev_seed and schedule.is_dev_seed))
+      for update of schedule, assignment`;
+    if (!rows[0]) {
+      throw new Error(
+        "Assignments can be removed only while the schedule is tentative or held",
+      );
+    }
+    const changed = await tx<{ id: string }[]>`
+      update job_assignments
+      set status = 'removed', responded_at = now()
+      where id = ${assignmentId}
+      returning id`;
+    return Boolean(changed[0]);
+  });
+}
+
 export async function setServiceCaseStatus(
   caseId: string,
   from: string,
   to: string,
+  resolutionSummary: string | null,
   devOnly: boolean,
 ) {
   const rows = await sql<
     { id: string }[]
-  >`update service_cases set status = ${to}
+  >`update service_cases
+    set status = ${to},
+        resolution_summary = case
+          when ${to} in ('resolved', 'closed') then ${resolutionSummary}
+          when ${to} not in ('declined', 'canceled') then null
+          else resolution_summary
+        end,
+        resolution_type = case
+          when ${to} not in ('resolved', 'closed', 'declined', 'canceled') then null
+          else resolution_type
+        end,
+        resolved_at = case
+          when ${to} = 'resolved' then now()
+          when ${to} not in ('resolved', 'closed', 'declined', 'canceled') then null
+          else resolved_at
+        end,
+        closed_at = case
+          when ${to} = 'closed' then now()
+          when ${to} not in ('resolved', 'closed', 'declined', 'canceled') then null
+          else closed_at
+        end
     where id = ${caseId} and status = ${from} and (${devOnly} = false or is_dev_seed) returning id`;
   return Boolean(rows[0]);
 }
@@ -864,11 +963,15 @@ export async function rescheduleBookingFromCase(input: {
       select s.id as schedule_id, s.labor_minutes, s.required_crew_size,
              territory.timezone as territory_timezone
       from service_cases c
+      join bookings booking on booking.id = c.booking_id
       join job_schedules s on s.booking_id = c.booking_id
       join service_territories territory on territory.id = s.territory_id
       where c.id = ${input.caseId} and c.case_type = 'reschedule'
-        and c.status = 'action_planned' and (${input.devOnly} = false or (c.is_dev_seed and s.is_dev_seed))
-      for update of c, s`;
+        and c.status = 'action_planned'
+        and booking.status in ('requested', 'reviewing', 'ready', 'confirmed', 'scheduled')
+        and s.status in ('tentative', 'held', 'confirmed')
+        and (${input.devOnly} = false or (c.is_dev_seed and s.is_dev_seed and booking.is_dev_seed))
+      for update of c, booking, s`;
     if (!rows[0])
       throw new Error(
         "Reschedule case must be action-planned and linked to a schedule",
@@ -953,17 +1056,44 @@ export async function cancelBookingFromCase(caseId: string, devOnly: boolean) {
   return sql.begin(async (tx) => {
     const rows = await tx<
       { booking_id: string }[]
-    >`select booking_id from service_cases
-      where id = ${caseId} and case_type = 'cancel' and status = 'action_planned'
-        and booking_id is not null and (${devOnly} = false or is_dev_seed) for update`;
+    >`select service_case.booking_id
+      from service_cases service_case
+      join bookings booking on booking.id = service_case.booking_id
+      where service_case.id = ${caseId}
+        and service_case.case_type = 'cancel'
+        and service_case.status = 'action_planned'
+        and booking.status in ('requested', 'reviewing', 'ready', 'confirmed', 'scheduled')
+        and (${devOnly} = false or (service_case.is_dev_seed and booking.is_dev_seed))
+      for update of service_case, booking`;
     if (!rows[0])
       throw new Error(
         "Cancellation case must be action-planned and linked to a booking",
       );
     const bookingId = rows[0].booking_id;
-    await tx`update job_schedules set status = 'canceled', version = version + 1
-      where booking_id = ${bookingId} and status <> 'completed'`;
-    await tx`update bookings set status = 'canceled' where id = ${bookingId} and status <> 'completed'`;
+    const schedules = await tx<{ id: string; status: string }[]>`
+      select id, status from job_schedules where booking_id = ${bookingId} for update`;
+    if (
+      schedules[0] &&
+      !["tentative", "held", "confirmed"].includes(schedules[0].status)
+    ) {
+      throw new Error("Service already started; use service recovery instead");
+    }
+    if (schedules[0]) {
+      await tx`update job_schedules set status = 'canceled', version = version + 1
+        where id = ${schedules[0].id}`;
+    } else {
+      const canceled = await tx<{ id: string }[]>`
+        update bookings set status = 'canceled'
+        where id = ${bookingId}
+          and status in ('requested', 'reviewing', 'ready', 'confirmed', 'scheduled')
+        returning id`;
+      if (!canceled[0]) throw new Error("Booking is no longer eligible for cancellation");
+    }
+    const canceledBookings = await tx<{ id: string }[]>`
+      select id from bookings where id = ${bookingId} and status = 'canceled'`;
+    if (!canceledBookings[0]) {
+      throw new Error("Booking cancellation did not complete");
+    }
     await tx`insert into booking_events (booking_id, type, data)
       values (${bookingId}, 'canceled_from_service_case', ${tx.json({ serviceCaseId: caseId })})`;
     await tx`update service_cases set status = 'resolved', resolution_type = 'canceled',
@@ -1060,6 +1190,11 @@ export async function createRefundReview(input: {
       where service_case.id = ${input.caseId}
         and service_case.case_type in ('refund_review', 'complaint', 'reclean', 'damage')
         and service_case.status = 'refund_pending'
+        and not exists (
+          select 1 from refund_records unfinished_refund
+          where unfinished_refund.service_case_id = service_case.id
+            and unfinished_refund.status in ('requested', 'approved', 'ready_for_manual_processing', 'failed')
+        )
         and (${input.devOnly} = false or (service_case.is_dev_seed and billing.is_dev_seed))
         and billing.amount_cents - coalesce((
           select sum(refund.amount_cents) from refund_records refund

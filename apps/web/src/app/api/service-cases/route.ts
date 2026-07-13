@@ -5,7 +5,14 @@ import { sendOpsNotification } from "@/lib/email";
 import { getIntakeReadinessIssues, requestIntakeEnabled } from "@/lib/env";
 import { checkRequestRateLimit } from "@/lib/rate-limit";
 import { isHoneypotFilled, readJsonBody, RequestBodyError } from "@/lib/request-security";
-import { createServiceCase, recordServiceCaseNotificationDelivery, SERVICE_CASE_TYPES } from "@/lib/service-cases";
+import {
+  BOOKING_LINKED_CASE_TYPES,
+  createServiceCase,
+  recordServiceCaseNotificationDelivery,
+  ServiceCaseBookingReferenceError,
+  ServiceCaseBookingLifecycleError,
+  SERVICE_CASE_TYPES,
+} from "@/lib/service-cases";
 
 const optionalDate = z.preprocess(
   (value) => (value === "" || value === null ? undefined : value),
@@ -30,6 +37,16 @@ const schema = z.object({
       code: "custom",
       path: ["preferredDate"],
       message: "A preferred new date is required for reschedule requests",
+    });
+  }
+  if (
+    BOOKING_LINKED_CASE_TYPES.includes(value.caseType) &&
+    !value.bookingReference
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["bookingReference"],
+      message: "A service reference is required for this request type",
     });
   }
 });
@@ -104,7 +121,25 @@ export async function POST(request: Request) {
       await recordServiceCaseNotificationDelivery(serviceCase.id, outcome);
     }
     return NextResponse.json({ reference: serviceCase.reference });
-  } catch {
+  } catch (error) {
+    if (error instanceof ServiceCaseBookingReferenceError) {
+      return NextResponse.json(
+        {
+          error:
+            "We couldn't match that service reference and email. Review both, or sign in for account support.",
+        },
+        { status: 400 },
+      );
+    }
+    if (error instanceof ServiceCaseBookingLifecycleError) {
+      return NextResponse.json(
+        {
+          error:
+            "That service is already underway or closed. Submit a complaint, reclean, refund review, or damage concern instead.",
+        },
+        { status: 409 },
+      );
+    }
     return NextResponse.json(
       { error: "We couldn't record that request. Please try again shortly." },
       { status: 503 },

@@ -511,6 +511,13 @@ async function inspectOperationalInvariants(sql) {
         true, 'estate', ${territory.id}, 'approved', 600, 2,
         array['estate_detail', 'delicate_finishes'])
       returning id`;
+    await expectDatabaseError(transaction, ['23514'], 'unlinked booking-mutating service case', async (savepoint) => {
+      await savepoint`
+        insert into service_cases
+          (public_reference, case_type, contact, details, status, is_dev_seed)
+        values ('LP-VERIFY-UNLINKED-1', 'cancel', '{}',
+          'Unlinked cancellation must not be accepted.', 'submitted', true)`;
+    });
 
     await expectDatabaseError(transaction, ['23514'], 'undersized labor window', async (savepoint) => {
       await savepoint`
@@ -588,7 +595,22 @@ async function inspectOperationalInvariants(sql) {
           (job_schedule_id, cleaner_id, assignment_role, status, is_dev_seed)
         values (${capacitySchedule.id}, ${cappedCleaner}, 'lead', 'accepted', true)`;
     });
+    const [removableAssignment] = await transaction`
+      insert into job_assignments
+        (job_schedule_id, cleaner_id, assignment_role, status, is_dev_seed)
+      values (${capacitySchedule.id}, ${overflowCleaner}, 'lead', 'accepted', true)
+      returning id`;
+    await transaction`
+      update job_assignments set status = 'removed', responded_at = now()
+      where id = ${removableAssignment.id}`;
+    const [removedAssignment] = await transaction`
+      select status from job_assignments where id = ${removableAssignment.id}`;
+    invariant(
+      removedAssignment.status === 'removed',
+      'Accepted assignment could not be removed from a tentative schedule',
+    );
 
+    await transaction`update job_schedules set status = 'held' where id = ${schedule.id}`;
     await transaction`update job_schedules set status = 'confirmed' where id = ${schedule.id}`;
     const [scheduledBooking] = await transaction`
       select status, territory_id from bookings where id = ${booking.id}`;
@@ -633,10 +655,19 @@ async function inspectOperationalInvariants(sql) {
         set start_at = '2030-07-16T03:00:00.000Z', end_at = '2030-07-16T08:00:00.000Z'
         where id = ${schedule.id}`;
     });
+    await transaction`update job_schedules set status = 'en_route' where id = ${schedule.id}`;
+    await transaction`update job_schedules set status = 'in_progress' where id = ${schedule.id}`;
+    await transaction`update job_schedules set status = 'quality_review' where id = ${schedule.id}`;
     await transaction`update job_schedules set status = 'completed' where id = ${schedule.id}`;
     const [completedBooking] = await transaction`
       select status from bookings where id = ${booking.id}`;
     invariant(completedBooking.status === 'completed', 'Completed schedule did not synchronize booking status');
+    await expectDatabaseError(transaction, ['23514'], 'mutation of a completed schedule', async (savepoint) => {
+      await savepoint`
+        update job_schedules set start_at = start_at + interval '1 hour',
+          end_at = end_at + interval '1 hour'
+        where id = ${schedule.id}`;
+    });
     await transaction`update service_territories set status = 'paused' where id = ${territory.id}`;
     await transaction`update job_schedules set status = 'canceled' where id = ${capacitySchedule.id}`;
     const [canceledCapacitySchedule] = await transaction`
@@ -645,6 +676,10 @@ async function inspectOperationalInvariants(sql) {
       canceledCapacitySchedule.status === 'canceled',
       'Cancellation must remain possible after territory capacity is paused',
     );
+    await expectDatabaseError(transaction, ['23514'], 'resurrection of a canceled schedule', async (savepoint) => {
+      await savepoint`
+        update job_schedules set status = 'tentative' where id = ${capacitySchedule.id}`;
+    });
 
     const [billing] = await transaction`
       insert into billing_records
@@ -671,6 +706,11 @@ async function inspectOperationalInvariants(sql) {
            status, requested_by_label, is_dev_seed)
         values (${refundCase.id}, ${booking.id}, ${billing.id}, 5000, 'over_refund',
           'requested', 'Verifier', true)`;
+    });
+    await expectDatabaseError(transaction, ['23514'], 'service case leaving refund-pending with unfinished refund', async (savepoint) => {
+      await savepoint`
+        update service_cases set status = 'action_planned'
+        where id = ${refundCase.id}`;
     });
     await transaction`update refund_records set status = 'approved', approved_by_label = 'Verifier', approved_at = now() where id = ${refund.id}`;
     await transaction`update refund_records set status = 'ready_for_manual_processing' where id = ${refund.id}`;

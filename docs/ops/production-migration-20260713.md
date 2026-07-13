@@ -20,7 +20,7 @@ Apply exactly `20260713053255_service_planning_foundation.sql` after the release
 passes the fresh PostgreSQL 17 verifier. The operation is additive and contains the
 premium booking, territory, cleaner, availability, scheduling, service-case, refund,
 outbox, RLS, and application-role foundation. The reviewed SHA-256 is
-`8c2d9e8d17c17ce1d2059b84078a84bfa7d0ac6390a8aef5e6090ca0797e69a7`.
+`56ee7e34986dd03d2ba5df991f9f66ad213e7fcf17e880d6e7561ee90e7c791d`.
 
 Before applying it:
 
