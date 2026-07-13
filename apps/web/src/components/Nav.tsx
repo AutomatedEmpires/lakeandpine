@@ -10,9 +10,7 @@ const LINKS = [
   { href: "/", label: "Home" },
   { href: "/services", label: "Services" },
   { href: "/pricing", label: "Pricing" },
-  { href: "/book", label: "Book" },
-  { href: "/areas", label: "Areas" },
-  { href: "/reviews", label: "Reviews" },
+  { href: "/book", label: "Plan a clean" },
   { href: "/dashboard", label: "Dashboard" },
 ];
 
@@ -77,7 +75,7 @@ export function Nav({ phone, phoneTel }: { phone?: string; phoneTel?: string }) 
               ◐
             </button>
             <Link className="btn btn-primary" href="/book">
-              Book a Clean
+              Plan a Clean
             </Link>
             <button
               className="icon-btn hamb"
@@ -107,7 +105,7 @@ export function Nav({ phone, phoneTel }: { phone?: string; phoneTel?: string }) 
           </a>
         ) : (
           <Link className="btn btn-primary" href="/book">
-            Book a Clean
+            Plan a Clean
           </Link>
         )}
       </aside>

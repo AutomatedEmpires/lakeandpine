@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
   title: "Pricing",
   description:
-    "Transparent starting prices for home cleaning in Coeur d'Alene and Spokane: weekly, bi-weekly, monthly, and one-time plans with clear add-on pricing.",
+    "Starting planning anchors for weekly, bi-weekly, monthly, and one-time cleaning requests.",
 };
 
 export default async function PricingPage() {
@@ -23,7 +23,7 @@ export default async function PricingPage() {
           <h1>Starting prices without the mystery.</h1>
           <p className="lead">
             Starting anchors, clear assumptions, visible add-ons, and a quote path — final
-            pricing is confirmed with you before the visit, never after.
+            pricing is confirmed before an appointment is scheduled.
           </p>
         </div>
       </div>
@@ -56,7 +56,7 @@ export default async function PricingPage() {
                   Get your own number
                 </Link>
                 <Link className="btn btn-soft" href="/book">
-                  Start booking
+                  Start a service request
                 </Link>
               </div>
             </div>

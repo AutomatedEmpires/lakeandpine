@@ -3,13 +3,14 @@ import { Suspense } from "react";
 
 import { BookingFlow } from "@/components/BookingFlow";
 import { getAddons, getServices } from "@/lib/data";
+import { requestIntakeEnabled } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Book a Clean",
+  title: "Request a Cleaning Plan",
   description:
-    "Schedule your home cleaning online: pick a service, describe your home, choose add-ons, and lock a same-week arrival window.",
+    "Build a cleaning request with property details, room notes, preferences, pets, access planning, and a preferred service window.",
 };
 
 export default async function BookPage() {
@@ -19,18 +20,19 @@ export default async function BookPage() {
     <div className="route-page">
       <div className="container page-hero">
         <div className="page-panel">
-          <span className="eyebrow">Booking</span>
-          <h1>From quote to calendar in two minutes.</h1>
+          <span className="eyebrow">Service planning</span>
+          <h1>Tell us how the home works—not just how many bedrooms it has.</h1>
           <p className="lead">
-            Service, home details, add-ons, date and time, contact — then we confirm your final
-            quote and text you updates.
+            Build a practical service request with room priorities, cleaning preferences, pets,
+            access notes, and timing preferences. No payment is collected, and requested times
+            are not confirmed until an operator reviews capacity.
           </p>
         </div>
       </div>
       <section className="section" style={{ paddingTop: 20 }}>
         <div className="container">
           <Suspense>
-            <BookingFlow services={services} addons={addons} />
+            <BookingFlow services={services} addons={addons} intakeEnabled={requestIntakeEnabled} />
           </Suspense>
         </div>
       </section>

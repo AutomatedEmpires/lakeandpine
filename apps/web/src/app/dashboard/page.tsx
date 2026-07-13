@@ -3,13 +3,12 @@ import Link from "next/link";
 
 import { resolveDashboardIdentity } from "@/lib/auth";
 import {
-  getBillingRecords,
   getCustomerBookings,
   getNextBooking,
   getPrimaryHome,
   getSupportThread,
 } from "@/lib/data";
-import { authEnabled } from "@/lib/env";
+import { authEnabled, requestIntakeEnabled } from "@/lib/env";
 import { formatDollars } from "@/lib/pricing";
 import { formatLongDate } from "@/lib/scheduling";
 
@@ -26,7 +25,6 @@ const TABS = [
   ["overview", "🏠 Overview"],
   ["bookings", "📅 Bookings"],
   ["notes", "⚙️ Home notes"],
-  ["billing", "🧾 Billing"],
   ["support", "💬 Support"],
 ] as const;
 
@@ -51,8 +49,7 @@ export default async function DashboardPage({
             <span className="eyebrow">Customer dashboard</span>
             <h1>Your home, remembered.</h1>
             <p className="lead">
-              Upcoming cleans, home notes, invoices, referral credit, and support — the portal
-              is part of the premium experience.
+              Service requests, home notes, status, and support in one calm place.
             </p>
             <div className="hero-actions">
               {authEnabled ? (
@@ -86,11 +83,10 @@ export default async function DashboardPage({
   const params = await searchParams;
   const tab: TabId = (TABS.some(([id]) => id === params.tab) ? params.tab : "overview") as TabId;
 
-  const [nextBooking, bookings, home, billing, support] = await Promise.all([
+  const [nextBooking, bookings, home, support] = await Promise.all([
     getNextBooking(customer.id),
     getCustomerBookings(customer.id),
     getPrimaryHome(customer.id),
-    getBillingRecords(customer.id),
     getSupportThread(customer.id),
   ]);
 
@@ -105,8 +101,8 @@ export default async function DashboardPage({
           </span>
           <h1>Welcome back{customer.full_name ? `, ${customer.full_name.split(" ")[0]}` : ""}.</h1>
           <p className="lead">
-            Manage upcoming cleans, home notes, invoices, support, referral credit, and your
-            recurring plan.
+            See requested and confirmed work, keep home preferences organized, and understand
+            what happens next.
           </p>
         </div>
       </div>
@@ -153,9 +149,9 @@ export default async function DashboardPage({
                     <p className="copy">Referral balance</p>
                   </div>
                   <div className="dash-metric card">
-                    <span className="eyebrow">Status</span>
-                    <b>Active</b>
-                    <p className="copy">Good standing</p>
+                    <span className="eyebrow">Requests</span>
+                    <b>{bookings.length}</b>
+                    <p className="copy">Visible in this account</p>
                   </div>
                 </div>
                 <div className="timeline">
@@ -168,10 +164,12 @@ export default async function DashboardPage({
                           {formatLongDate(nextBooking.scheduled_date)} · {nextBooking.scheduled_window}{" "}
                           arrival · <StatusBadge status={nextBooking.status} />
                         </p>
-                        <form action={rescheduleAction} style={{ marginTop: 12 }}>
-                          <input type="hidden" name="bookingId" value={nextBooking.id} />
-                          <button className="btn btn-primary">Request reschedule</button>
-                        </form>
+                        {requestIntakeEnabled ? (
+                          <form action={rescheduleAction} style={{ marginTop: 12 }}>
+                            <input type="hidden" name="bookingId" value={nextBooking.id} />
+                            <button className="btn btn-primary">Request reschedule</button>
+                          </form>
+                        ) : <p className="copy" style={{ marginTop: 12 }}>Request changes are disabled while customer-data intake is in preview.</p>}
                       </div>
                     </div>
                   )}
@@ -189,7 +187,7 @@ export default async function DashboardPage({
                       <span className="timeline-dot" />
                       <div>
                         <h3>No clean on the calendar</h3>
-                        <p className="copy">Lock a same-week window in about two minutes.</p>
+                        <p className="copy">Build a room-by-room request for operator review.</p>
                         <Link className="btn btn-primary" style={{ marginTop: 12 }} href="/book">
                           Book a clean
                         </Link>
@@ -246,7 +244,7 @@ export default async function DashboardPage({
                         ))}
                       </div>
                     )}
-                    <form action={saveNotesAction}>
+                    {requestIntakeEnabled ? <form action={saveNotesAction}>
                       <input type="hidden" name="homeId" value={home.id} />
                       <div className="field">
                         <label htmlFor="notes">Cleaner notes</label>
@@ -255,42 +253,13 @@ export default async function DashboardPage({
                       <button className="btn btn-primary" style={{ marginTop: 14 }}>
                         Save preferences
                       </button>
-                    </form>
+                    </form> : <div className="notice-card"><strong>Home-note editing is in preview.</strong><p>Changes are not accepted until customer-data collection is approved.</p></div>}
                   </>
                 ) : (
                   <p className="copy" style={{ marginTop: 14 }}>
                     Your home profile is created with your first booking.
                   </p>
                 )}
-              </div>
-            )}
-
-            {tab === "billing" && (
-              <div className="timeline">
-                {billing.length === 0 && (
-                  <div className="timeline-row card">
-                    <span className="timeline-dot" />
-                    <div>
-                      <h3>No invoices yet</h3>
-                      <p className="copy">Receipts and invoices appear here after each visit.</p>
-                    </div>
-                  </div>
-                )}
-                {billing.map((record) => (
-                  <div key={record.id} className="timeline-row card">
-                    <span className="timeline-dot" />
-                    <div>
-                      <h3>
-                        {new Date(record.occurred_at).toLocaleDateString("en-US", {
-                          month: "long",
-                          day: "numeric",
-                        })}{" "}
-                        · {formatDollars(record.amount_cents)} · <StatusBadge status={record.status} />
-                      </h3>
-                      <p className="copy">{record.description}</p>
-                    </div>
-                  </div>
-                ))}
               </div>
             )}
 
@@ -313,10 +282,10 @@ export default async function DashboardPage({
                     </div>
                   ))}
                 </div>
-                <form action={supportMessageAction} className="chat-input" style={{ padding: 0, border: 0 }}>
+                {requestIntakeEnabled ? <form action={supportMessageAction} className="chat-input" style={{ padding: 0, border: 0 }}>
                   <input name="body" placeholder="Message support..." required />
                   <button className="btn btn-primary">Send</button>
-                </form>
+                </form> : <div className="notice-card"><strong>Messaging is not live.</strong><p>The support thread is a preview until customer-data collection and communications are approved.</p></div>}
               </div>
             )}
           </div>

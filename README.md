@@ -1,8 +1,9 @@
 # Lake & Pine Cleaning Co.
 
-Premium home-cleaning service for Coeur d'Alene + Spokane. Production Next.js app at
-`apps/web`: estimate engine, 6-step persisted booking flow, customer dashboard,
-Pine Concierge, and 7 local-SEO area pages on the recovered prototype's design system.
+Cleaning-service operating system foundation. The Next.js app at `apps/web` now includes
+an honest public service site, an eight-step property/room planning flow, generated service
+checklists, a customer status dashboard, and a private operator pipeline. Payments remain
+outside the Phase 1 workflow.
 
 ## Run
 
@@ -20,8 +21,9 @@ docker run -d --name lp-postgres --restart unless-stopped \
   -p 5442:5432 -v lp-pgdata:/var/lib/postgresql/data postgres:17-alpine
 docker exec -i lp-postgres psql -U postgres -d lakeandpine < supabase/migrations/0001_core.sql
 docker exec -i lp-postgres psql -U postgres -d lakeandpine < supabase/migrations/0002_content_seed.sql
+docker exec -i lp-postgres psql -U postgres -d lakeandpine < supabase/migrations/20260713053255_service_planning_foundation.sql
 pnpm ops:seed-content           # service areas + placeholder reviews
-pnpm ops:seed-dev               # demo customer for dashboard preview (is_dev_seed)
+pnpm ops:seed-dev               # demo customer/operator workflow (is_dev_seed)
 ```
 
 Start the app against a disposable migrated database with a random 32+ character smoke
@@ -41,9 +43,22 @@ provider- or money-gated work.
 Copy `.env.example` values into `apps/web/.env.local` (dev `DATABASE_URL` above).
 `pnpm ops:purge-dev-seed` removes every `is_dev_seed` row before launch.
 
+Preview the Phase 1 work without collecting customer data:
+
+```bash
+DEV_PREVIEW_CUSTOMER_EMAIL=dev-preview@lakeandpinecleaning.com
+DEV_PREVIEW_OPERATOR_EMAIL=operator-preview@lakeandpinecleaning.com
+REQUEST_INTAKE_ENABLED=false
+```
+
+- `/book` runs a browser-local plan preview and does not persist submissions.
+- `/dashboard` shows the seeded customer workflow outside production.
+- `/operator` shows only seeded demo rows outside production.
+- Set `REQUEST_INTAKE_ENABLED=true` only after founder approval for real customer-data intake.
+
 ## Stack (cross-portfolio lock)
 
-Clerk (auth) · Supabase Postgres via `DATABASE_URL` (data) · Stripe (payments) ·
+Clerk (auth) · Supabase Postgres via `DATABASE_URL` (data) · Stripe (Phase 2, not used by this workflow) ·
 Resend (email) · PostHog (analytics) · Sentry (errors) · Mapbox (maps) · Vercel (hosting).
 All integrations are wired and key-gated — see `.env.example` for exactly what go-live needs.
 

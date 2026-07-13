@@ -7,9 +7,9 @@ import { getServiceAreas } from "@/lib/data";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Service Areas",
-  description:
-    "Premium home cleaning across Coeur d'Alene, Spokane, Post Falls, Hayden, Liberty Lake, Spokane Valley, and Rathdrum.",
+  title: "Area planning preview",
+  description: "Planning pages for possible service areas. Public availability is not yet confirmed.",
+  robots: { index: false },
 };
 
 export default async function AreasPage() {
@@ -19,18 +19,18 @@ export default async function AreasPage() {
     <div className="route-page">
       <div className="container page-hero">
         <div className="page-panel">
-          <span className="eyebrow">Service areas</span>
-          <h1>Local pages that can actually compete.</h1>
+          <span className="eyebrow">Area planning preview</span>
+          <h1>Locations under consideration—not an availability promise.</h1>
           <p className="lead">
-            Real neighborhoods, city-specific service angles, and direct booking for every
-            market we serve in the Inland Northwest.
+            These recovered location pages are retained for planning. A founder-approved
+            service boundary is still required before Lake &amp; Pine claims availability.
           </p>
         </div>
       </div>
       <section className="section" style={{ paddingTop: 20 }}>
         <div className="container map-section">
           <div className="card" style={{ padding: 28 }}>
-            <h2>Primary local pages</h2>
+            <h2>Location planning pages</h2>
             <ul className="checks" style={{ margin: "18px 0 22px" }}>
               {areas.map((area) => (
                 <li key={area.slug}>
@@ -41,7 +41,7 @@ export default async function AreasPage() {
               ))}
             </ul>
             <Link className="btn btn-primary" href="/book">
-              Book locally
+              Preview a service request
             </Link>
           </div>
           <AreaMap areas={areas} />

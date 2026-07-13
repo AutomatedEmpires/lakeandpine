@@ -115,13 +115,21 @@ try {
     scheduledDate,
     scheduledWindow: "10:00 AM",
     home: {
+      propertyType: "house",
       sizeBand: "1200_2000",
       bedrooms: "3",
       bathrooms: "2",
+      floors: "1",
       pets: "one",
       condition: "needs_detail",
-      notes: "Synthetic non-production runtime smoke",
     },
+    rooms: [
+      { id: "kitchen", label: "Kitchen", selected: true, note: "Synthetic smoke note" },
+      { id: "bathroom", label: "Bathrooms", selected: true },
+    ],
+    preferences: ["Unscented products"],
+    petNotes: "Synthetic smoke pet note",
+    accessMethod: "coordinate_later",
     contact: {
       name: "Runtime Smoke",
       phone: "2085550100",
@@ -129,6 +137,7 @@ try {
       zip: "83814",
     },
     accessNotes: "Synthetic non-production runtime smoke; discard",
+    specialInstructions: "Synthetic non-production runtime smoke",
   });
   assert(booking.id && booking.estimate === 427, "booking response did not match the canonical estimate");
   if (forceFailure === "after-booking") {
@@ -154,15 +163,18 @@ try {
   assert(leadRow?.status === "new", "lead was not persisted with new status");
 
   const [bookingRow] = await sql`
-    select b.id::text, b.status, b.estimate_cents,
+    select b.id::text, b.status, b.estimate_cents, b.planning_score,
       exists (
         select 1 from booking_events e
         where e.booking_id = b.id and e.type = 'requested'
-      ) as has_requested_event
+      ) as has_requested_event,
+      (select count(*)::int from checklist_items c where c.booking_id = b.id) as checklist_count
     from bookings b where b.id = ${booking.id}`;
   assert(bookingRow?.status === "requested", "booking was not persisted with requested status");
   assert(bookingRow?.estimate_cents === 42700, "booking was not persisted at 42700 cents");
   assert(bookingRow?.has_requested_event, "booking did not receive a requested event");
+  assert(bookingRow?.planning_score > 0, "booking did not receive a planning score");
+  assert(bookingRow?.checklist_count > 0, "booking did not receive a generated checklist");
 
   console.log(JSON.stringify({
     result: "PASS",

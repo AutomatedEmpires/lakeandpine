@@ -16,3 +16,4 @@ export const BUSINESS_EMAIL = process.env.NEXT_PUBLIC_BUSINESS_EMAIL || "hello@l
 export const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3010";
 
 export const authEnabled = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
+export const requestIntakeEnabled = process.env.REQUEST_INTAKE_ENABLED === "true";

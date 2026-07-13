@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { createQuote } from "@/lib/data";
+import { requestIntakeEnabled } from "@/lib/env";
 import { calculateEstimate } from "@/lib/pricing";
+import { getRuntimeSmokeDisposition } from "@/lib/runtime-smoke-request";
 
 const quoteSchema = z.object({
   sizeBand: z.enum(["under_1200", "1200_2000", "2000_3000", "3000_plus"]),
@@ -16,6 +18,16 @@ const quoteSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const smokeDisposition = getRuntimeSmokeDisposition(request.headers);
+  if (smokeDisposition === "rejected") {
+    return NextResponse.json({ error: "Invalid runtime smoke authorization" }, { status: 403 });
+  }
+  if (!requestIntakeEnabled && smokeDisposition !== "authorized") {
+    return NextResponse.json(
+      { error: "Quote storage is disabled while intake is in preview." },
+      { status: 503 },
+    );
+  }
   const body = await request.json().catch(() => null);
   const parsed = quoteSchema.safeParse(body);
   if (!parsed.success) {

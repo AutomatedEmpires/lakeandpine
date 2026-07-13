@@ -17,7 +17,7 @@ export function ChatDock() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "bot",
-      text: "Ask what clean you need, what affects price, whether we bring supplies, or how soon you can schedule.",
+      text: "Ask what clean you need, what affects the estimate, how pet notes work, or what happens after a request.",
     },
   ]);
   const bodyRef = useRef<HTMLDivElement>(null);

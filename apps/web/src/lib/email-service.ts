@@ -47,9 +47,6 @@ export function createEmailService(config: {
   const emailFooterParts = [
     "Lake & Pine Cleaning Co.",
     config.businessPhone,
-    "Licensed",
-    "Bonded",
-    "Insured",
   ].filter(Boolean);
   let transport: EmailTransport | undefined;
 
@@ -104,8 +101,8 @@ export function createEmailService(config: {
             </p>
             <p style="color:#607a75;font-size:16px;line-height:1.5">
               Starting estimate: <strong>$${input.estimateDollars}</strong>. This is a starting
-              anchor — we confirm the final quote with you before the visit. We'll text when your
-              cleaner is on the way.
+              planning anchor. Your requested window is not an appointment; an operator reviews
+              scope and capacity before confirming service.
             </p>
             <p style="margin:28px 0">
               <a href="${config.appUrl}/dashboard"
