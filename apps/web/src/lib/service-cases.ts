@@ -3,8 +3,9 @@ import "server-only";
 import { createHash, randomBytes } from "node:crypto";
 import type postgres from "postgres";
 
-import { sql } from "./db";
 import { hashBookingReference } from "./booking-reference";
+import { PRIVACY_NOTICE_DATE, REQUEST_CONSENT_POLICY_VERSION } from "./consent-policy";
+import { sql } from "./db";
 
 export const SERVICE_CASE_TYPES = [
   "reschedule",
@@ -74,16 +75,20 @@ export async function createServiceCase(
     const rows = await transaction<{ id: string; public_reference: string }[]>`
       insert into service_cases
         (public_reference, idempotency_key, case_type, booking_id,
-         booking_reference_input, contact, details, preferred_date, alternate_date,
+         contact, details, preferred_date, alternate_date,
          status, consent_snapshot, consented_at)
       values
         (${reference}, ${sha256(input.idempotencyKey)}, ${input.caseType}, ${bookingId},
-         ${normalizedReference}, ${transaction.json({
+         ${transaction.json({
            name: input.name,
            email: input.email,
            phone: input.phone || null,
          })}, ${input.details}, ${input.preferredDate || null}, ${input.alternateDate || null},
-         'submitted', ${transaction.json({ privacy: true, version: "2026-07-13" })}, now())
+         'submitted', ${transaction.json({
+           privacy: true,
+           policyVersion: REQUEST_CONSENT_POLICY_VERSION,
+           privacyNoticeDate: PRIVACY_NOTICE_DATE,
+         })}, now())
       returning id, public_reference`;
 
     const serviceCase = rows[0];

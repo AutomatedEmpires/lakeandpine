@@ -159,7 +159,6 @@ export function PremiumRequestFlow({ intakeEnabled }: { intakeEnabled: boolean }
           privacyConsent,
           termsConsent,
           photoPermission,
-          version: "2026-07-13",
         },
       }),
     }).catch(() => null);

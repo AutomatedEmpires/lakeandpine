@@ -274,20 +274,82 @@ export async function getCustomerByEmail(
 
 export async function upsertCustomerFromClerk(input: {
   clerkUserId: string;
-  email: string | null;
+  verifiedEmail: string | null;
   fullName: string | null;
   phone: string | null;
 }): Promise<Customer> {
-  // Adopt an existing guest-booking customer by email when one exists.
-  const rows = await sql<Customer[]>`
-    insert into customers (clerk_user_id, email, full_name, phone)
-    values (${input.clerkUserId}, ${input.email}, ${input.fullName}, ${input.phone})
-    on conflict (email) do update set
-      clerk_user_id = coalesce(customers.clerk_user_id, excluded.clerk_user_id),
-      full_name = coalesce(excluded.full_name, customers.full_name),
-      phone = coalesce(excluded.phone, customers.phone)
-    returning id, clerk_user_id, email, full_name, phone, role, referral_credit_cents`;
-  return rows[0];
+  return sql.begin(async (transaction) => {
+    const verifiedEmail = input.verifiedEmail?.trim().toLowerCase() || null;
+    const currentRows = await transaction<Customer[]>`
+      select id, clerk_user_id, email, full_name, phone, role, referral_credit_cents
+      from customers where clerk_user_id = ${input.clerkUserId}
+      limit 1 for update`;
+    const current = currentRows[0] ?? null;
+
+    const emailRows = verifiedEmail
+      ? await transaction<Customer[]>`
+          select id, clerk_user_id, email, full_name, phone, role, referral_credit_cents
+          from customers where lower(email) = ${verifiedEmail}
+          order by created_at asc limit 2 for update`
+      : [];
+    const unambiguousEmailOwner = emailRows.length === 1 ? emailRows[0] : null;
+    const claimableEmailOwner =
+      unambiguousEmailOwner &&
+      (!unambiguousEmailOwner.clerk_user_id ||
+        unambiguousEmailOwner.clerk_user_id === input.clerkUserId)
+        ? unambiguousEmailOwner
+        : null;
+    const emailIdentityIsSafe =
+      emailRows.length === 0 || Boolean(claimableEmailOwner);
+
+    let customer: Customer;
+    if (!current && claimableEmailOwner) {
+      const rows = await transaction<Customer[]>`
+        update customers set
+          clerk_user_id = ${input.clerkUserId},
+          email = ${verifiedEmail},
+          full_name = coalesce(${input.fullName}, full_name),
+          phone = coalesce(${input.phone}, phone)
+        where id = ${claimableEmailOwner.id}
+        returning id, clerk_user_id, email, full_name, phone, role, referral_credit_cents`;
+      customer = rows[0];
+    } else if (current) {
+      const canStoreVerifiedEmail =
+        verifiedEmail &&
+        emailIdentityIsSafe &&
+        (!unambiguousEmailOwner || unambiguousEmailOwner.id === current.id);
+      const rows = await transaction<Customer[]>`
+        update customers set
+          email = case when ${Boolean(canStoreVerifiedEmail)} then ${verifiedEmail} else email end,
+          full_name = coalesce(${input.fullName}, full_name),
+          phone = coalesce(${input.phone}, phone)
+        where id = ${current.id}
+        returning id, clerk_user_id, email, full_name, phone, role, referral_credit_cents`;
+      customer = rows[0];
+    } else {
+      const rows = await transaction<Customer[]>`
+        insert into customers (clerk_user_id, email, full_name, phone)
+        values (${input.clerkUserId}, ${verifiedEmail && emailRows.length === 0 ? verifiedEmail : null},
+          ${input.fullName}, ${input.phone})
+        returning id, clerk_user_id, email, full_name, phone, role, referral_credit_cents`;
+      customer = rows[0];
+    }
+
+    // A verified primary address may adopt only unowned guest bookings. Ambiguous
+    // or already-claimed email identities fail closed and never transfer data.
+    if (verifiedEmail && emailIdentityIsSafe) {
+      const priorCustomerId =
+        unambiguousEmailOwner && unambiguousEmailOwner.id !== customer.id
+          ? unambiguousEmailOwner.id
+          : null;
+      await transaction`
+        update bookings set customer_id = ${customer.id}
+        where lower(contact ->> 'email') = ${verifiedEmail}
+          and (customer_id is null or customer_id = ${priorCustomerId})`;
+    }
+
+    return customer;
+  });
 }
 
 export type BookingRow = {

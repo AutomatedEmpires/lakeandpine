@@ -4,6 +4,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { deriveBookingReference } from "@/lib/booking-reference";
+import { normalizeVerifiedClerkEmail } from "@/lib/clerk-identity";
+import { buildBookingConsentRecord } from "@/lib/consent-policy";
 import {
   createBooking,
   getCustomerByEmail,
@@ -78,7 +80,6 @@ const bookingSchema = z.object({
     privacyConsent: z.literal(true),
     termsConsent: z.literal(true),
     photoPermission: z.boolean(),
-    version: z.string().regex(DATE_PATTERN),
   }),
 });
 
@@ -250,9 +251,13 @@ export async function POST(request: Request) {
     const { userId } = await auth();
     if (userId) {
       const user = await currentUser();
+      const verifiedEmail = normalizeVerifiedClerkEmail(
+        user?.primaryEmailAddress?.emailAddress,
+        user?.primaryEmailAddress?.verification?.status,
+      );
       const customer = await upsertCustomerFromClerk({
         clerkUserId: userId,
-        email: user?.primaryEmailAddress?.emailAddress ?? input.contact.email,
+        verifiedEmail,
         fullName: user?.fullName ?? input.contact.name,
         phone: input.contact.phone,
       });
@@ -283,6 +288,7 @@ export async function POST(request: Request) {
       planning.estimatedCrewSize * 10 +
       Math.ceil(planning.estimatedMinutes / 60) * 3,
   );
+  const consent = buildBookingConsentRecord(input.acknowledgements);
 
   let booking;
   try {
@@ -336,14 +342,9 @@ export async function POST(request: Request) {
         smokeDisposition === "authorized" ? "runtime_smoke" : "web_booking",
       isDevSeed: smokeDisposition === "authorized",
       idempotencyKeyHash: sha256(input.idempotencyKey),
-      consentSnapshot: {
-        privacy: input.acknowledgements.privacyConsent,
-        requestTerms: input.acknowledgements.termsConsent,
-        siteReadiness: input.acknowledgements.siteReady,
-        photoPermission: input.acknowledgements.photoPermission,
-      },
-      consentVersion: input.acknowledgements.version,
-      consentNoticeDate: input.acknowledgements.version,
+      consentSnapshot: consent.snapshot,
+      consentVersion: consent.version,
+      consentNoticeDate: consent.noticeDate,
       checklist: checklistFor(
         input.program,
         input.acknowledgements.photoPermission,

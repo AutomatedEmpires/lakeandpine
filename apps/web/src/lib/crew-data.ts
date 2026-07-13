@@ -68,6 +68,38 @@ export async function getCleanerByEmail(email: string) {
   return cleanerSelect(sql`lower(c.email) = lower(${email})`);
 }
 
+export async function linkCleanerExternalAuthIdByVerifiedEmail(
+  externalAuthId: string,
+  verifiedEmail: string,
+) {
+  const normalizedEmail = verifiedEmail.trim().toLowerCase();
+  if (!externalAuthId || !normalizedEmail) return false;
+
+  return sql.begin(async (transaction) => {
+    const alreadyLinked = await transaction<{ id: string }[]>`
+      select id from cleaners
+      where external_auth_id = ${externalAuthId}
+      limit 1 for update`;
+    if (alreadyLinked[0]) return true;
+
+    const candidates = await transaction<
+      { id: string; external_auth_id: string | null }[]
+    >`
+      select id, external_auth_id from cleaners
+      where lower(email) = ${normalizedEmail}
+        and status in ('onboarding', 'active')
+      order by created_at asc
+      limit 2 for update`;
+    if (candidates.length !== 1 || candidates[0].external_auth_id) return false;
+
+    const linked = await transaction<{ id: string }[]>`
+      update cleaners set external_auth_id = ${externalAuthId}
+      where id = ${candidates[0].id} and external_auth_id is null
+      returning id`;
+    return Boolean(linked[0]);
+  });
+}
+
 export async function getCrewAssignments(cleanerId: string, devOnly: boolean) {
   return sql<CrewAssignment[]>`
     select a.id, s.id as schedule_id, s.service_vertical, s.start_at::text,

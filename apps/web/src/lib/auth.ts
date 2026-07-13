@@ -2,8 +2,14 @@ import "server-only";
 
 import { auth, currentUser } from "@clerk/nextjs/server";
 
+import { normalizeVerifiedClerkEmail } from "./clerk-identity";
 import { type Customer, getCustomerByClerkId, getCustomerByEmail, upsertCustomerFromClerk } from "./data";
-import { type Cleaner, getCleanerByEmail, getCleanerByExternalAuthId } from "./crew-data";
+import {
+  type Cleaner,
+  getCleanerByEmail,
+  getCleanerByExternalAuthId,
+  linkCleanerExternalAuthIdByVerifiedEmail,
+} from "./crew-data";
 import { authEnabled, optionalEnv } from "./env";
 
 export type DashboardIdentity =
@@ -30,11 +36,15 @@ export async function resolveDashboardIdentity(): Promise<DashboardIdentity> {
     const { userId } = await auth();
     if (!userId) return { state: "signed_out" };
     let customer = await getCustomerByClerkId(userId);
-    if (!customer) {
+    if (!customer?.email) {
       const user = await currentUser();
+      const verifiedEmail = normalizeVerifiedClerkEmail(
+        user?.primaryEmailAddress?.emailAddress,
+        user?.primaryEmailAddress?.verification?.status,
+      );
       customer = await upsertCustomerFromClerk({
         clerkUserId: userId,
-        email: user?.primaryEmailAddress?.emailAddress ?? null,
+        verifiedEmail,
         fullName: user?.fullName ?? null,
         phone: user?.primaryPhoneNumber?.phoneNumber ?? null,
       });
@@ -71,7 +81,21 @@ export async function resolveCleanerIdentity(): Promise<CleanerIdentity> {
   if (authEnabled) {
     const { userId } = await auth();
     if (!userId) return { state: "signed_out" };
-    const cleaner = await getCleanerByExternalAuthId(userId);
+    let cleaner = await getCleanerByExternalAuthId(userId);
+    if (!cleaner) {
+      const user = await currentUser();
+      const verifiedEmail = normalizeVerifiedClerkEmail(
+        user?.primaryEmailAddress?.emailAddress,
+        user?.primaryEmailAddress?.verification?.status,
+      );
+      if (verifiedEmail) {
+        const linked = await linkCleanerExternalAuthIdByVerifiedEmail(
+          userId,
+          verifiedEmail,
+        );
+        if (linked) cleaner = await getCleanerByExternalAuthId(userId);
+      }
+    }
     if (!cleaner || !["onboarding", "active"].includes(cleaner.status)) {
       return { state: "denied" };
     }

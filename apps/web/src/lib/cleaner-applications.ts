@@ -2,6 +2,7 @@ import "server-only";
 
 import { createHash, randomBytes } from "node:crypto";
 
+import { PRIVACY_NOTICE_DATE, REQUEST_CONSENT_POLICY_VERSION } from "./consent-policy";
 import { sql } from "./db";
 
 export type CleanerApplicationInput = {
@@ -45,7 +46,11 @@ export async function createCleanerApplication(
        ${input.email}, ${input.phone}, ${input.homeBase}, ${input.servicePrograms},
        ${input.territories}, ${input.availabilitySummary}, ${input.experienceSummary},
        ${input.transportationConfirmed},
-       ${sql.json({ privacy: true, version: "2026-07-13" })}, now())
+       ${sql.json({
+         privacy: true,
+         policyVersion: REQUEST_CONSENT_POLICY_VERSION,
+         privacyNoticeDate: PRIVACY_NOTICE_DATE,
+       })}, now())
     returning public_reference`;
   return { reference: rows[0].public_reference, duplicate: false };
 }
