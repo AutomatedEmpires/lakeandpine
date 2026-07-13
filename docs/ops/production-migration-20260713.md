@@ -40,9 +40,10 @@ planning table set.
 Apply exactly `20260713234000_production_schema_hardening.sql` after its release commit
 passes the fresh PostgreSQL 17 verifier. It sets an explicit function search path,
 removes redundant private-table policies, narrows public catalog policies to Supabase's
-`anon` and `authenticated` roles, and adds covering indexes for every foreign key
+`anon` and `authenticated` client roles plus the server-only `lakeandpine_app` role,
+and adds covering indexes for every foreign key
 reported by the production performance advisor. Its canonical LF-normalized SHA-256 is
-`54c734dde9cb534d4f21b38cf5da754b09e255fb2d1c7f3f1ce891d473c2ee92`.
+`ca69a8e182853cea91aedb289d83a054b1148aacf5a37beda98081f53ceb0b65`.
 
 Before applying the forward hardening migration:
 

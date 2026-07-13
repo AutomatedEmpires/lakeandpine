@@ -13,6 +13,12 @@ drop policy if exists app_all_homes on public.homes;
 drop policy if exists app_all_leads on public.leads;
 drop policy if exists app_all_quotes on public.quotes;
 drop policy if exists app_all_support_messages on public.support_messages;
+drop policy if exists app_all_addons on public.addons;
+drop policy if exists app_all_faqs on public.faqs;
+drop policy if exists app_all_plans on public.plans;
+drop policy if exists app_all_reviews on public.reviews;
+drop policy if exists app_all_service_areas on public.service_areas;
+drop policy if exists app_all_services on public.services;
 
 do $$
 declare
@@ -43,7 +49,7 @@ begin
       ) as policies(table_name, policy_name)
     loop
       execute format(
-        'alter policy %I on public.%I to anon, authenticated',
+        'alter policy %I on public.%I to anon, authenticated, lakeandpine_app',
         public_catalog_policy.policy_name,
         public_catalog_policy.table_name
       );

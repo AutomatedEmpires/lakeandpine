@@ -44,10 +44,11 @@ events, checklist, and notification-outbox rows in a `finally` block. Use
   `a31fe0ec9e305fd1e8520ce5dc6f81847e1cbb965a953d89bc07fc2190672952`.
 - The forward hardening migration set an immutable function search path, removed
   duplicate private application policies, scoped hosted public-read policies to the
-  Supabase client roles, and added covering indexes for every production-advisor foreign
+  Supabase client roles and the restricted application runtime, proved every seeded
+  catalog remains runtime-visible, and added covering indexes for every production-advisor foreign
   key finding without changing application-role access. Its canonical LF-normalized
   SHA-256 was
-  `54c734dde9cb534d4f21b38cf5da754b09e255fb2d1c7f3f1ce891d473c2ee92`.
+  `ca69a8e182853cea91aedb289d83a054b1148aacf5a37beda98081f53ceb0b65`.
 - The verifier proved `lakeandpine_app` is a non-superuser, cannot bypass RLS, owns no
   operational tables, and has only the intended table privileges. A second physical
   Postgres.js connection opened as `postgres` and reported `current_user =

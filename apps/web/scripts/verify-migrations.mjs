@@ -24,6 +24,14 @@ const PUBLIC_CONTENT_TABLES = new Set([
   "faqs",
   "reviews",
 ]);
+const PUBLIC_CONTENT_FILTERS = {
+  services: "active",
+  addons: "active",
+  plans: "true",
+  service_areas: "active",
+  faqs: "active",
+  reviews: "published",
+};
 const REQUIRED_SCHEMA = {
   bookings: [
     "id",
@@ -588,6 +596,36 @@ async function inspectProductionHardening(sql) {
     );
   }
 
+  const expectedApplicationCatalogRows = {};
+  for (const [table, predicate] of Object.entries(PUBLIC_CONTENT_FILTERS)) {
+    const [expected] = await sql.unsafe(
+      `select count(*)::integer as row_count from public.${quoteIdentifier(table)} where ${predicate}`,
+    );
+    expectedApplicationCatalogRows[table] = expected.row_count;
+  }
+  if (expectedApplicationCatalogRows.services === 0) {
+    failures.push("The seeded services catalog is empty");
+  }
+
+  const applicationCatalogRows = {};
+  await sql.begin(async (transaction) => {
+    await transaction.unsafe(`set local role ${quoteIdentifier(APP_ROLE)}`);
+    for (const table of PUBLIC_CONTENT_TABLES) {
+      const [visibility] = await transaction.unsafe(
+        `select count(*)::integer as row_count from public.${quoteIdentifier(table)}`,
+      );
+      applicationCatalogRows[table] = visibility.row_count;
+    }
+  });
+  const hiddenApplicationCatalogTables = Object.entries(applicationCatalogRows)
+    .filter(([table, rowCount]) => rowCount !== expectedApplicationCatalogRows[table])
+    .map(([table]) => table);
+  if (hiddenApplicationCatalogTables.length > 0) {
+    failures.push(
+      `${APP_ROLE} cannot read seeded public catalog rows from: ${hiddenApplicationCatalogTables.join(", ")}`,
+    );
+  }
+
   const unindexedForeignKeys = await sql`
     select constraint_definition.conrelid::regclass::text as table_name,
       constraint_definition.conname as constraint_name
@@ -617,6 +655,7 @@ async function inspectProductionHardening(sql) {
     failures,
     functionSearchPath: postalFunction?.configuration || [],
     duplicatePermissivePolicies: duplicatePolicies.length,
+    applicationCatalogTablesVisible: Object.keys(applicationCatalogRows).length,
     publicCatalogRoleReads: publicCatalogAccess.length,
     unindexedForeignKeys: unindexedForeignKeys.length,
   };
@@ -1172,6 +1211,7 @@ try {
     productionHardening: {
       postalFunctionSearchPath: hardening.functionSearchPath,
       duplicatePermissivePolicies: hardening.duplicatePermissivePolicies,
+      applicationCatalogTablesVisible: hardening.applicationCatalogTablesVisible,
       publicCatalogRoleReads: hardening.publicCatalogRoleReads,
       unindexedForeignKeys: hardening.unindexedForeignKeys,
     },
