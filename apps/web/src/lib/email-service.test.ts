@@ -13,6 +13,7 @@ function createHarness() {
     businessEmail: "ops@example.invalid",
     businessPhone: "208-555-0100",
     from: "Lake & Pine <hello@example.invalid>",
+    replyTo: "hello@example.invalid",
     formatLongDate: () => "Tuesday, July 14",
     createTransport: () => {
       transportCreations += 1;
@@ -71,4 +72,5 @@ test("ordinary credentialed delivery still uses the configured transport", async
   assert.equal(harness.messages.length, 2);
   assert.equal(harness.messages[0].to, booking.to);
   assert.equal(harness.messages[1].to, "ops@example.invalid");
+  assert.ok(harness.messages.every((message) => message.replyTo === "hello@example.invalid"));
 });
