@@ -74,7 +74,7 @@ Stop before any of the following:
 - transferring repository, provider, domain, or account ownership;
 - making a public launch announcement or representing the business as launched without approval;
 - buying ads, starting campaigns, or sending marketing broadcasts;
-- filing legal documents on the founder's behalf;
+- filing legal documents for the founder, the venture, or any other entity;
 - completing an action that requires MFA when the founder is unavailable.
 
 A hard stop blocks only the gated action. Prepare code, migration plans, screenshots, checklists, rollback steps, and preview evidence so the founder can make a narrow decision.
@@ -126,7 +126,7 @@ Missing optional keys must preserve honest fallbacks. Do not provision a provide
 
 ### Email and contact routing
 
-- Internal delivery tests may use approved venture-scoped test recipients and non-customer data. Assigned reversible transactional-email configuration may proceed with test/non-customer recipients; DNS activation, a public/marketing campaign, or a real-customer launch remains a hard stop where applicable.
+- Internal delivery tests may use controlled, consenting, team-owned venture test recipients and non-customer data. Assigned reversible transactional-email configuration may proceed with test/non-customer recipients; DNS activation, a public/marketing campaign, or a real-customer launch remains a hard stop where applicable.
 - Email failure must not erase a submitted lead; retain an operator-visible recovery path without logging private contact data.
 
 ### Auth
@@ -148,7 +148,7 @@ The experience should feel like a dependable local service, not a SaaS dashboard
 
 ## Branch and multi-agent coordination
 
-- Start from current `main`; never push directly to `main`.
+- For new work, start from current `main`. When explicitly assigned an existing PR/branch, continue there after checking ownership and synchronizing its base as needed. Never push directly to `main`.
 - Agent branches: `agent/<scope>-<short-description>`.
 - Other branches: `feat/<short-description>`, `fix/<short-description>`, `docs/<short-description>`, or `chore/<short-description>`, in kebab-case.
 - Before editing, run `git status -sb`, record branch/HEAD, inspect open PRs/issues, and identify overlapping files. Coordinate rather than overwriting another branch's work.
