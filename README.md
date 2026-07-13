@@ -22,34 +22,37 @@ preferences until confirmed, and the refund ledger never moves money.
 ## Run locally
 
 ```bash
-docker run -d --name lp-postgres --restart unless-stopped \
-  -e POSTGRES_PASSWORD=lakeandpine_dev -e POSTGRES_DB=lakeandpine \
-  -p 5442:5432 -v lp-pgdata:/var/lib/postgresql/data postgres:17-alpine
-npm install
-npm --prefix apps/web run quality:verify-migrations
-npm --prefix apps/web run dev
+docker run --rm -d --name lp-postgres \
+  -e POSTGRES_PASSWORD=lakeandpine_dev -e POSTGRES_DB=lakeandpine_proof \
+  -p 5442:5432 postgres:17-alpine
+export MIGRATION_DATABASE_URL=postgresql://postgres:lakeandpine_dev@127.0.0.1:5442/lakeandpine_proof
+export DATABASE_URL=$MIGRATION_DATABASE_URL
+pnpm install --frozen-lockfile
+pnpm quality:verify-migrations
+pnpm dev
 ```
 
 Copy `.env.example` to `apps/web/.env.local` and use a local/disposable database.
-The migration verifier creates its own PostgreSQL 17 database, applies every migration,
-and proves the restricted application role cannot bypass RLS.
+The verifier requires the fresh, local database above, applies every migration, and
+proves the restricted application role cannot bypass RLS. Stop and recreate the
+`--rm` container before rerunning the migration proof.
 
 Useful checks:
 
 ```bash
-npm --prefix apps/web test
-npm --prefix apps/web run lint
-npm --prefix apps/web run typecheck
-npm --prefix apps/web run build
-npm --prefix apps/web audit --omit=dev
+pnpm test
+pnpm lint
+pnpm typecheck
+pnpm build
+pnpm audit --prod
 ```
 
 For a disposable end-to-end write proof, start the app and run:
 
 ```bash
-RUNTIME_SMOKE_TOKEN='<same-random-32+-character-value>' npm --prefix apps/web run dev
+RUNTIME_SMOKE_TOKEN='<same-random-32+-character-value>' pnpm dev
 RUNTIME_SMOKE_TOKEN='<same-random-32+-character-value>' \
-  RUNTIME_SMOKE_BASE_URL=http://127.0.0.1:3010 npm --prefix apps/web run ops:smoke-runtime
+  RUNTIME_SMOKE_BASE_URL=http://127.0.0.1:3010 pnpm ops:smoke-runtime
 ```
 
 The smoke test visits the premium public surfaces, creates one synthetic construction
@@ -78,7 +81,7 @@ business phone/email are external launch dependencies.
 
 - `docs/product/premium-market-operating-model.md`
 - `docs/product/premium-operations-domain.md`
-- `docs/ops/migration-verification.md`
+- `docs/ops/database-migration-verification.md`
 - `AGENTS.md`
 
 Historical recovered prototype files remain under `prototypes/recovered/` for provenance;
