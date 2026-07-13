@@ -36,9 +36,19 @@ events, checklist, and notification-outbox rows in a `finally` block. Use
 
 ## Captured evidence
 
-- All three repository migrations applied in filename order with `ON_ERROR_STOP=1` on
+- All four repository migrations applied in filename order with `ON_ERROR_STOP=1` on
   PostgreSQL 17. The premium operations migration SHA-256 was
+  `1f94ab6067869a212e196dce0e66eccaae87d4fbf9eccf50eb6874ceb6a0c85e`
+  for its canonical LF-normalized Git source. Production recorded the semantically
+  identical mixed-line-ending payload as
   `a31fe0ec9e305fd1e8520ce5dc6f81847e1cbb965a953d89bc07fc2190672952`.
+- The forward hardening migration set an immutable function search path, removed
+  duplicate private application policies, scoped hosted public-read policies to the
+  Supabase client roles and the restricted application runtime, proved every seeded
+  catalog remains runtime-visible, and added covering indexes for every production-advisor foreign
+  key finding without changing application-role access. Its canonical LF-normalized
+  SHA-256 was
+  `ca69a8e182853cea91aedb289d83a054b1148aacf5a37beda98081f53ceb0b65`.
 - The verifier proved `lakeandpine_app` is a non-superuser, cannot bypass RLS, owns no
   operational tables, and has only the intended table privileges. A second physical
   Postgres.js connection opened as `postgres` and reported `current_user =
