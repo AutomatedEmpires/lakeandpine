@@ -47,7 +47,7 @@ export function ServiceShowcase({ services }: { services: ShowcaseService[] }) {
           <h3>{service.title}</h3>
           <p className="copy">{service.blurb}</p>
           <div className="tag-row" style={{ marginTop: 12 }}>
-            {service.tags.map((tag) => (
+            {service.tags.filter((tag) => tag !== "Same-day").map((tag) => (
               <span key={tag} className="tag">
                 {tag}
               </span>
@@ -56,7 +56,7 @@ export function ServiceShowcase({ services }: { services: ShowcaseService[] }) {
         </div>
         <div className="hero-actions">
           <Link className="btn btn-primary" href={`/book?service=${service.id}`}>
-            Book this service
+            Request this service
           </Link>
           <Link className="btn btn-soft" href="/pricing">
             Compare pricing

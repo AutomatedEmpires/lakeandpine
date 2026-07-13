@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { capture } from "@/lib/analytics-client";
 import {
@@ -27,29 +27,12 @@ const DEFAULTS: QuoteInputs = {
 export function EstimateStudio() {
   const [inputs, setInputs] = useState<QuoteInputs>(DEFAULTS);
   const [priorities, setPriorities] = useState("");
-  const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const estimate = useMemo(() => calculateEstimate(inputs), [inputs]);
 
-  // Persist a quote snapshot after the shopper settles (real conversion signal,
-  // debounced so slider-style exploration doesn't spam rows).
-  useEffect(() => {
-    if (persistTimer.current) clearTimeout(persistTimer.current);
-    persistTimer.current = setTimeout(() => {
-      fetch("/api/quote", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...inputs, priorities: priorities || undefined }),
-      }).catch(() => {});
-      capture("quote_calculated", { ...inputs, estimate: estimate.dollars });
-    }, 1600);
-    return () => {
-      if (persistTimer.current) clearTimeout(persistTimer.current);
-    };
-  }, [inputs, priorities, estimate.dollars]);
-
   function set<K extends keyof QuoteInputs>(key: K, value: QuoteInputs[K]) {
     setInputs((prev) => ({ ...prev, [key]: value }));
+    capture("quote_calculated", { key, value });
   }
 
   const selectField = <K extends keyof QuoteInputs>(
@@ -105,16 +88,16 @@ export function EstimateStudio() {
         </div>
         <div>
           <ul className="checks">
-            <li>Text arrival updates</li>
-            <li>Eco-conscious supplies</li>
-            <li>Satisfaction make-right promise</li>
+            <li>Computed in your browser</li>
+            <li>Nothing entered here is stored</li>
+            <li>Final scope requires human review</li>
           </ul>
           <Link
             className="btn btn-soft"
             style={{ width: "100%" }}
             href={`/book?service=${inputs.serviceId}&frequency=${inputs.frequency}`}
           >
-            Continue to booking
+            Continue to service planning
           </Link>
         </div>
       </div>

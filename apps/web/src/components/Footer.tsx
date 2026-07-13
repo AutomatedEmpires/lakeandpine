@@ -9,8 +9,7 @@ export function Footer() {
         <div>
           <BrandMark />
           <p>
-            Premium home cleaning across Coeur d&rsquo;Alene, Spokane, Post Falls, Hayden,
-            Liberty Lake, Spokane Valley, and Rathdrum.
+            Calm, practical service planning for homes that deserve a thoughtful handoff.
           </p>
         </div>
         <div>
@@ -21,29 +20,29 @@ export function Footer() {
           <Link href="/services">Turnover</Link>
         </div>
         <div>
-          <h4>Book</h4>
+          <h4>Plan</h4>
           <Link href="/pricing">Pricing</Link>
-          <Link href="/book">Schedule</Link>
+          <Link href="/book">Build a request</Link>
           <Link href="/dashboard">Dashboard</Link>
         </div>
         <div>
-          <h4>Areas</h4>
-          <Link href="/areas/coeur-dalene">CDA</Link>
-          <Link href="/areas/spokane">Spokane</Link>
-          <Link href="/areas/post-falls">Post Falls</Link>
-          <Link href="/areas/liberty-lake">Liberty Lake</Link>
+          <h4>Workflow</h4>
+          <p>Request</p>
+          <p>Plan review</p>
+          <p>Confirmation</p>
+          <p>Service status</p>
         </div>
         <div>
-          <h4>Trust</h4>
-          <p>Licensed</p>
-          <p>Bonded</p>
-          <p>Insured</p>
-          <p>Background checked</p>
+          <h4>Phase 1</h4>
+          <p>No online payment</p>
+          <p>No live slot promises</p>
+          <p>Human scope review</p>
+          <p>Private operator notes</p>
         </div>
       </div>
       <div className="container footer-bottom">
         <span>© {new Date().getFullYear()} Lake &amp; Pine Cleaning Co.</span>
-        <span>Licensed · Bonded · Insured · Inland Northwest</span>
+        <span>Request · plan · confirm · follow up</span>
       </div>
     </footer>
   );

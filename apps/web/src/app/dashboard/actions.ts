@@ -4,8 +4,10 @@ import { revalidatePath } from "next/cache";
 
 import { resolveDashboardIdentity } from "@/lib/auth";
 import { addSupportMessage, requestReschedule, saveHomeNotes } from "@/lib/data";
+import { requestIntakeEnabled } from "@/lib/env";
 
 async function requireCustomer() {
+  if (!requestIntakeEnabled) throw new Error("Customer-data intake is disabled");
   const identity = await resolveDashboardIdentity();
   if (identity.state === "signed_out") {
     throw new Error("Not signed in");

@@ -17,19 +17,17 @@ const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 export const metadata: Metadata = {
   metadataBase: new URL(APP_URL),
   title: {
-    default: "Lake & Pine Cleaning Co. | Premium Home Cleaning in Coeur d'Alene + Spokane",
+    default: "Lake & Pine Cleaning Co. | Thoughtful Home Service Planning",
     template: "%s | Lake & Pine Cleaning Co.",
   },
   description:
-    "Premium home cleaning for Coeur d'Alene and Spokane: instant estimates, calendar scheduling, vetted cleaners, eco-conscious products, and a customer dashboard that remembers your home.",
+    "Build a thoughtful cleaning request with property details, room notes, preferences, pets, access planning, and human confirmation.",
   keywords: [
-    "premium house cleaning Coeur d'Alene",
-    "maid service Spokane",
-    "deep cleaning CDA",
-    "move out cleaning Spokane",
-    "Airbnb turnover Post Falls",
-    "eco cleaning Hayden",
-    "Liberty Lake home cleaners",
+    "home cleaning service planning",
+    "cleaning request workflow",
+    "recurring cleaning preferences",
+    "room cleaning checklist",
+    "property cleaning profile",
   ],
   openGraph: {
     siteName: "Lake & Pine Cleaning Co.",
@@ -45,19 +43,9 @@ const localBusinessJsonLd = {
   "@context": "https://schema.org",
   "@type": "LocalBusiness",
   name: "Lake & Pine Cleaning Co.",
-  description:
-    "Premium home cleaning, recurring maid service, deep cleaning, move-in and move-out cleaning, vacation rental turnover, and small office cleaning across Coeur d'Alene and Spokane.",
+  description: "Home cleaning request and service-planning experience.",
   email: BUSINESS_EMAIL,
   priceRange: "$$",
-  areaServed: [
-    "Coeur d'Alene ID",
-    "Spokane WA",
-    "Post Falls ID",
-    "Hayden ID",
-    "Liberty Lake WA",
-    "Spokane Valley WA",
-    "Rathdrum ID",
-  ],
   makesOffer: [
     { "@type": "Offer", name: "Essential Home Reset", price: "139", priceCurrency: "USD" },
     { "@type": "Offer", name: "Pine & Polish Deep Clean", price: "299", priceCurrency: "USD" },
