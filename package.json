@@ -19,6 +19,7 @@
     "ops:seed-content": "pnpm --dir apps/web ops:seed-content",
     "ops:seed-dev": "pnpm --dir apps/web ops:seed-dev",
     "ops:purge-dev-seed": "pnpm --dir apps/web ops:purge-dev-seed",
-    "ops:smoke-runtime": "pnpm --dir apps/web ops:smoke-runtime"
+    "ops:smoke-runtime": "pnpm --dir apps/web ops:smoke-runtime",
+    "quality:verify-migrations": "pnpm --dir apps/web quality:verify-migrations"
   }
 }

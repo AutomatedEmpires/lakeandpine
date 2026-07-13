@@ -5,7 +5,8 @@ Supabase, Vercel, DNS, email, auth, or payment state was changed.
 
 ## Reproduce
 
-Create a throwaway database and apply the two repository migrations with fail-fast SQL:
+Create a throwaway database and apply every repository migration through the same guarded
+verification command used in CI:
 
 ```bash
 docker run -d --name lp-runtime-proof \
@@ -13,12 +14,11 @@ docker run -d --name lp-runtime-proof \
   -e POSTGRES_DB=lakeandpine_proof \
   -p 55442:5432 postgres:17-alpine
 
-docker exec -i lp-runtime-proof psql -v ON_ERROR_STOP=1 \
-  -U postgres -d lakeandpine_proof < supabase/migrations/0001_core.sql
-docker exec -i lp-runtime-proof psql -v ON_ERROR_STOP=1 \
-  -U postgres -d lakeandpine_proof < supabase/migrations/0002_content_seed.sql
+export MIGRATION_DATABASE_URL=postgresql://postgres:lakeandpine_proof@127.0.0.1:55442/lakeandpine_proof
+pnpm quality:verify-migrations
 
-export DATABASE_URL=postgresql://postgres:lakeandpine_proof@127.0.0.1:55442/lakeandpine_proof
+# The runtime server and smoke use the migrated admin connection only in this disposable lane.
+export DATABASE_URL=$MIGRATION_DATABASE_URL
 export RUNTIME_SMOKE_TOKEN='<same-random-32+-character-value-in-both-shells>'
 pnpm ops:seed-content
 pnpm ops:seed-dev
@@ -32,6 +32,10 @@ export RUNTIME_SMOKE_BASE_URL=http://127.0.0.1:3010
 export RUNTIME_SMOKE_TOKEN='<same-random-32+-character-value-in-both-shells>'
 pnpm ops:smoke-runtime
 ```
+
+The migration verifier refuses remote or non-empty targets, proves the non-owner
+`lakeandpine_app` RLS/grant boundary, and covers all SQL files in filename order. See
+`docs/ops/database-migration-verification.md` for its complete contract.
 
 The smoke refuses to start without a 32+ character token. Lead and booking routes reject a
 presented smoke marker unless the server has the same token, before database writes or
@@ -49,9 +53,11 @@ RUNTIME_SMOKE_FORCE_FAILURE=after-booking pnpm ops:smoke-runtime
 
 Stop and remove the disposable container when finished.
 
-## Captured evidence
+## Captured evidence (2026-07-12 baseline)
 
-- Both migrations completed with `ON_ERROR_STOP=1` on a fresh Postgres 17 database.
+- Both migrations present at the time completed with `ON_ERROR_STOP=1` on a fresh
+  Postgres 17 database. The current repository chain is re-proven on every CI run by
+  `quality:verify-migrations` rather than relying on this historical count.
 - Every one of the 14 public tables had RLS enabled.
 - Catalog/content seed produced 6 services, 5 add-ons, 4 plans, 7 service areas, 6 FAQs,
   and 10 explicitly marked placeholder reviews.
