@@ -143,7 +143,12 @@ export default async function OperatorPage({ searchParams }: { searchParams: Pro
                   <p>{selected.contact.email ?? "No email"}<br />{selected.contact.phone ?? "No phone"}</p>
                 </div>
                 <div className="job-actions">
-                  {(NEXT_ACTIONS[selected.status as JobStatus] ?? []).map((action) => <form key={action.status} action={updateJobStatusAction}>
+                  {selected.service_vertical ? (
+                    <p className="copy">
+                      Premium lifecycle state is controlled by the capacity-checked
+                      schedule in Operations.
+                    </p>
+                  ) : (NEXT_ACTIONS[selected.status as JobStatus] ?? []).map((action) => <form key={action.status} action={updateJobStatusAction}>
                     <input type="hidden" name="bookingId" value={selected.id} />
                     <input type="hidden" name="from" value={selected.status} />
                     <input type="hidden" name="to" value={action.status} />

@@ -1092,7 +1092,7 @@ export default async function OperationsPage({
                       Plan recovery
                     </button>
                   </form>
-                  {serviceCase.booking_id && (
+                  {serviceCase.refund_eligible && (
                     <form
                       action={requestRefundReviewAction}
                       className="ops-form compact refund-form"
@@ -1106,7 +1106,9 @@ export default async function OperationsPage({
                         name="amountDollars"
                         type="number"
                         min="1"
-                        max="10000"
+                        max={(
+                          serviceCase.refundable_balance_cents / 100
+                        ).toFixed(2)}
                         step="0.01"
                         required
                         placeholder="Amount for review"
@@ -1122,7 +1124,8 @@ export default async function OperationsPage({
                         className="btn btn-soft"
                         aria-label={`Open refund review for service case ${serviceCase.public_reference}`}
                       >
-                        Open refund review
+                        Open refund review · up to $
+                        {(serviceCase.refundable_balance_cents / 100).toFixed(2)}
                       </button>
                     </form>
                   )}

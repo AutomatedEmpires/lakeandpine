@@ -104,7 +104,7 @@ async function readRole(sql) {
   return role;
 }
 
-async function assertSafeRole(sql) {
+async function assertSafeRole(sql, expectRuntimeGrant = false) {
   const role = await readRole(sql);
   invariant(role, `${APP_ROLE} was not created`);
   invariant(!role.rolsuper, `${APP_ROLE} must not be a superuser`);
@@ -115,15 +115,28 @@ async function assertSafeRole(sql) {
   invariant(!role.rolbypassrls, `${APP_ROLE} must not have BYPASSRLS`);
 
   const memberships = await sql`
-    select granted.rolname as granted_role, member.rolname as member_role
+    select granted.rolname as granted_role, member.rolname as member_role,
+      membership.admin_option, membership.inherit_option, membership.set_option
     from pg_auth_members membership
     join pg_roles granted on granted.oid = membership.roleid
     join pg_roles member on member.oid = membership.member
     where granted.rolname = ${APP_ROLE} or member.rolname = ${APP_ROLE}`;
-  invariant(
-    memberships.length === 0,
-    `${APP_ROLE} must not inherit from or be granted to another role in verification`,
-  );
+  if (expectRuntimeGrant) {
+    invariant(
+      memberships.length === 1 &&
+        memberships[0].granted_role === APP_ROLE &&
+        memberships[0].member_role === "postgres" &&
+        !memberships[0].admin_option &&
+        !memberships[0].inherit_option &&
+        memberships[0].set_option,
+      `${APP_ROLE} must be granted only to postgres with SET TRUE, INHERIT FALSE, and ADMIN FALSE`,
+    );
+  } else {
+    invariant(
+      memberships.length === 0,
+      `${APP_ROLE} must start without role memberships before migrations`,
+    );
+  }
 }
 
 async function createSafeApplicationRole(sql) {
@@ -345,6 +358,229 @@ async function inspectAtomicIntakeFunctions(sql) {
   return { failures, functions };
 }
 
+async function inspectRuntimeConnection(rawUrl, operationsTables) {
+  const runtimeSql = postgres(rawUrl, {
+    max: 1,
+    prepare: false,
+    onnotice: () => {},
+    connection: {
+      application_name: "lakeandpine_migration_verifier",
+      role: APP_ROLE,
+    },
+  });
+  try {
+    const [identity] = await runtimeSql`
+      select current_user, session_user,
+        current_setting('application_name') as application_name`;
+    invariant(
+      identity.current_user === APP_ROLE,
+      `Runtime startup role is ${identity.current_user}; expected ${APP_ROLE}`,
+    );
+    invariant(
+      identity.session_user === "postgres",
+      `Runtime session user is ${identity.session_user}; expected postgres`,
+    );
+    for (const table of operationsTables) {
+      await runtimeSql.unsafe(
+        `select * from public.${quoteIdentifier(table)} limit 0`,
+      );
+    }
+    return identity;
+  } finally {
+    await runtimeSql.end({ timeout: 5 });
+  }
+}
+
+async function expectDatabaseError(transaction, allowedCodes, label, operation) {
+  let caught;
+  try {
+    await transaction.savepoint(operation);
+  } catch (error) {
+    caught = error;
+  }
+  invariant(caught, `${label} was accepted but must be rejected by the database`);
+  invariant(
+    allowedCodes.includes(caught.code),
+    `${label} failed with ${caught.code || caught.message}; expected ${allowedCodes.join(" or ")}`,
+  );
+}
+
+async function inspectOperationalInvariants(sql) {
+  await sql.begin(async (transaction) => {
+    await transaction.unsafe(`set local role ${quoteIdentifier(APP_ROLE)}`);
+    const [territory] = await transaction`
+      insert into service_territories
+        (code, name, timezone, status, travel_buffer_minutes, is_dev_seed)
+      values ('verifier', 'Verifier territory', 'America/Los_Angeles', 'active', 30, true)
+      returning id`;
+    const cleaners = await transaction`
+      insert into cleaners
+        (full_name, email, status, screening_status, screening_verified_at,
+         home_territory_id, skills, vertical_experience, max_daily_minutes,
+         max_weekly_minutes, max_daily_jobs, is_dev_seed)
+      values
+        ('Verifier One', 'one@verify.invalid', 'active', 'verified', now(),
+          ${territory.id}, array['estate_detail'], array['estate'], 600, 2400, 3, true),
+        ('Verifier Two', 'two@verify.invalid', 'active', 'verified', now(),
+          ${territory.id}, array['delicate_finishes'], array['estate'], 600, 2400, 3, true),
+        ('Verifier Capped', 'cap@verify.invalid', 'active', 'verified', now(),
+          ${territory.id}, array['estate_detail'], array['estate'], 240, 240, 1, true)
+      returning id, email`;
+    const cleanerByEmail = new Map(cleaners.map((cleaner) => [cleaner.email, cleaner.id]));
+    const cleanerOne = cleanerByEmail.get('one@verify.invalid');
+    const cleanerTwo = cleanerByEmail.get('two@verify.invalid');
+    const cappedCleaner = cleanerByEmail.get('cap@verify.invalid');
+
+    const startAt = '2030-07-15T16:00:00.000Z';
+    const endAt = '2030-07-15T21:00:00.000Z';
+    for (const cleanerId of [cleanerOne, cappedCleaner]) {
+      await transaction`
+        insert into cleaner_availability_rules
+          (cleaner_id, territory_id, day_of_week, start_time, end_time, effective_from, status)
+        values (${cleanerId}, ${territory.id},
+          extract(dow from ${startAt}::timestamptz at time zone 'America/Los_Angeles')::integer,
+          '08:00', '18:00', '2030-01-01', 'active')`;
+    }
+
+    const [booking] = await transaction`
+      insert into bookings
+        (service_id, scheduled_date, scheduled_window, status, contact, is_dev_seed,
+         service_vertical, territory_id, qualification_status,
+         estimated_duration_minutes, required_crew_size, required_skills)
+      values ('estate', '2030-07-15', 'Preference only', 'requested',
+        ${transaction.json({ name: 'Verifier', email: 'verify@invalid.test', zip: '83814' })},
+        true, 'estate', ${territory.id}, 'approved', 600, 2,
+        array['estate_detail', 'delicate_finishes'])
+      returning id`;
+
+    await expectDatabaseError(transaction, ['23514'], 'undersized labor window', async (savepoint) => {
+      await savepoint`
+        insert into job_schedules
+          (booking_id, territory_id, service_vertical, start_at, end_at, required_crew_size,
+           required_skills, labor_minutes, is_dev_seed)
+        values (${booking.id}, ${territory.id}, 'estate', ${startAt},
+          '2030-07-15T18:00:00.000Z', 2,
+          array['estate_detail', 'delicate_finishes'], 600, true)`;
+    });
+
+    const [schedule] = await transaction`
+      insert into job_schedules
+        (booking_id, territory_id, service_vertical, start_at, end_at, required_crew_size,
+         required_skills, labor_minutes, is_dev_seed)
+      values (${booking.id}, ${territory.id}, 'estate', ${startAt}, ${endAt}, 2,
+        array['estate_detail', 'delicate_finishes'], 600, true)
+      returning id`;
+
+    await expectDatabaseError(transaction, ['23514'], 'booking-only schedule transition', async (savepoint) => {
+      await savepoint`update bookings set status = 'scheduled' where id = ${booking.id}`;
+    });
+
+    await transaction`
+      insert into job_assignments
+        (job_schedule_id, cleaner_id, assignment_role, status, is_dev_seed)
+      values (${schedule.id}, ${cleanerOne}, 'lead', 'accepted', true)`;
+
+    await expectDatabaseError(transaction, ['23514'], 'assignment outside recurring availability', async (savepoint) => {
+      await savepoint`
+        insert into job_assignments
+          (job_schedule_id, cleaner_id, assignment_role, status, is_dev_seed)
+        values (${schedule.id}, ${cleanerTwo}, 'member', 'accepted', true)`;
+    });
+    await transaction`
+      insert into cleaner_availability_rules
+        (cleaner_id, territory_id, day_of_week, start_time, end_time, effective_from, status)
+      values (${cleanerTwo}, ${territory.id},
+        extract(dow from ${startAt}::timestamptz at time zone 'America/Los_Angeles')::integer,
+        '08:00', '18:00', '2030-01-01', 'active')`;
+    await transaction`
+      insert into job_assignments
+        (job_schedule_id, cleaner_id, assignment_role, status, is_dev_seed)
+      values (${schedule.id}, ${cleanerTwo}, 'member', 'accepted', true)`;
+
+    const [timeOff] = await transaction`
+      insert into cleaner_time_off
+        (cleaner_id, start_at, end_at, status, is_dev_seed)
+      values (${cleanerOne}, ${startAt}, ${endAt}, 'requested', true)
+      returning id`;
+    await expectDatabaseError(transaction, ['23P01'], 'time-off approval over accepted work', async (savepoint) => {
+      await savepoint`update cleaner_time_off set status = 'approved' where id = ${timeOff.id}`;
+    });
+
+    const [capacityBooking] = await transaction`
+      insert into bookings
+        (service_id, scheduled_date, scheduled_window, status, contact, is_dev_seed,
+         service_vertical, territory_id, qualification_status,
+         estimated_duration_minutes, required_crew_size, required_skills)
+      values ('estate', '2030-07-15', 'Preference only', 'requested',
+        ${transaction.json({ name: 'Capacity verifier', email: 'capacity@invalid.test', zip: '83814' })},
+        true, 'estate', ${territory.id}, 'approved', 300, 1, array['estate_detail'])
+      returning id`;
+    const [capacitySchedule] = await transaction`
+      insert into job_schedules
+        (booking_id, territory_id, service_vertical, start_at, end_at, required_crew_size,
+         required_skills, labor_minutes, is_dev_seed)
+      values (${capacityBooking.id}, ${territory.id}, 'estate', ${startAt}, ${endAt}, 1,
+        array['estate_detail'], 300, true)
+      returning id`;
+    await expectDatabaseError(transaction, ['23514'], 'daily and weekly cleaner cap', async (savepoint) => {
+      await savepoint`
+        insert into job_assignments
+          (job_schedule_id, cleaner_id, assignment_role, status, is_dev_seed)
+        values (${capacitySchedule.id}, ${cappedCleaner}, 'lead', 'accepted', true)`;
+    });
+
+    await transaction`update job_schedules set status = 'confirmed' where id = ${schedule.id}`;
+    const [scheduledBooking] = await transaction`
+      select status from bookings where id = ${booking.id}`;
+    invariant(scheduledBooking.status === 'scheduled', 'Confirmed schedule did not synchronize booking status');
+    await expectDatabaseError(transaction, ['23514'], 'reschedule outside recurring availability', async (savepoint) => {
+      await savepoint`
+        update job_schedules
+        set start_at = '2030-07-16T03:00:00.000Z', end_at = '2030-07-16T08:00:00.000Z'
+        where id = ${schedule.id}`;
+    });
+    await transaction`update job_schedules set status = 'completed' where id = ${schedule.id}`;
+    const [completedBooking] = await transaction`
+      select status from bookings where id = ${booking.id}`;
+    invariant(completedBooking.status === 'completed', 'Completed schedule did not synchronize booking status');
+
+    const [billing] = await transaction`
+      insert into billing_records
+        (booking_id, description, amount_cents, status, is_dev_seed)
+      values (${booking.id}, 'Verifier paid invoice', 10000, 'paid', true)
+      returning id`;
+    const [refundCase] = await transaction`
+      insert into service_cases
+        (public_reference, case_type, booking_id, contact, details, status, is_dev_seed)
+      values ('LP-VERIFY-REFUND-1', 'complaint', ${booking.id}, '{}',
+        'Verifier refund case', 'refund_pending', true)
+      returning id`;
+    const [refund] = await transaction`
+      insert into refund_records
+        (service_case_id, booking_id, billing_record_id, amount_cents, reason_code,
+         status, requested_by_label, is_dev_seed)
+      values (${refundCase.id}, ${booking.id}, ${billing.id}, 6000, 'verifier',
+        'requested', 'Verifier', true)
+      returning id`;
+    await expectDatabaseError(transaction, ['23514'], 'over-refund ledger entry', async (savepoint) => {
+      await savepoint`
+        insert into refund_records
+          (service_case_id, booking_id, billing_record_id, amount_cents, reason_code,
+           status, requested_by_label, is_dev_seed)
+        values (${refundCase.id}, ${booking.id}, ${billing.id}, 5000, 'over_refund',
+          'requested', 'Verifier', true)`;
+    });
+    await transaction`update refund_records set status = 'approved', approved_by_label = 'Verifier', approved_at = now() where id = ${refund.id}`;
+    await transaction`update refund_records set status = 'ready_for_manual_processing' where id = ${refund.id}`;
+    await transaction`update refund_records set status = 'processed', provider_refund_id = 'verify-refund-1' where id = ${refund.id}`;
+    const [resolvedCase] = await transaction`select status, resolution_type from service_cases where id = ${refundCase.id}`;
+    invariant(
+      resolvedCase.status === 'resolved' && resolvedCase.resolution_type === 'refund',
+      'Processed refund did not resolve its service case',
+    );
+  });
+}
+
 const rawUrl = process.env.MIGRATION_DATABASE_URL;
 const { target, database } = validateTarget(rawUrl);
 const migrations = await loadMigrations();
@@ -377,7 +613,7 @@ try {
 
   await createSafeApplicationRole(sql);
   await applyMigrations(sql, migrations);
-  await assertSafeRole(sql);
+  await assertSafeRole(sql, true);
 
   const access = await inspectApplicationRoleAccess(sql);
   const atomicIntake = await inspectAtomicIntakeFunctions(sql);
@@ -386,6 +622,8 @@ try {
     failures.length === 0,
     `Migration verification failed:\n- ${failures.join("\n- ")}`,
   );
+  const runtimeIdentity = await inspectRuntimeConnection(rawUrl, access.operationsTables);
+  await inspectOperationalInvariants(sql);
 
   console.log(JSON.stringify({
     result: "PASS",
@@ -401,12 +639,15 @@ try {
       nonSuperuser: true,
       bypassRls: false,
       ownsOperationalTables: false,
+      startupRoleVerified: runtimeIdentity.current_user,
+      sessionOwner: runtimeIdentity.session_user,
       verifiedPrivileges: REQUIRED_PRIVILEGES,
     },
     privateOperationalTables: access.operationsTables,
     atomicIntakeFunctions: atomicIntake.functions.length > 0
       ? atomicIntake.functions.map((candidate) => candidate.signature)
       : "none discovered; add a function name matching create*booking/booking*create or an 'atomic intake' function comment",
+    operationalInvariants: "labor, lifecycle, availability, capacity, time off, and refund guards verified",
   }, null, 2));
 } finally {
   await sql.end({ timeout: 5 });

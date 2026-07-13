@@ -38,9 +38,16 @@ events, checklist, and notification-outbox rows in a `finally` block. Use
 
 - All three repository migrations applied in filename order with `ON_ERROR_STOP=1` on
   PostgreSQL 17. The premium operations migration SHA-256 was
-  `62b6bd2a34c90dddea8e5ae6b133ca133af226a4071be794c38e3ee06dbe7c19`.
+  `dfbab20ccf131bab6b724e173e53baf040f8dc2fddf0f6227e7e443b383c6fd7`.
 - The verifier proved `lakeandpine_app` is a non-superuser, cannot bypass RLS, owns no
-  operational tables, and has only the intended table privileges.
+  operational tables, and has only the intended table privileges. A second physical
+  Postgres.js connection opened as `postgres` and reported `current_user =
+  lakeandpine_app` through the same startup-role mechanism used by the web runtime.
+- Database integration probes rejected undersized labor windows, booking-only schedule
+  claims, assignments outside recurring availability, daily/weekly cap violations,
+  time-off approval over accepted work, capacity-invalid reschedules, and over-refunds.
+  Confirmed/completed schedules synchronized booking state, and processed refund receipts
+  resolved their linked service cases.
 - Premium requests persist one booking, one immutable request event, a program-specific
   checklist, two durable notification-outbox records, consent/version evidence,
   qualification state, crew/skill requirements, duration, and an HMAC-derived public

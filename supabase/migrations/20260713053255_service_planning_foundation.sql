@@ -210,7 +210,7 @@ comment on column bookings.idempotency_key is
 comment on column bookings.public_reference_token_hash is
   'SHA-256 hex digest of a guest self-service reference derived by the server from the booking ID; the reference is never stored.';
 comment on column bookings.consent_snapshot is
-  'Exact application-supplied consent labels and policy references shown at intake; no legal version is fabricated by the database.';
+  'Server-owned policy identifiers plus the exact consent labels shown at intake.';
 
 create table cleaners (
   id uuid primary key default gen_random_uuid(),
@@ -386,7 +386,6 @@ create table service_cases (
   case_type text not null
     check (case_type in ('reschedule', 'cancel', 'complaint', 'reclean', 'refund_review', 'damage', 'other')),
   booking_id uuid references bookings(id),
-  booking_reference_input text,
   customer_id uuid references customers(id),
   contact jsonb not null default '{}',
   details text not null check (char_length(details) between 1 and 6000),
@@ -446,9 +445,9 @@ create table service_recovery_actions (
 
 create table refund_records (
   id uuid primary key default gen_random_uuid(),
-  service_case_id uuid references service_cases(id),
+  service_case_id uuid not null references service_cases(id),
   booking_id uuid not null references bookings(id),
-  billing_record_id uuid references billing_records(id),
+  billing_record_id uuid not null references billing_records(id),
   amount_cents integer not null check (amount_cents > 0),
   currency text not null default 'usd' check (currency = 'usd'),
   reason_code text not null,
@@ -564,6 +563,9 @@ create index service_case_events_case_idx on service_case_events (service_case_i
 create index service_recovery_case_idx on service_recovery_actions (service_case_id, status, scheduled_at);
 create index refund_records_queue_idx on refund_records (status, created_at);
 create index refund_records_booking_idx on refund_records (booking_id, created_at);
+create unique index refund_records_one_active_case_idx
+  on refund_records (service_case_id)
+  where status not in ('declined', 'failed', 'canceled');
 create unique index billing_records_payment_intent_unique_idx
   on billing_records (stripe_payment_intent_id)
   where stripe_payment_intent_id is not null;
@@ -602,6 +604,145 @@ create trigger request_rate_limits_updated_at before update on request_rate_limi
 create trigger stripe_event_receipts_updated_at before update on stripe_event_receipts
   for each row execute function set_updated_at();
 
+create function assert_cleaner_schedule_capacity(
+  requested_cleaner_id uuid,
+  requested_schedule_id uuid,
+  requested_start timestamptz,
+  requested_end timestamptz,
+  requested_territory_id uuid,
+  requested_travel_buffer integer
+) returns void
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+declare
+  cleaner_state text;
+  cleaner_daily_minutes integer;
+  cleaner_weekly_minutes integer;
+  cleaner_daily_jobs integer;
+  territory_timezone text;
+  local_start timestamp;
+  local_end timestamp;
+  day_start_at timestamptz;
+  day_end_at timestamptz;
+  week_start_at timestamptz;
+  week_end_at timestamptz;
+  requested_minutes integer;
+  used_daily_minutes integer;
+  used_weekly_minutes integer;
+  used_daily_jobs integer;
+begin
+  perform pg_advisory_xact_lock(hashtextextended(requested_cleaner_id::text, 0));
+
+  select c.status, c.max_daily_minutes, c.max_weekly_minutes, c.max_daily_jobs,
+         t.timezone
+    into cleaner_state, cleaner_daily_minutes, cleaner_weekly_minutes,
+         cleaner_daily_jobs, territory_timezone
+  from cleaners c
+  join service_territories t on t.id = requested_territory_id
+  where c.id = requested_cleaner_id;
+
+  if cleaner_state is distinct from 'active' then
+    raise exception 'Cleaner % is not active', requested_cleaner_id using errcode = '23514';
+  end if;
+
+  local_start := requested_start at time zone territory_timezone;
+  local_end := requested_end at time zone territory_timezone;
+  if local_start::date is distinct from local_end::date then
+    raise exception 'Cleaner assignments must fit within one local availability day'
+      using errcode = '23514';
+  end if;
+
+  if not exists (
+    select 1
+    from cleaner_availability_rules availability
+    where availability.cleaner_id = requested_cleaner_id
+      and availability.status = 'active'
+      and (availability.territory_id is null or availability.territory_id = requested_territory_id)
+      and availability.day_of_week = extract(dow from local_start)::integer
+      and availability.effective_from <= local_start::date
+      and (availability.effective_to is null or availability.effective_to >= local_start::date)
+      and availability.start_time <= local_start::time
+      and availability.end_time >= local_end::time
+  ) then
+    raise exception 'Cleaner % is outside recurring availability for this territory', requested_cleaner_id
+      using errcode = '23514';
+  end if;
+
+  if exists (
+    select 1 from cleaner_time_off time_off
+    where time_off.cleaner_id = requested_cleaner_id
+      and time_off.status = 'approved'
+      and time_off.start_at < requested_end
+      and time_off.end_at > requested_start
+  ) then
+    raise exception 'Cleaner % has approved time off during this job', requested_cleaner_id
+      using errcode = '23P01';
+  end if;
+
+  if exists (
+    select 1
+    from job_assignments a
+    join job_schedules s on s.id = a.job_schedule_id
+    where a.cleaner_id = requested_cleaner_id
+      and s.id <> requested_schedule_id
+      and a.status in ('accepted', 'confirmed')
+      and s.status <> 'canceled'
+      and s.start_at < requested_end + make_interval(mins => requested_travel_buffer)
+      and s.end_at + make_interval(mins => s.travel_buffer_minutes) > requested_start
+  ) then
+    raise exception 'Cleaner % has an overlapping assignment or travel buffer', requested_cleaner_id
+      using errcode = '23P01';
+  end if;
+
+  requested_minutes := ceil(extract(epoch from (requested_end - requested_start)) / 60)::integer;
+  day_start_at := local_start::date::timestamp at time zone territory_timezone;
+  day_end_at := (local_start::date + 1)::timestamp at time zone territory_timezone;
+  week_start_at := date_trunc('week', local_start) at time zone territory_timezone;
+  week_end_at := (date_trunc('week', local_start) + interval '7 days') at time zone territory_timezone;
+
+  select coalesce(sum(ceil(extract(epoch from
+           (least(s.end_at, day_end_at) - greatest(s.start_at, day_start_at))) / 60)), 0)::integer,
+         count(distinct s.id)::integer
+    into used_daily_minutes, used_daily_jobs
+  from job_assignments a
+  join job_schedules s on s.id = a.job_schedule_id
+  where a.cleaner_id = requested_cleaner_id
+    and s.id <> requested_schedule_id
+    and a.status in ('accepted', 'confirmed')
+    and s.status <> 'canceled'
+    and s.start_at < day_end_at and s.end_at > day_start_at;
+
+  if used_daily_minutes + requested_minutes > cleaner_daily_minutes then
+    raise exception 'Cleaner % would exceed daily minute capacity', requested_cleaner_id
+      using errcode = '23514';
+  end if;
+  if used_daily_jobs + 1 > cleaner_daily_jobs then
+    raise exception 'Cleaner % would exceed daily job capacity', requested_cleaner_id
+      using errcode = '23514';
+  end if;
+
+  select coalesce(sum(ceil(extract(epoch from
+           (least(s.end_at, week_end_at) - greatest(s.start_at, week_start_at))) / 60)), 0)::integer
+    into used_weekly_minutes
+  from job_assignments a
+  join job_schedules s on s.id = a.job_schedule_id
+  where a.cleaner_id = requested_cleaner_id
+    and s.id <> requested_schedule_id
+    and a.status in ('accepted', 'confirmed')
+    and s.status <> 'canceled'
+    and s.start_at < week_end_at and s.end_at > week_start_at;
+
+  if used_weekly_minutes + requested_minutes > cleaner_weekly_minutes then
+    raise exception 'Cleaner % would exceed weekly minute capacity', requested_cleaner_id
+      using errcode = '23514';
+  end if;
+end
+$$;
+
+revoke all on function assert_cleaner_schedule_capacity(uuid, uuid, timestamptz, timestamptz, uuid, integer) from public;
+
 create function validate_job_schedule_readiness() returns trigger
 language plpgsql
 security invoker
@@ -613,10 +754,17 @@ declare
   assigned_cleaner record;
   accepted_count integer;
   accepted_skills text[];
+  required_elapsed_minutes integer;
 begin
+  required_elapsed_minutes := ceil(new.labor_minutes::numeric / new.required_crew_size / 30) * 30;
+  if extract(epoch from (new.end_at - new.start_at)) / 60 < required_elapsed_minutes then
+    raise exception 'Schedule % needs at least % elapsed minutes for % labor minutes and % cleaners',
+      new.id, required_elapsed_minutes, new.labor_minutes, new.required_crew_size
+      using errcode = '23514';
+  end if;
+
   select qualification_status, service_vertical into booking_qualification, booking_vertical
-    from bookings
-    where id = new.booking_id;
+    from bookings where id = new.booking_id;
 
   if booking_vertical is not null and booking_vertical is distinct from new.service_vertical then
     raise exception 'Schedule vertical % does not match booking vertical %', new.service_vertical, booking_vertical
@@ -646,38 +794,13 @@ begin
   end if;
 
   for assigned_cleaner in
-    select a.id as assignment_id, a.cleaner_id
-    from job_assignments a
-    where a.job_schedule_id = new.id
-      and a.status in ('accepted', 'confirmed')
+    select a.cleaner_id from job_assignments a
+    where a.job_schedule_id = new.id and a.status in ('accepted', 'confirmed')
   loop
-    perform pg_advisory_xact_lock(hashtextextended(assigned_cleaner.cleaner_id::text, 0));
-
-    if exists (
-      select 1 from cleaner_time_off t
-      where t.cleaner_id = assigned_cleaner.cleaner_id
-        and t.status = 'approved'
-        and t.start_at < new.end_at
-        and t.end_at > new.start_at
-    ) then
-      raise exception 'Reschedule conflicts with approved time off for cleaner %', assigned_cleaner.cleaner_id
-        using errcode = '23P01';
-    end if;
-
-    if exists (
-      select 1
-      from job_assignments a
-      join job_schedules s on s.id = a.job_schedule_id
-      where a.cleaner_id = assigned_cleaner.cleaner_id
-        and a.id <> assigned_cleaner.assignment_id
-        and a.status in ('accepted', 'confirmed')
-        and s.status not in ('completed', 'canceled')
-        and s.start_at < new.end_at + make_interval(mins => new.travel_buffer_minutes)
-        and s.end_at + make_interval(mins => s.travel_buffer_minutes) > new.start_at
-    ) then
-      raise exception 'Reschedule overlaps another assignment for cleaner %', assigned_cleaner.cleaner_id
-        using errcode = '23P01';
-    end if;
+    perform assert_cleaner_schedule_capacity(
+      assigned_cleaner.cleaner_id, new.id, new.start_at, new.end_at,
+      new.territory_id, new.travel_buffer_minutes
+    );
   end loop;
   return new;
 end
@@ -699,6 +822,31 @@ begin
     raise exception 'Premium booking % must be qualification-approved before confirmation', new.id
       using errcode = '23514';
   end if;
+  if new.service_vertical is not null and new.status in ('confirmed', 'scheduled')
+     and not exists (
+       select 1 from job_schedules schedule
+       where schedule.booking_id = new.id and schedule.status = 'confirmed'
+     ) then
+    raise exception 'Premium booking % requires a confirmed schedule and accepted crew', new.id
+      using errcode = '23514';
+  end if;
+  if new.service_vertical is not null and new.status = 'in_progress'
+     and not exists (
+       select 1 from job_schedules schedule
+       where schedule.booking_id = new.id
+         and schedule.status in ('en_route', 'in_progress', 'quality_review')
+     ) then
+    raise exception 'Premium booking % cannot be in progress without an active schedule', new.id
+      using errcode = '23514';
+  end if;
+  if new.service_vertical is not null and new.status in ('completed', 'follow_up')
+     and not exists (
+       select 1 from job_schedules schedule
+       where schedule.booking_id = new.id and schedule.status = 'completed'
+     ) then
+    raise exception 'Premium booking % cannot be completed before its schedule', new.id
+      using errcode = '23514';
+  end if;
   return new;
 end
 $$;
@@ -715,48 +863,26 @@ as $$
 declare
   requested_start timestamptz;
   requested_end timestamptz;
-  cleaner_state text;
+  requested_territory uuid;
+  requested_travel_buffer integer;
 begin
   if new.status not in ('accepted', 'confirmed') then
     return new;
   end if;
 
-  perform pg_advisory_xact_lock(hashtextextended(new.cleaner_id::text, 0));
-
-  select status into cleaner_state from cleaners where id = new.cleaner_id;
-  if cleaner_state is distinct from 'active' then
-    raise exception 'Cleaner % is not active', new.cleaner_id using errcode = '23514';
-  end if;
-
-  select start_at, end_at into requested_start, requested_end
+  select start_at, end_at, territory_id, travel_buffer_minutes
+    into requested_start, requested_end, requested_territory, requested_travel_buffer
   from job_schedules
   where id = new.job_schedule_id;
-
-  if exists (
-    select 1 from cleaner_time_off t
-    where t.cleaner_id = new.cleaner_id
-      and t.status = 'approved'
-      and t.start_at < requested_end
-      and t.end_at > requested_start
-  ) then
-    raise exception 'Cleaner % has approved time off during this job', new.cleaner_id
-      using errcode = '23P01';
+  if requested_start is null then
+    raise exception 'Assignment schedule % does not exist', new.job_schedule_id
+      using errcode = '23503';
   end if;
 
-  if exists (
-    select 1
-    from job_assignments a
-    join job_schedules s on s.id = a.job_schedule_id
-    where a.cleaner_id = new.cleaner_id
-      and a.id <> new.id
-      and a.status in ('accepted', 'confirmed')
-      and s.status not in ('completed', 'canceled')
-      and s.start_at < requested_end + make_interval(mins => s.travel_buffer_minutes)
-      and s.end_at + make_interval(mins => s.travel_buffer_minutes) > requested_start
-  ) then
-    raise exception 'Cleaner % has an overlapping assignment or travel buffer', new.cleaner_id
-      using errcode = '23P01';
-  end if;
+  perform assert_cleaner_schedule_capacity(
+    new.cleaner_id, new.job_schedule_id, requested_start, requested_end,
+    requested_territory, requested_travel_buffer
+  );
 
   return new;
 end
@@ -765,6 +891,185 @@ $$;
 create trigger job_assignments_capacity_guard
 before insert or update of status, cleaner_id, job_schedule_id on job_assignments
 for each row execute function validate_job_assignment_capacity();
+
+create function validate_time_off_against_assignments() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+begin
+  if new.status <> 'approved' then
+    return new;
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended(new.cleaner_id::text, 0));
+  if exists (
+    select 1
+    from job_assignments assignment
+    join job_schedules schedule on schedule.id = assignment.job_schedule_id
+    where assignment.cleaner_id = new.cleaner_id
+      and assignment.status in ('accepted', 'confirmed')
+      and schedule.status <> 'canceled'
+      and schedule.start_at < new.end_at
+      and schedule.end_at > new.start_at
+  ) then
+    raise exception 'Approved time off conflicts with an accepted assignment for cleaner %', new.cleaner_id
+      using errcode = '23P01';
+  end if;
+  return new;
+end
+$$;
+
+create trigger cleaner_time_off_assignment_guard
+before insert or update of status, cleaner_id, start_at, end_at on cleaner_time_off
+for each row execute function validate_time_off_against_assignments();
+
+create function synchronize_booking_from_schedule() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+declare
+  synchronized_status text;
+  event_type text;
+begin
+  synchronized_status := case
+    when new.status in ('tentative', 'held') then 'ready'
+    when new.status = 'confirmed' then 'scheduled'
+    when new.status in ('en_route', 'in_progress', 'quality_review') then 'in_progress'
+    when new.status = 'completed' then 'completed'
+    when new.status = 'canceled' then 'canceled'
+  end;
+
+  update bookings booking
+  set status = synchronized_status,
+      scheduled_date = (new.start_at at time zone territory.timezone)::date,
+      scheduled_window = case
+        when new.status = 'canceled' then booking.scheduled_window
+        else to_char(new.start_at at time zone territory.timezone, 'FMHH12:MI AM')
+          || '–' || to_char(new.end_at at time zone territory.timezone, 'FMHH12:MI AM')
+          || ' ' || territory.timezone
+      end
+  from service_territories territory
+  where booking.id = new.booking_id and territory.id = new.territory_id;
+
+  event_type := case
+    when tg_op = 'INSERT' then 'schedule_created'
+    when old.status is distinct from new.status then 'schedule_status_changed'
+    else 'schedule_rescheduled'
+  end;
+  insert into booking_events (booking_id, type, data)
+  values (
+    new.booking_id,
+    event_type,
+    jsonb_build_object('scheduleId', new.id, 'scheduleStatus', new.status, 'bookingStatus', synchronized_status)
+  );
+
+  if new.status = 'completed' then
+    insert into follow_ups (booking_id, kind, channel, status, scheduled_for, is_dev_seed)
+    select new.booking_id, follow_up.kind, 'manual', 'planned', now() + follow_up.delay, booking.is_dev_seed
+    from bookings booking
+    cross join (values
+      ('service_check_in'::text, interval '2 hours'),
+      ('review_request'::text, interval '24 hours')
+    ) as follow_up(kind, delay)
+    where booking.id = new.booking_id
+    on conflict (booking_id, kind) do nothing;
+  end if;
+  return new;
+end
+$$;
+
+create trigger job_schedules_booking_sync
+after insert or update of status, start_at, end_at, territory_id on job_schedules
+for each row execute function synchronize_booking_from_schedule();
+
+create function validate_refund_integrity() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+declare
+  case_booking_id uuid;
+  case_kind text;
+  case_state text;
+  billing_booking_id uuid;
+  billing_amount integer;
+  billing_state text;
+  committed_amount integer;
+begin
+  select booking_id, case_type, status
+    into case_booking_id, case_kind, case_state
+  from service_cases where id = new.service_case_id for update;
+  if case_booking_id is distinct from new.booking_id
+     or case_kind not in ('refund_review', 'complaint', 'reclean', 'damage')
+     or case_state <> 'refund_pending' then
+    raise exception 'Refund requires a refund-eligible case in refund_pending for the same booking'
+      using errcode = '23514';
+  end if;
+
+  select booking_id, amount_cents, status
+    into billing_booking_id, billing_amount, billing_state
+  from billing_records where id = new.billing_record_id for update;
+  if billing_booking_id is distinct from new.booking_id or billing_state <> 'paid' then
+    raise exception 'Refund requires a paid billing record for the same booking'
+      using errcode = '23514';
+  end if;
+
+  select coalesce(sum(amount_cents), 0)::integer into committed_amount
+  from refund_records
+  where billing_record_id = new.billing_record_id
+    and id <> new.id
+    and status not in ('declined', 'failed', 'canceled');
+  if new.status not in ('declined', 'failed', 'canceled') then
+    committed_amount := committed_amount + new.amount_cents;
+  end if;
+  if committed_amount > billing_amount then
+    raise exception 'Refund decisions exceed the paid billing amount'
+      using errcode = '23514';
+  end if;
+  if new.status = 'processed' and new.provider_refund_id is null then
+    raise exception 'Processed refunds require an external provider receipt'
+      using errcode = '23514';
+  end if;
+  return new;
+end
+$$;
+
+create trigger refund_records_integrity_guard
+before insert or update of service_case_id, booking_id, billing_record_id, amount_cents, status, provider_refund_id
+on refund_records for each row execute function validate_refund_integrity();
+
+create function synchronize_processed_refund() returns trigger
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $$
+declare
+  processed_total integer;
+  billed_total integer;
+begin
+  if new.status = 'processed' and old.status is distinct from new.status then
+    update service_cases
+    set status = 'resolved', resolution_type = 'refund',
+        resolution_summary = 'External refund receipt recorded; funds were returned outside this application.',
+        resolved_at = now()
+    where id = new.service_case_id and status = 'refund_pending';
+
+    select coalesce(sum(amount_cents), 0)::integer into processed_total
+    from refund_records
+    where billing_record_id = new.billing_record_id and status = 'processed';
+    select amount_cents into billed_total from billing_records where id = new.billing_record_id;
+    if processed_total >= billed_total then
+      update billing_records set status = 'refunded' where id = new.billing_record_id and status = 'paid';
+    end if;
+  end if;
+  return new;
+end
+$$;
+
+create trigger refund_records_case_sync
+after update of status on refund_records
+for each row execute function synchronize_processed_refund();
 
 -- Immutable, automatic lifecycle evidence. These trigger functions are
 -- SECURITY INVOKER (the Postgres default) and therefore do not bypass RLS.
@@ -890,6 +1195,11 @@ end
 $$;
 
 alter role lakeandpine_app nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls;
+-- Supabase's server connection opens as the project `postgres` role, then the
+-- startup `role` parameter selects this non-owner role on every pooled backend.
+-- INHERIT is deliberately false: owner sessions keep owner privileges unless
+-- they explicitly select the RLS-bound application role.
+grant lakeandpine_app to postgres with inherit false, set true;
 grant usage on schema public to lakeandpine_app;
 
 alter table service_territories enable row level security;
@@ -955,6 +1265,7 @@ $$;
 
 grant select on services, addons, plans, service_areas, faqs, reviews to lakeandpine_app;
 grant usage, select on all sequences in schema public to lakeandpine_app;
+grant execute on function assert_cleaner_schedule_capacity(uuid, uuid, timestamptz, timestamptz, uuid, integer) to lakeandpine_app;
 
 alter default privileges in schema public revoke all on tables from public;
 alter default privileges in schema public revoke all on sequences from public;

@@ -5,6 +5,7 @@ import type postgres from "postgres";
 import { sql } from "./db";
 import {
   rankAssignmentSuggestions,
+  requiredElapsedMinutes,
   type AssignmentCandidate,
   type AssignmentSuggestion,
   type CleanerCapacity,
@@ -90,12 +91,14 @@ export type ServiceCaseRow = {
   priority: string;
   details: string;
   created_at: string;
+  refundable_balance_cents: number;
+  refund_eligible: boolean;
   is_dev_seed: boolean;
 };
 
 export type RefundRow = {
   id: string;
-  service_case_id: string | null;
+  service_case_id: string;
   booking_id: string;
   amount_cents: number;
   status: string;
@@ -188,14 +191,30 @@ export async function getOperationsConsole(devOnly: boolean) {
       group by s.id, t.name, t.timezone
       order by s.start_at asc limit 60`,
     sql<ServiceCaseRow[]>`
-      select id, public_reference, case_type, booking_id,
+      select c.id, c.public_reference, c.case_type, c.booking_id,
              coalesce(contact ->> 'name', 'Unnamed customer') as contact_name,
-             status, priority, details, created_at::text, is_dev_seed
-      from service_cases
-      where (${devOnly} = false or is_dev_seed)
-        and status not in ('closed', 'canceled')
-      order by case priority when 'urgent' then 0 when 'high' then 1 else 2 end,
-               created_at asc limit 60`,
+             c.status, c.priority, c.details, c.created_at::text, c.is_dev_seed,
+             coalesce(refundable.balance_cents, 0)::int as refundable_balance_cents,
+             (c.booking_id is not null
+               and c.case_type in ('refund_review', 'complaint', 'reclean', 'damage')
+               and c.status = 'refund_pending'
+               and coalesce(refundable.balance_cents, 0) > 0) as refund_eligible
+      from service_cases c
+      left join lateral (
+        select sum(greatest(billing.amount_cents - coalesce(committed.amount_cents, 0), 0)) as balance_cents
+        from billing_records billing
+        left join lateral (
+          select sum(refund.amount_cents) as amount_cents
+          from refund_records refund
+          where refund.billing_record_id = billing.id
+            and refund.status not in ('declined', 'failed', 'canceled')
+        ) committed on true
+        where billing.booking_id = c.booking_id and billing.status = 'paid'
+      ) refundable on true
+      where (${devOnly} = false or c.is_dev_seed)
+        and c.status not in ('closed', 'canceled')
+      order by case c.priority when 'urgent' then 0 when 'high' then 1 else 2 end,
+               c.created_at asc limit 60`,
     sql<RefundRow[]>`
       select id, service_case_id, booking_id, amount_cents, status, provider,
              reason_code, provider_refund_id, created_at::text
@@ -629,12 +648,25 @@ export async function createJobSchedule(input: {
       (Date.parse(input.endAt) - Date.parse(input.startAt)) / 60000,
     );
     const booking = bookings[0];
+    const laborMinutes = Math.max(
+      booking.estimated_duration_minutes ?? elapsedMinutes,
+      30,
+    );
+    const requiredMinutes = requiredElapsedMinutes(
+      laborMinutes,
+      booking.required_crew_size,
+    );
+    if (!Number.isFinite(elapsedMinutes) || elapsedMinutes < requiredMinutes) {
+      throw new Error(
+        `Schedule needs at least ${requiredMinutes} elapsed minutes for this labor plan and crew size`,
+      );
+    }
     const rows = await tx<{ id: string }[]>`
       insert into job_schedules (booking_id, territory_id, service_vertical, start_at, end_at,
         status, required_crew_size, required_skills, labor_minutes, travel_buffer_minutes, is_dev_seed)
       values (${input.bookingId}, ${input.territoryId}, ${booking.service_vertical}, ${input.startAt},
         ${input.endAt}, 'tentative', ${booking.required_crew_size}, ${booking.required_skills},
-        ${Math.max(booking.estimated_duration_minutes ?? elapsedMinutes, 30)}, ${territories[0].travel_buffer_minutes},
+        ${laborMinutes}, ${territories[0].travel_buffer_minutes},
         ${input.devOnly}) returning id`;
     return rows[0];
   });
@@ -699,8 +731,10 @@ export async function rescheduleBookingFromCase(input: {
   devOnly: boolean;
 }) {
   return sql.begin(async (tx) => {
-    const rows = await tx<{ schedule_id: string }[]>`
-      select s.id as schedule_id from service_cases c
+    const rows = await tx<
+      { schedule_id: string; labor_minutes: number; required_crew_size: number }[]
+    >`
+      select s.id as schedule_id, s.labor_minutes, s.required_crew_size from service_cases c
       join job_schedules s on s.booking_id = c.booking_id
       where c.id = ${input.caseId} and c.case_type = 'reschedule'
         and c.status = 'action_planned' and (${input.devOnly} = false or (c.is_dev_seed and s.is_dev_seed))
@@ -709,6 +743,18 @@ export async function rescheduleBookingFromCase(input: {
       throw new Error(
         "Reschedule case must be action-planned and linked to a schedule",
       );
+    const elapsedMinutes = Math.round(
+      (Date.parse(input.endAt) - Date.parse(input.startAt)) / 60000,
+    );
+    const requiredMinutes = requiredElapsedMinutes(
+      rows[0].labor_minutes,
+      rows[0].required_crew_size,
+    );
+    if (!Number.isFinite(elapsedMinutes) || elapsedMinutes < requiredMinutes) {
+      throw new Error(
+        `Reschedule needs at least ${requiredMinutes} elapsed minutes for the existing labor plan and crew size`,
+      );
+    }
     await tx`update job_schedules set start_at = ${input.startAt}, end_at = ${input.endAt},
       version = version + 1 where id = ${rows[0].schedule_id}`;
     await tx`update bookings b set
@@ -765,11 +811,43 @@ export async function createRefundReview(input: {
   reasonCode: string;
   devOnly: boolean;
 }) {
-  await sql`insert into refund_records
-    (service_case_id, booking_id, amount_cents, reason_code, status, provider, requested_by_label, is_dev_seed)
-    select id, booking_id, ${input.amountCents}, ${input.reasonCode}, 'requested', 'manual', 'Operator', ${input.devOnly}
-    from service_cases where id = ${input.caseId} and booking_id is not null
-      and (${input.devOnly} = false or is_dev_seed)`;
+  return sql.begin(async (tx) => {
+    const rows = await tx<
+      { booking_id: string; billing_record_id: string; remaining_cents: number }[]
+    >`
+      select service_case.booking_id, billing.id as billing_record_id,
+             (billing.amount_cents - coalesce((
+               select sum(refund.amount_cents) from refund_records refund
+               where refund.billing_record_id = billing.id
+                 and refund.status not in ('declined', 'failed', 'canceled')
+             ), 0))::int
+               as remaining_cents
+      from service_cases service_case
+      join billing_records billing on billing.booking_id = service_case.booking_id
+        and billing.status = 'paid'
+      where service_case.id = ${input.caseId}
+        and service_case.case_type in ('refund_review', 'complaint', 'reclean', 'damage')
+        and service_case.status = 'refund_pending'
+        and (${input.devOnly} = false or (service_case.is_dev_seed and billing.is_dev_seed))
+        and billing.amount_cents - coalesce((
+          select sum(refund.amount_cents) from refund_records refund
+          where refund.billing_record_id = billing.id
+            and refund.status not in ('declined', 'failed', 'canceled')
+        ), 0) >= ${input.amountCents}
+      order by billing.occurred_at desc
+      limit 1
+      for update of service_case, billing`;
+    if (!rows[0]) {
+      throw new Error(
+        "Refund review requires a refund-pending eligible case and enough remaining paid balance",
+      );
+    }
+    await tx`insert into refund_records
+      (service_case_id, booking_id, billing_record_id, amount_cents, reason_code,
+       status, provider, requested_by_label, is_dev_seed)
+      values (${input.caseId}, ${rows[0].booking_id}, ${rows[0].billing_record_id},
+        ${input.amountCents}, ${input.reasonCode}, 'requested', 'manual', 'Operator', ${input.devOnly})`;
+  });
 }
 
 export async function setRefundStatus(

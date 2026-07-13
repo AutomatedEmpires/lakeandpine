@@ -7,7 +7,7 @@ import {
   deriveBookingReference,
   hashBookingReference,
 } from "./booking-reference";
-import { jsonb, sql } from "./db";
+import { sql } from "./db";
 import type { JobStatus, PropertyProfile, RoomPlan } from "./service-planning";
 
 export type Service = {
@@ -477,6 +477,7 @@ export type OperatorBooking = BookingRow & {
   planning_direction: string | null;
   planning_score: number | null;
   contact_status: string;
+  service_vertical: string | null;
   is_dev_seed: boolean;
 };
 
@@ -512,7 +513,8 @@ export async function getOperatorBookings(
            b.scheduled_window, b.status, b.estimate_cents, b.access_notes,
            b.created_at::text, b.contact, b.home_details, b.property_profile,
            b.room_plan, b.cleaning_preferences, b.pet_notes, b.special_instructions,
-           b.planning_direction, b.planning_score, b.contact_status, b.is_dev_seed
+            b.planning_direction, b.planning_score, b.contact_status,
+            b.service_vertical, b.is_dev_seed
     from bookings b join services s on s.id = b.service_id
     where ${devOnly ? sql`b.is_dev_seed` : sql`true`}
       and b.status <> 'canceled'
@@ -561,30 +563,36 @@ export async function updateBookingStatus(
   toStatus: JobStatus,
   devOnly: boolean,
 ): Promise<boolean> {
-  const rows = await sql<{ id: string }[]>`
-    update bookings set status = ${toStatus}
-    where id = ${bookingId} and status = ${fromStatus}
-      and ${devOnly ? sql`is_dev_seed` : sql`true`}
-    returning id`;
-  if (!rows[0]) return false;
+  return sql.begin(async (tx) => {
+    // Premium work is schedule-authoritative. Its booking status is synchronized
+    // by database trigger after crew-capacity validation, never from this legacy
+    // planning workspace.
+    const rows = await tx<{ id: string }[]>`
+      update bookings set status = ${toStatus}
+      where id = ${bookingId} and status = ${fromStatus}
+        and service_vertical is null
+        and ${devOnly ? tx`is_dev_seed` : tx`true`}
+      returning id`;
+    if (!rows[0]) return false;
 
-  await sql`
-    insert into booking_events (booking_id, type, data)
-    values (${bookingId}, 'status_changed', ${jsonb({ fromStatus, toStatus, via: "operator" })})`;
+    await tx`
+      insert into booking_events (booking_id, type, data)
+      values (${bookingId}, 'status_changed', ${tx.json({ fromStatus, toStatus, via: "operator" } as postgres.JSONValue)})`;
 
-  if (toStatus === "completed") {
-    await sql`
-      insert into follow_ups (booking_id, kind, scheduled_for, is_dev_seed)
-      select ${bookingId}, task.kind, task.scheduled_for, b.is_dev_seed
-      from bookings b
-      cross join (values
-        ('service_check_in'::text, now() + interval '2 hours'),
-        ('review_request'::text, now() + interval '1 day')
-      ) as task(kind, scheduled_for)
-      where b.id = ${bookingId}
-      on conflict (booking_id, kind) do nothing`;
-  }
-  return true;
+    if (toStatus === "completed") {
+      await tx`
+        insert into follow_ups (booking_id, kind, scheduled_for, is_dev_seed)
+        select ${bookingId}, task.kind, task.scheduled_for, b.is_dev_seed
+        from bookings b
+        cross join (values
+          ('service_check_in'::text, now() + interval '2 hours'),
+          ('review_request'::text, now() + interval '1 day')
+        ) as task(kind, scheduled_for)
+        where b.id = ${bookingId}
+        on conflict (booking_id, kind) do nothing`;
+    }
+    return true;
+  });
 }
 
 export async function setChecklistItemState(

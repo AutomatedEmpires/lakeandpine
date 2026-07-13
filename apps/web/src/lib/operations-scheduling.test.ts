@@ -5,6 +5,7 @@ import {
   estimateJobDuration,
   evaluateAssignment,
   rankAssignmentSuggestions,
+  requiredElapsedMinutes,
   type AssignmentCandidate,
   type SchedulingJob,
 } from "./operations-scheduling.ts";
@@ -60,6 +61,12 @@ test("estimates premium labor and flags walkthrough-scale work", () => {
   assert.equal(estate.requiresWalkthrough, true);
   assert.ok(estate.laborMinutes > estate.elapsedMinutes);
   assert.equal(estate.elapsedMinutes % 30, 0);
+});
+
+test("converts labor into a whole 30-minute crew window", () => {
+  assert.equal(requiredElapsedMinutes(1_260, 4), 330);
+  assert.equal(requiredElapsedMinutes(600, 2), 300);
+  assert.throws(() => requiredElapsedMinutes(600, 0));
 });
 
 test("rejects assignments when any hard access or capacity rule fails", () => {

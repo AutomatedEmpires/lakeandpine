@@ -2,6 +2,13 @@ import postgres from "postgres";
 
 import { requireEnv } from "./env";
 
+export const DATABASE_RUNTIME_ROLE =
+  process.env.DATABASE_RUNTIME_ROLE?.trim() || "lakeandpine_app";
+
+if (!/^[a-z_][a-z0-9_]{0,62}$/.test(DATABASE_RUNTIME_ROLE)) {
+  throw new Error("DATABASE_RUNTIME_ROLE must be a valid PostgreSQL role name");
+}
+
 // One pool per server process; dev HMR reuses the instance stashed on globalThis.
 const globalForDb = globalThis as unknown as { __lpSql?: ReturnType<typeof postgres> };
 
@@ -12,6 +19,13 @@ export const sql =
     idle_timeout: 20,
     connect_timeout: 10,
     prepare: false, // safe with transaction-pooled Supabase connections at go-live
+    // PostgreSQL applies this startup parameter to every physical connection.
+    // The owner credential can open the connection, but every application query
+    // runs as the non-owner, RLS-bound role granted by the reviewed migration.
+    connection: {
+      application_name: "lakeandpine_web",
+      role: DATABASE_RUNTIME_ROLE,
+    },
   });
 
 if (process.env.NODE_ENV !== "production") {

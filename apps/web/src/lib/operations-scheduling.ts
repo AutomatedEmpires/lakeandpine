@@ -98,6 +98,21 @@ function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+export function requiredElapsedMinutes(
+  laborMinutes: number,
+  crewSize: number,
+): number {
+  if (
+    !Number.isFinite(laborMinutes) ||
+    !Number.isFinite(crewSize) ||
+    laborMinutes <= 0 ||
+    crewSize < 1
+  ) {
+    throw new Error("Labor minutes and crew size must be positive numbers");
+  }
+  return Math.ceil(laborMinutes / Math.floor(crewSize) / 30) * 30;
+}
+
 export function estimateJobDuration(input: DurationInput): DurationEstimate {
   const squareFeet = Math.max(0, input.squareFeet ?? 0);
   const serviceUnits = Math.max(1, input.serviceUnits ?? 1);
@@ -109,7 +124,7 @@ export function estimateJobDuration(input: DurationInput): DurationEstimate {
     Math.max(120, Math.ceil(((VERTICAL_BASE_MINUTES[input.vertical] + areaMinutes + unitMinutes) * multiplier) / 30) * 30),
   );
   const crewSize = Math.max(1, input.crewSize);
-  const elapsedMinutes = Math.ceil(laborMinutes / crewSize / 30) * 30;
+  const elapsedMinutes = requiredElapsedMinutes(laborMinutes, crewSize);
   const requiresWalkthrough =
     input.vertical === "construction" ||
     squareFeet >= 5_000 ||

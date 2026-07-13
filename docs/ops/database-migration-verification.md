@@ -12,8 +12,8 @@ The verifier:
    `proof`, or `disposable`;
 2. refuses a database that already contains public tables;
 3. creates a disposable `lakeandpine_app` role with `NOLOGIN`, `NOSUPERUSER`, and
-   `NOBYPASSRLS` before applying migrations, so migrations can grant access to the same
-   role used by the server-side application in production;
+   `NOBYPASSRLS` before applying migrations, then requires the migration to grant only
+   `SET TRUE`, `INHERIT FALSE`, `ADMIN FALSE` membership to the `postgres` connection role;
 4. applies every `supabase/migrations/*.sql` file in filename order, with one transaction
    per file and a SHA-256 record of the exact SQL applied;
 5. fails if the current booking spine is incomplete: `bookings`, `checklist_items`,
@@ -23,10 +23,12 @@ The verifier:
    table. New cleaner, capacity, schedule, complaint, refund, or assignment tables are
    therefore covered automatically;
 7. requires RLS, explicit `lakeandpine_app` CRUD grants, role-targeted CRUD/`ALL` policies,
-   identity-sequence `USAGE`, and an actual `SET ROLE` read probe on every discovered
-   private table;
+   identity-sequence `USAGE`, an explicit `SET ROLE` read probe, and a second physical
+   Postgres.js connection whose startup `role` parameter must report `current_user =
+   lakeandpine_app` while reading every private table;
 8. fails if `lakeandpine_app` owns an operational table, gains a privileged attribute or
-   role membership, or if `PUBLIC` receives a table grant; and
+   any membership other than the non-inheriting `postgres` SET grant, or if `PUBLIC`
+   receives a table grant; and
 9. detects atomic-intake functions by a `create*booking` / `booking*create` name or an
    `atomic intake` function comment. A detected function must be `SECURITY INVOKER`, be
    executable by `lakeandpine_app`, and not be executable by `PUBLIC`.
