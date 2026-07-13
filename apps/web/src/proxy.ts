@@ -7,7 +7,7 @@ const clerkConfigured = Boolean(
   process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY,
 );
 
-const isProtected = createRouteMatcher(["/dashboard(.*)"]);
+const isProtected = createRouteMatcher(["/dashboard(.*)", "/operator(.*)", "/crew(.*)"]);
 
 export default clerkConfigured
   ? clerkMiddleware(async (auth, req) => {

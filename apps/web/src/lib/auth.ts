@@ -3,6 +3,7 @@ import "server-only";
 import { auth, currentUser } from "@clerk/nextjs/server";
 
 import { type Customer, getCustomerByClerkId, getCustomerByEmail, upsertCustomerFromClerk } from "./data";
+import { type Cleaner, getCleanerByEmail, getCleanerByExternalAuthId } from "./crew-data";
 import { authEnabled, optionalEnv } from "./env";
 
 export type DashboardIdentity =
@@ -13,6 +14,11 @@ export type DashboardIdentity =
 export type OperatorIdentity =
   | { state: "authed"; operator: Customer; devOnly: false }
   | { state: "preview"; operator: Customer; devOnly: true }
+  | { state: "denied" | "signed_out" };
+
+export type CleanerIdentity =
+  | { state: "authed"; cleaner: Cleaner; devOnly: false }
+  | { state: "preview"; cleaner: Cleaner; devOnly: true }
   | { state: "denied" | "signed_out" };
 
 // Resolves who the dashboard belongs to.
@@ -57,6 +63,25 @@ export async function resolveOperatorIdentity(): Promise<OperatorIdentity> {
   if (previewEmail && process.env.NODE_ENV !== "production") {
     const operator = await getCustomerByEmail(previewEmail);
     if (operator?.role === "staff") return { state: "preview", operator, devOnly: true };
+  }
+  return { state: "signed_out" };
+}
+
+export async function resolveCleanerIdentity(): Promise<CleanerIdentity> {
+  if (authEnabled) {
+    const { userId } = await auth();
+    if (!userId) return { state: "signed_out" };
+    const cleaner = await getCleanerByExternalAuthId(userId);
+    if (!cleaner || !["onboarding", "active"].includes(cleaner.status)) {
+      return { state: "denied" };
+    }
+    return { state: "authed", cleaner, devOnly: false };
+  }
+
+  const previewEmail = optionalEnv("DEV_PREVIEW_CLEANER_EMAIL");
+  if (previewEmail && process.env.NODE_ENV !== "production") {
+    const cleaner = await getCleanerByEmail(previewEmail);
+    if (cleaner?.is_dev_seed) return { state: "preview", cleaner, devOnly: true };
   }
   return { state: "signed_out" };
 }

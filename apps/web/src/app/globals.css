@@ -953,6 +953,18 @@ textarea { height: 116px !important; padding-top: 14px !important; resize: verti
 .privacy-preferences a { color: var(--pine); font-weight: 850; }
 .privacy-actions { display: flex; gap: 8px; }
 .privacy-actions .btn { min-height: 44px; white-space: nowrap; }
+.crew-dashboard-grid { display: grid; grid-template-columns: minmax(0,1.3fr) minmax(320px,.7fr); gap: 16px; align-items: start; }
+.crew-assignment-list { display: grid; gap: 10px; margin-top: 18px; }
+.crew-assignment-list > article { padding: 17px; border: 1px solid var(--line); border-radius: 18px; }
+.crew-assignment-list > article > div:first-child { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.crew-assignment-list p { margin: 8px 0 0; color: var(--muted); }
+.crew-assignment-list small { display: block; margin-top: 7px; color: var(--soft); }
+.assignment-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 15px; }
+.availability-list { display: grid; gap: 8px; margin-top: 15px; }
+.availability-list > div { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.availability-list strong, .availability-list span { display: block; }
+.availability-list span { margin-top: 4px; color: var(--muted); font-size: 12px; }
+.time-off-form { display: grid; gap: 10px; margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
 
 /* --- Responsive --- */
 @media (max-width: 1120px) {
@@ -973,6 +985,7 @@ textarea { height: 116px !important; padding-top: 14px !important; resize: verti
   .dash-grid { grid-template-columns: repeat(2, 1fr); }
   .workflow-grid { grid-template-columns: repeat(2,1fr); }
   .planning-story, .operator-hero, .operator-workbench { grid-template-columns: 1fr; }
+  .crew-dashboard-grid { grid-template-columns: 1fr; }
   .premium-promise, .pricing-method-grid, .not-for-grid, .service-program { grid-template-columns: 1fr; }
   .service-program-intro { position: static; }
   .audience-detail { grid-template-columns: 1fr 1fr; }
