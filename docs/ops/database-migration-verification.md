@@ -17,7 +17,7 @@ The verifier:
    connection owner effective `SET TRUE` and `INHERIT FALSE` access even when multiple
    grantor rows remain. It also executes the marked application-role DDL under a
    non-superuser `CREATEROLE` + `ADMIN OPTION` boundary so hosted-incompatible clauses
-   fail in CI;
+   fail in CI for both absent-role creation and existing-role normalization;
 4. applies every `supabase/migrations/*.sql` file in filename order, with one transaction
    per file and a SHA-256 record of the exact SQL applied;
 5. fails if the current booking spine is incomplete: `bookings`, `checklist_items`,

@@ -167,7 +167,11 @@ async function seedProductionLikeApplicationRole(sql) {
   }
 }
 
-async function inspectHostedRoleDdlCompatibility(sql, migrations) {
+async function inspectHostedRoleDdlCompatibility(
+  sql,
+  migrations,
+  expectApplicationRole,
+) {
   const startMarker = "-- hosted-role-compatibility:start";
   const endMarker = "-- hosted-role-compatibility:end";
   const candidates = migrations.filter(
@@ -186,15 +190,24 @@ async function inspectHostedRoleDdlCompatibility(sql, migrations) {
   const roleDdl = source.slice(start, end);
   const runner = "lakeandpine_migration_runner";
 
+  invariant(
+    Boolean(await readRole(sql)) === expectApplicationRole,
+    expectApplicationRole
+      ? "Existing-role compatibility probe requires lakeandpine_app"
+      : "Role-creation compatibility probe requires lakeandpine_app to be absent",
+  );
+
   // SET ROLE drops the disposable bootstrap superuser's effective privileges,
   // reproducing Supabase's CREATEROLE + ADMIN OPTION boundary without trying
   // to demote PostgreSQL's protected bootstrap role.
   await sql.unsafe(
     `create role ${quoteIdentifier(runner)} nologin nosuperuser createrole createdb noinherit noreplication nobypassrls`,
   );
-  await sql.unsafe(
-    `grant ${quoteIdentifier(APP_ROLE)} to ${quoteIdentifier(runner)} with admin true, inherit false, set false`,
-  );
+  if (expectApplicationRole) {
+    await sql.unsafe(
+      `grant ${quoteIdentifier(APP_ROLE)} to ${quoteIdentifier(runner)} with admin true, inherit false, set false`,
+    );
+  }
   try {
     await sql.unsafe(`set role ${quoteIdentifier(runner)}`);
     try {
@@ -203,9 +216,14 @@ async function inspectHostedRoleDdlCompatibility(sql, migrations) {
       await sql.unsafe("reset role");
     }
   } finally {
-    await sql.unsafe(
-      `revoke ${quoteIdentifier(APP_ROLE)} from ${quoteIdentifier(runner)}`,
-    );
+    if (await readRole(sql)) {
+      await sql.unsafe(
+        `revoke ${quoteIdentifier(APP_ROLE)} from ${quoteIdentifier(runner)}`,
+      );
+      if (!expectApplicationRole) {
+        await sql.unsafe(`drop role ${quoteIdentifier(APP_ROLE)}`);
+      }
+    }
     await sql.unsafe(`drop role ${quoteIdentifier(runner)}`);
   }
 }
@@ -871,9 +889,9 @@ try {
     existingTables.length === 0,
     `Verification requires a fresh database; found public tables: ${existingTables.map((row) => row.table_name).join(", ")}`,
   );
-
+  await inspectHostedRoleDdlCompatibility(sql, migrations, false);
   await seedProductionLikeApplicationRole(sql);
-  await inspectHostedRoleDdlCompatibility(sql, migrations);
+  await inspectHostedRoleDdlCompatibility(sql, migrations, true);
   await applyMigrations(sql, migrations);
   await assertSafeRole(sql, true);
 

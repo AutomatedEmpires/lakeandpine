@@ -1718,6 +1718,7 @@ for each row execute function reject_immutable_event_mutation();
 -- The direct server role is intentionally a non-owner, non-superuser role and
 -- never bypasses RLS. Existing LOGIN/password settings are left untouched.
 
+-- hosted-role-compatibility:start
 do $$
 begin
   if not exists (select 1 from pg_roles where rolname = 'lakeandpine_app') then
@@ -1734,7 +1735,6 @@ $$;
 -- role. Preserve that non-privileged LOGIN path; disabling it is a separately
 -- approved credential-revocation action. Runtime still selects and verifies this
 -- exact non-owner role on every connection.
--- hosted-role-compatibility:start
 do $$
 begin
   if exists (
