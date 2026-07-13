@@ -85,7 +85,12 @@ async function loadMigrations() {
   invariant(new Set(names).size === names.length, "Migration filenames must be unique");
 
   return Promise.all(names.map(async (name) => {
-    const source = await readFile(resolve(migrationsDirectory, name), "utf8");
+    const rawSource = await readFile(resolve(migrationsDirectory, name), "utf8");
+    const source = rawSource.replaceAll("\r\n", "\n");
+    invariant(
+      !source.includes("\r"),
+      `Migration ${name} contains an unsupported carriage return`,
+    );
     invariant(source.trim().length > 0, `Migration ${name} is empty`);
     return {
       name,
@@ -191,6 +196,8 @@ async function createHostedMigrationRunner(bootstrapSql, bootstrapUrl, database)
   await bootstrapSql.unsafe(
     "create role postgres login password 'lakeandpine-verifier-postgres' nosuperuser createdb createrole inherit replication bypassrls",
   );
+  await bootstrapSql.unsafe("create role anon nologin");
+  await bootstrapSql.unsafe("create role authenticated nologin");
   await bootstrapSql.unsafe(
     `alter database ${quoteIdentifier(database)} owner to postgres`,
   );
@@ -511,6 +518,108 @@ async function inspectApplicationRoleAccess(sql) {
   }
 
   return { failures, operationsTables: operationsTables.map((table) => table.table_name) };
+}
+
+async function inspectProductionHardening(sql) {
+  const failures = [];
+  const [postalFunction] = await sql`
+    select procedure.oid::regprocedure::text as signature,
+      coalesce(procedure.proconfig, array[]::text[]) as configuration
+    from pg_proc procedure
+    join pg_namespace namespace on namespace.oid = procedure.pronamespace
+    where namespace.nspname = 'public'
+      and procedure.proname = 'normalize_us_postal_code'
+      and procedure.proargtypes = '25'::oidvector`;
+  if (!postalFunction) {
+    failures.push("public.normalize_us_postal_code(text) is missing");
+  } else if (!postalFunction.configuration.includes("search_path=pg_catalog")) {
+    failures.push(
+      "public.normalize_us_postal_code(text) must pin search_path to pg_catalog",
+    );
+  }
+
+  const policies = await sql`
+    select tablename, policyname, cmd, permissive, roles::text[] as roles
+    from pg_policies
+    where schemaname = 'public'`;
+  const policyTables = new Set(policies.map((policy) => policy.tablename));
+  const duplicatePolicies = [];
+  for (const table of policyTables) {
+    for (const command of REQUIRED_PRIVILEGES) {
+      const applicable = policies.filter((policy) =>
+        policy.tablename === table &&
+        policy.permissive === "PERMISSIVE" &&
+        (policy.cmd === "ALL" || policy.cmd === command) &&
+        (policy.roles.includes(APP_ROLE) || policy.roles.includes("public")));
+      if (applicable.length > 1) {
+        duplicatePolicies.push(
+          `public.${table} ${command}: ${applicable.map((policy) => policy.policyname).join(", ")}`,
+        );
+      }
+    }
+  }
+  if (duplicatePolicies.length > 0) {
+    failures.push(
+      `Redundant permissive policies apply to ${APP_ROLE}: ${duplicatePolicies.join("; ")}`,
+    );
+  }
+
+  const publicCatalogAccess = await sql`
+    select role_definition.rolname as role_name,
+      content_table.table_name,
+      has_table_privilege(
+        role_definition.rolname,
+        format('public.%I', content_table.table_name),
+        'SELECT'
+      ) as can_select
+    from pg_roles role_definition
+    cross join unnest(${sql.array([...PUBLIC_CONTENT_TABLES])}::text[])
+      as content_table(table_name)
+    where role_definition.rolname in ('anon', 'authenticated')
+    order by role_definition.rolname, content_table.table_name`;
+  const missingPublicCatalogAccess = publicCatalogAccess.filter((grant) => !grant.can_select);
+  if (publicCatalogAccess.length !== PUBLIC_CONTENT_TABLES.size * 2) {
+    failures.push("Hosted anon/authenticated role fixture is incomplete");
+  } else if (missingPublicCatalogAccess.length > 0) {
+    failures.push(
+      `Supabase client roles lack public catalog reads: ${missingPublicCatalogAccess
+        .map((grant) => `${grant.role_name}:public.${grant.table_name}`)
+        .join(", ")}`,
+    );
+  }
+
+  const unindexedForeignKeys = await sql`
+    select constraint_definition.conrelid::regclass::text as table_name,
+      constraint_definition.conname as constraint_name
+    from pg_constraint constraint_definition
+    where constraint_definition.contype = 'f'
+      and constraint_definition.connamespace = 'public'::regnamespace
+      and not exists (
+        select 1
+        from pg_index index_definition
+        where index_definition.indrelid = constraint_definition.conrelid
+          and index_definition.indisvalid
+          and (index_definition.indkey::smallint[])[
+            0:cardinality(constraint_definition.conkey) - 1
+          ] = constraint_definition.conkey
+      )
+    order by constraint_definition.conrelid::regclass::text,
+      constraint_definition.conname`;
+  if (unindexedForeignKeys.length > 0) {
+    failures.push(
+      `Foreign keys lack covering indexes: ${unindexedForeignKeys
+        .map((foreignKey) => `${foreignKey.table_name}.${foreignKey.constraint_name}`)
+        .join(", ")}`,
+    );
+  }
+
+  return {
+    failures,
+    functionSearchPath: postalFunction?.configuration || [],
+    duplicatePermissivePolicies: duplicatePolicies.length,
+    publicCatalogRoleReads: publicCatalogAccess.length,
+    unindexedForeignKeys: unindexedForeignKeys.length,
+  };
 }
 
 async function inspectAtomicIntakeFunctions(sql) {
@@ -1024,8 +1133,13 @@ try {
   await assertSafeRole(sql, true);
 
   const access = await inspectApplicationRoleAccess(sql);
+  const hardening = await inspectProductionHardening(sql);
   const atomicIntake = await inspectAtomicIntakeFunctions(sql);
-  const failures = [...access.failures, ...atomicIntake.failures];
+  const failures = [
+    ...access.failures,
+    ...hardening.failures,
+    ...atomicIntake.failures,
+  ];
   invariant(
     failures.length === 0,
     `Migration verification failed:\n- ${failures.join("\n- ")}`,
@@ -1055,6 +1169,12 @@ try {
       verifiedPrivileges: REQUIRED_PRIVILEGES,
     },
     privateOperationalTables: access.operationsTables,
+    productionHardening: {
+      postalFunctionSearchPath: hardening.functionSearchPath,
+      duplicatePermissivePolicies: hardening.duplicatePermissivePolicies,
+      publicCatalogRoleReads: hardening.publicCatalogRoleReads,
+      unindexedForeignKeys: hardening.unindexedForeignKeys,
+    },
     atomicIntakeFunctions: atomicIntake.functions.length > 0
       ? atomicIntake.functions.map((candidate) => candidate.signature)
       : "none discovered; add a function name matching create*booking/booking*create or an 'atomic intake' function comment",

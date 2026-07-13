@@ -18,7 +18,9 @@ The verifier:
    exercises absent-role creation under the same hosted boundary, and proves the role
    guard rejects unsafe memberships, grantees, inheritance, and owned relations;
 4. applies every `supabase/migrations/*.sql` file in filename order, with one transaction
-   per file and a SHA-256 record of the exact SQL applied;
+   per file and a SHA-256 record of the canonical LF-normalized SQL applied; repository
+   attributes enforce LF for migration files, the verifier normalizes an existing Windows
+   CRLF checkout, and unsupported standalone carriage returns fail the gate;
 5. fails if the current booking spine is incomplete: `bookings`, `checklist_items`,
    `internal_notes`, and `follow_ups`, including their critical columns, must exist;
 6. discovers every public table other than the explicit content catalog (`services`,
