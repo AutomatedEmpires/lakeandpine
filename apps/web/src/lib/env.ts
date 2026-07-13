@@ -26,6 +26,7 @@ export const authEnabled = Boolean(
   process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY,
 );
 export const requestIntakeEnabled = process.env.REQUEST_INTAKE_ENABLED === "true";
+export const cleanerApplicationsEnabled = process.env.CLEANER_APPLICATIONS_ENABLED === "true";
 export const paymentsEnabled = process.env.PAYMENTS_ENABLED === "true";
 
 export function getIntakeReadinessIssues(): string[] {
