@@ -1722,10 +1722,9 @@ for each row execute function reject_immutable_event_mutation();
 do $$
 begin
   if not exists (select 1 from pg_roles where rolname = 'lakeandpine_app') then
-    -- SUPERUSER, REPLICATION, and BYPASSRLS default to false. Supabase's
-    -- project postgres role has CREATEROLE but is intentionally not a
-    -- superuser, so it cannot explicitly set even the negative forms of
-    -- those attributes.
+    -- Privileged attributes default to false. Keep them implicit here and
+    -- verify them below so creation and existing-role normalization share the
+    -- same fail-closed checks.
     create role lakeandpine_app login nocreatedb nocreaterole noinherit;
   end if;
 end
@@ -1736,7 +1735,22 @@ $$;
 -- approved credential-revocation action. Runtime still selects and verifies this
 -- exact non-owner role on every connection.
 do $$
+declare
+  application_role_oid oid;
+  connection_owner_oid oid;
 begin
+  select oid into application_role_oid
+  from pg_roles
+  where rolname = 'lakeandpine_app';
+
+  select oid into connection_owner_oid
+  from pg_roles
+  where rolname = 'postgres';
+
+  if application_role_oid is null or connection_owner_oid is null then
+    raise exception 'Required application and connection-owner roles are missing';
+  end if;
+
   if exists (
     select 1
     from pg_roles
@@ -1745,6 +1759,61 @@ begin
   ) then
     raise exception
       'lakeandpine_app has a privileged role attribute; a Supabase administrator must remove it before migration';
+  end if;
+
+  if exists (
+    select 1 from pg_auth_members
+    where member = application_role_oid
+  ) then
+    raise exception
+      'lakeandpine_app inherits or can set another role; remove the unexpected membership before migration';
+  end if;
+
+  if exists (
+    select 1 from pg_auth_members
+    where roleid = application_role_oid
+      and member <> connection_owner_oid
+  ) then
+    raise exception
+      'lakeandpine_app is granted to an unexpected member; remove the grant before migration';
+  end if;
+
+  if exists (
+    select 1 from pg_auth_members
+    where roleid = application_role_oid
+      and member = connection_owner_oid
+      and inherit_option
+  ) then
+    raise exception
+      'postgres must not inherit lakeandpine_app privileges automatically';
+  end if;
+
+  if exists (
+    select 1
+    from pg_class relation
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'public'
+      and relation.relowner = application_role_oid
+  ) or exists (
+    select 1
+    from pg_proc routine
+    join pg_namespace namespace on namespace.oid = routine.pronamespace
+    where namespace.nspname = 'public'
+      and routine.proowner = application_role_oid
+  ) or exists (
+    select 1
+    from pg_type data_type
+    join pg_namespace namespace on namespace.oid = data_type.typnamespace
+    where namespace.nspname = 'public'
+      and data_type.typowner = application_role_oid
+  ) or exists (
+    select 1
+    from pg_namespace namespace
+    where namespace.nspname = 'public'
+      and namespace.nspowner = application_role_oid
+  ) then
+    raise exception
+      'lakeandpine_app owns a public object and would bypass the intended privilege boundary';
   end if;
 end
 $$;

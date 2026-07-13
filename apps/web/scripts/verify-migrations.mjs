@@ -95,12 +95,12 @@ async function loadMigrations() {
   }));
 }
 
-async function readRole(sql) {
+async function readRole(sql, roleName = APP_ROLE) {
   const [role] = await sql`
     select rolname, rolsuper, rolcreaterole, rolcreatedb, rolcanlogin,
-      rolreplication, rolbypassrls
+      rolinherit, rolreplication, rolbypassrls
     from pg_roles
-    where rolname = ${APP_ROLE}`;
+    where rolname = ${roleName}`;
   return role;
 }
 
@@ -111,15 +111,18 @@ async function assertSafeRole(sql, expectRuntimeGrant = false) {
   invariant(!role.rolcreaterole, `${APP_ROLE} must not have CREATEROLE`);
   invariant(!role.rolcreatedb, `${APP_ROLE} must not have CREATEDB`);
   invariant(role.rolcanlogin, `${APP_ROLE} must retain the production-compatible LOGIN attribute`);
+  invariant(!role.rolinherit, `${APP_ROLE} must use NOINHERIT`);
   invariant(!role.rolreplication, `${APP_ROLE} must not have REPLICATION`);
   invariant(!role.rolbypassrls, `${APP_ROLE} must not have BYPASSRLS`);
 
   const memberships = await sql`
     select granted.rolname as granted_role, member.rolname as member_role,
-      membership.admin_option, membership.inherit_option, membership.set_option
+      grantor.rolname as grantor_role, membership.admin_option,
+      membership.inherit_option, membership.set_option
     from pg_auth_members membership
     join pg_roles granted on granted.oid = membership.roleid
     join pg_roles member on member.oid = membership.member
+    join pg_roles grantor on grantor.oid = membership.grantor
     where granted.rolname = ${APP_ROLE} or member.rolname = ${APP_ROLE}`;
   if (expectRuntimeGrant) {
     const grantsToConnectionOwner = memberships.filter(
@@ -131,6 +134,12 @@ async function assertSafeRole(sql, expectRuntimeGrant = false) {
       grantsToConnectionOwner.length > 0 &&
         grantsToConnectionOwner.every((membership) => !membership.inherit_option) &&
         grantsToConnectionOwner.some((membership) => membership.set_option) &&
+        grantsToConnectionOwner.some(
+          (membership) => membership.grantor_role === "supabase_admin",
+        ) &&
+        grantsToConnectionOwner.some(
+          (membership) => membership.grantor_role === "postgres",
+        ) &&
         memberships.every(
           (membership) =>
             membership.granted_role === APP_ROLE &&
@@ -146,32 +155,7 @@ async function assertSafeRole(sql, expectRuntimeGrant = false) {
   }
 }
 
-async function seedProductionLikeApplicationRole(sql) {
-  const existing = await readRole(sql);
-  if (!existing) {
-    await sql.unsafe(
-      `create role ${quoteIdentifier(APP_ROLE)} inherit login nosuperuser nocreatedb nocreaterole noreplication nobypassrls`,
-    );
-  }
-  // Reproduce production's separate grantor row. The migration runs as
-  // postgres and must add an effective SET path without assuming it owns or can
-  // rewrite a supabase_admin-style grant made by another grantor.
-  await sql.unsafe('create role lakeandpine_verifier_grantor superuser nologin');
-  await sql.unsafe('set role lakeandpine_verifier_grantor');
-  try {
-    await sql.unsafe(
-      `grant ${quoteIdentifier(APP_ROLE)} to postgres with admin true, inherit false, set false`,
-    );
-  } finally {
-    await sql.unsafe('reset role');
-  }
-}
-
-async function inspectHostedRoleDdlCompatibility(
-  sql,
-  migrations,
-  expectApplicationRole,
-) {
+function readHostedRoleDdl(migrations) {
   const startMarker = "-- hosted-role-compatibility:start";
   const endMarker = "-- hosted-role-compatibility:end";
   const candidates = migrations.filter(
@@ -187,44 +171,181 @@ async function inspectHostedRoleDdlCompatibility(
   const start = source.indexOf(startMarker) + startMarker.length;
   const end = source.indexOf(endMarker, start);
   invariant(end > start, "Hosted role-compatibility markers are malformed");
-  const roleDdl = source.slice(start, end);
-  const runner = "lakeandpine_migration_runner";
+  return source.slice(start, end);
+}
 
+async function createHostedMigrationRunner(bootstrapSql, bootstrapUrl, database) {
+  const [bootstrap] = await bootstrapSql`
+    select current_user, rolsuper
+    from pg_roles
+    where rolname = current_user`;
   invariant(
-    Boolean(await readRole(sql)) === expectApplicationRole,
-    expectApplicationRole
-      ? "Existing-role compatibility probe requires lakeandpine_app"
-      : "Role-creation compatibility probe requires lakeandpine_app to be absent",
+    bootstrap.current_user === "supabase_admin" && bootstrap.rolsuper,
+    "Migration verification must bootstrap as the supabase_admin superuser",
+  );
+  invariant(
+    !(await readRole(bootstrapSql, "postgres")),
+    "Disposable cluster must not pre-create the hosted postgres role",
   );
 
-  // SET ROLE drops the disposable bootstrap superuser's effective privileges,
-  // reproducing Supabase's CREATEROLE + ADMIN OPTION boundary without trying
-  // to demote PostgreSQL's protected bootstrap role.
-  await sql.unsafe(
-    `create role ${quoteIdentifier(runner)} nologin nosuperuser createrole createdb noinherit noreplication nobypassrls`,
+  await bootstrapSql.unsafe(
+    "create role postgres login password 'lakeandpine-verifier-postgres' nosuperuser createdb createrole inherit replication bypassrls",
   );
-  if (expectApplicationRole) {
-    await sql.unsafe(
-      `grant ${quoteIdentifier(APP_ROLE)} to ${quoteIdentifier(runner)} with admin true, inherit false, set false`,
+  await bootstrapSql.unsafe(
+    `alter database ${quoteIdentifier(database)} owner to postgres`,
+  );
+  await bootstrapSql.unsafe("alter schema public owner to postgres");
+
+  const runnerUrl = new URL(bootstrapUrl);
+  runnerUrl.username = "postgres";
+  runnerUrl.password = "lakeandpine-verifier-postgres";
+  const runnerSql = postgres(runnerUrl.toString(), { max: 1, onnotice: () => {} });
+  const [runner] = await runnerSql`
+    select current_user, rolsuper, rolcreaterole, rolcreatedb,
+      rolreplication, rolbypassrls
+    from pg_roles
+    where rolname = current_user`;
+  invariant(runner.current_user === "postgres", "Hosted migration runner must be postgres");
+  invariant(!runner.rolsuper, "Hosted migration runner must not be a superuser");
+  invariant(runner.rolcreaterole && runner.rolcreatedb,
+    "Hosted migration runner must retain CREATEROLE and CREATEDB");
+  invariant(runner.rolreplication && runner.rolbypassrls,
+    "Hosted migration runner fixture must match production system attributes");
+  return { runnerSql, runnerUrl: runnerUrl.toString() };
+}
+
+async function inspectHostedRoleCreationCompatibility(
+  bootstrapSql,
+  runnerSql,
+  migrations,
+) {
+  invariant(!(await readRole(runnerSql)),
+    "Role-creation compatibility probe requires lakeandpine_app to be absent");
+  try {
+    await runnerSql.unsafe(readHostedRoleDdl(migrations));
+    const created = await readRole(runnerSql);
+    invariant(
+      created && !created.rolsuper && !created.rolcreaterole &&
+        !created.rolcreatedb && created.rolcanlogin && !created.rolinherit &&
+        !created.rolreplication && !created.rolbypassrls,
+      "Hosted role-creation path produced unsafe application-role attributes",
+    );
+    const memberships = await runnerSql`
+      select granted.rolname as granted_role, member.rolname as member_role,
+        membership.inherit_option
+      from pg_auth_members membership
+      join pg_roles granted on granted.oid = membership.roleid
+      join pg_roles member on member.oid = membership.member
+      where granted.rolname = ${APP_ROLE} or member.rolname = ${APP_ROLE}`;
+    invariant(
+      memberships.length > 0 && memberships.every(
+        (membership) =>
+          membership.granted_role === APP_ROLE &&
+          membership.member_role === "postgres" &&
+          !membership.inherit_option,
+      ),
+      "Hosted role creator received an unsafe application-role membership",
+    );
+  } finally {
+    if (await readRole(bootstrapSql)) {
+      await runnerSql.unsafe(
+        `revoke ${quoteIdentifier(APP_ROLE)} from postgres`,
+      );
+      await bootstrapSql.unsafe(`drop role ${quoteIdentifier(APP_ROLE)}`);
+    }
+  }
+}
+
+async function seedProductionLikeApplicationRole(bootstrapSql) {
+  invariant(!(await readRole(bootstrapSql)),
+    `${APP_ROLE} must be absent before the production fixture is seeded`);
+  await bootstrapSql.unsafe(
+    `create role ${quoteIdentifier(APP_ROLE)} inherit login nosuperuser nocreatedb nocreaterole noreplication nobypassrls`,
+  );
+  await bootstrapSql.unsafe(
+    `grant ${quoteIdentifier(APP_ROLE)} to postgres with admin true, inherit false, set false`,
+  );
+  const grants = await bootstrapSql`
+    select grantor.rolname as grantor_role, membership.admin_option,
+      membership.inherit_option, membership.set_option
+    from pg_auth_members membership
+    join pg_roles granted on granted.oid = membership.roleid
+    join pg_roles member on member.oid = membership.member
+    join pg_roles grantor on grantor.oid = membership.grantor
+    where granted.rolname = ${APP_ROLE} and member.rolname = 'postgres'`;
+  invariant(
+    grants.length === 1 && grants[0].grantor_role === "supabase_admin" &&
+      grants[0].admin_option && !grants[0].inherit_option && !grants[0].set_option,
+    "Production fixture must start with the exact supabase_admin grant row",
+  );
+}
+
+async function inspectHostedRoleGuardRejections(
+  bootstrapSql,
+  runnerSql,
+  migrations,
+) {
+  const roleDdl = readHostedRoleDdl(migrations);
+  async function expectRejection(messageFragment, label) {
+    let rejected = false;
+    try {
+      await runnerSql.unsafe(roleDdl);
+    } catch (error) {
+      rejected = String(error.message).includes(messageFragment);
+    }
+    invariant(rejected, `Hosted role guard did not reject ${label}`);
+  }
+
+  await bootstrapSql.unsafe("create role lakeandpine_unexpected_parent nologin");
+  await bootstrapSql.unsafe(
+    `grant lakeandpine_unexpected_parent to ${quoteIdentifier(APP_ROLE)} with admin false, inherit false, set true`,
+  );
+  try {
+    await expectRejection("inherits or can set another role", "application-role membership");
+  } finally {
+    await bootstrapSql.unsafe(
+      `revoke lakeandpine_unexpected_parent from ${quoteIdentifier(APP_ROLE)}`,
+    );
+    await bootstrapSql.unsafe("drop role lakeandpine_unexpected_parent");
+  }
+
+  await bootstrapSql.unsafe("create role lakeandpine_unexpected_member nologin");
+  await bootstrapSql.unsafe(
+    `grant ${quoteIdentifier(APP_ROLE)} to lakeandpine_unexpected_member with admin false, inherit false, set true`,
+  );
+  try {
+    await expectRejection("granted to an unexpected member", "unexpected grantee");
+  } finally {
+    await bootstrapSql.unsafe(
+      `revoke ${quoteIdentifier(APP_ROLE)} from lakeandpine_unexpected_member`,
+    );
+    await bootstrapSql.unsafe("drop role lakeandpine_unexpected_member");
+  }
+
+  await bootstrapSql.unsafe(
+    `grant ${quoteIdentifier(APP_ROLE)} to postgres with admin true, inherit true, set false`,
+  );
+  try {
+    await expectRejection(
+      "must not inherit lakeandpine_app privileges automatically",
+      "inheriting connection-owner membership",
+    );
+  } finally {
+    await bootstrapSql.unsafe(
+      `grant ${quoteIdentifier(APP_ROLE)} to postgres with admin true, inherit false, set false`,
     );
   }
+
+  await bootstrapSql.unsafe(
+    "create table public.lakeandpine_role_owner_probe (id integer primary key)",
+  );
+  await bootstrapSql.unsafe(
+    `alter table public.lakeandpine_role_owner_probe owner to ${quoteIdentifier(APP_ROLE)}`,
+  );
   try {
-    await sql.unsafe(`set role ${quoteIdentifier(runner)}`);
-    try {
-      await sql.unsafe(roleDdl);
-    } finally {
-      await sql.unsafe("reset role");
-    }
+    await expectRejection("owns a public object", "application-owned relation");
   } finally {
-    if (await readRole(sql)) {
-      await sql.unsafe(
-        `revoke ${quoteIdentifier(APP_ROLE)} from ${quoteIdentifier(runner)}`,
-      );
-      if (!expectApplicationRole) {
-        await sql.unsafe(`drop role ${quoteIdentifier(APP_ROLE)}`);
-      }
-    }
-    await sql.unsafe(`drop role ${quoteIdentifier(runner)}`);
+    await bootstrapSql.unsafe("drop table public.lakeandpine_role_owner_probe");
   }
 }
 
@@ -860,13 +981,14 @@ async function inspectOperationalInvariants(sql) {
   });
 }
 
-const rawUrl = process.env.MIGRATION_DATABASE_URL;
-const { target, database } = validateTarget(rawUrl);
+const bootstrapUrl = process.env.MIGRATION_DATABASE_URL;
+const { target, database } = validateTarget(bootstrapUrl);
 const migrations = await loadMigrations();
-const sql = postgres(rawUrl, { max: 1, onnotice: () => {} });
+const bootstrapSql = postgres(bootstrapUrl, { max: 1, onnotice: () => {} });
+let sql;
 
 try {
-  const [server] = await sql`
+  const [server] = await bootstrapSql`
     select current_user, current_database(),
       current_setting('server_version_num')::integer as server_version_num`;
   const major = Math.floor(server.server_version_num / 10000);
@@ -879,7 +1001,7 @@ try {
     `Connected database ${server.current_database} does not match guarded target ${database}`,
   );
 
-  const existingTables = await sql`
+  const existingTables = await bootstrapSql`
     select table_class.relname as table_name
     from pg_class table_class
     join pg_namespace namespace on namespace.oid = table_class.relnamespace
@@ -889,9 +1011,15 @@ try {
     existingTables.length === 0,
     `Verification requires a fresh database; found public tables: ${existingTables.map((row) => row.table_name).join(", ")}`,
   );
-  await inspectHostedRoleDdlCompatibility(sql, migrations, false);
-  await seedProductionLikeApplicationRole(sql);
-  await inspectHostedRoleDdlCompatibility(sql, migrations, true);
+  const hosted = await createHostedMigrationRunner(
+    bootstrapSql,
+    bootstrapUrl,
+    database,
+  );
+  sql = hosted.runnerSql;
+  await inspectHostedRoleCreationCompatibility(bootstrapSql, sql, migrations);
+  await seedProductionLikeApplicationRole(bootstrapSql);
+  await inspectHostedRoleGuardRejections(bootstrapSql, sql, migrations);
   await applyMigrations(sql, migrations);
   await assertSafeRole(sql, true);
 
@@ -902,7 +1030,10 @@ try {
     failures.length === 0,
     `Migration verification failed:\n- ${failures.join("\n- ")}`,
   );
-  const runtimeIdentity = await inspectRuntimeConnection(rawUrl, access.operationsTables);
+  const runtimeIdentity = await inspectRuntimeConnection(
+    hosted.runnerUrl,
+    access.operationsTables,
+  );
   await inspectOperationalInvariants(sql);
 
   console.log(JSON.stringify({
@@ -930,5 +1061,6 @@ try {
     operationalInvariants: "postal eligibility, territory capacity, labor, schedule and recovery lifecycle, availability, cancellation, time off, and refund guards verified",
   }, null, 2));
 } finally {
-  await sql.end({ timeout: 5 });
+  if (sql) await sql.end({ timeout: 5 });
+  await bootstrapSql.end({ timeout: 5 });
 }

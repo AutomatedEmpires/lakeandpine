@@ -11,13 +11,12 @@ The verifier:
 1. refuses any non-loopback host and any database name that does not contain `ci`, `test`,
    `proof`, or `disposable`;
 2. refuses a database that already contains public tables;
-3. seeds the production-compatible `lakeandpine_app` LOGIN role plus a production-like
-   unsafe membership issued by a distinct grantor, then requires privileged role
-   attributes to remain false, normalizes `NOINHERIT`, and gives the `postgres`
-   connection owner effective `SET TRUE` and `INHERIT FALSE` access even when multiple
-   grantor rows remain. It also executes the marked application-role DDL under a
-   non-superuser `CREATEROLE` + `ADMIN OPTION` boundary so hosted-incompatible clauses
-   fail in CI for both absent-role creation and existing-role normalization;
+3. bootstraps as the distinct `supabase_admin` superuser, creates a production-shaped
+   non-superuser `postgres` owner, and applies the complete migration chain through that
+   owner. It seeds the exact `supabase_admin`-granted `lakeandpine_app` membership, proves
+   the migration adds a separate effective `postgres` `SET TRUE` / `INHERIT FALSE` row,
+   exercises absent-role creation under the same hosted boundary, and proves the role
+   guard rejects unsafe memberships, grantees, inheritance, and owned relations;
 4. applies every `supabase/migrations/*.sql` file in filename order, with one transaction
    per file and a SHA-256 record of the exact SQL applied;
 5. fails if the current booking spine is incomplete: `bookings`, `checklist_items`,
@@ -49,12 +48,13 @@ existing database, and never falls back to `DATABASE_URL` or `.env.local`.
 
 ```bash
 docker run --rm --name lakeandpine-migration-test \
+  -e POSTGRES_USER=supabase_admin \
   -e POSTGRES_PASSWORD=postgres \
   -e POSTGRES_DB=lakeandpine_test \
   -p 55442:5432 \
   -d postgres:17-alpine
 
-MIGRATION_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55442/lakeandpine_test \
+MIGRATION_DATABASE_URL=postgresql://supabase_admin:postgres@127.0.0.1:55442/lakeandpine_test \
   pnpm quality:verify-migrations
 
 docker stop lakeandpine-migration-test
@@ -65,8 +65,10 @@ is a safety feature, not a cleanup request.
 
 ## CI behavior
 
-The `validate` job starts `postgres:17-alpine`, waits for `pg_isready`, and runs this gate
-immediately after the frozen dependency install and whitespace check. The job then runs
+The `validate` job starts `postgres:17-alpine` with a `supabase_admin` bootstrap role.
+The verifier creates the production-shaped non-superuser `postgres` migration owner and
+runs the full chain through that role after the frozen dependency install and whitespace
+check. The job then runs
 unit tests, lint, typecheck, and the optimized build. No provider key, customer record,
 email delivery, auth identity, payment, DNS setting, or production data is involved.
 

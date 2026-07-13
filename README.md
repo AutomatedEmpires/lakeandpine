@@ -23,12 +23,13 @@ preferences until confirmed, and the refund ledger never moves money.
 
 ```bash
 docker run --rm -d --name lp-postgres \
-  -e POSTGRES_PASSWORD=lakeandpine_dev -e POSTGRES_DB=lakeandpine_proof \
+  -e POSTGRES_USER=supabase_admin -e POSTGRES_PASSWORD=lakeandpine_dev \
+  -e POSTGRES_DB=lakeandpine_proof \
   -p 5442:5432 postgres:17-alpine
-export MIGRATION_DATABASE_URL=postgresql://postgres:lakeandpine_dev@127.0.0.1:5442/lakeandpine_proof
-export DATABASE_URL=$MIGRATION_DATABASE_URL
+export MIGRATION_DATABASE_URL=postgresql://supabase_admin:lakeandpine_dev@127.0.0.1:5442/lakeandpine_proof
 pnpm install --frozen-lockfile
 pnpm quality:verify-migrations
+export DATABASE_URL=postgresql://postgres:lakeandpine-verifier-postgres@127.0.0.1:5442/lakeandpine_proof
 pnpm dev
 ```
 
