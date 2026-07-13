@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { Webhook } from "svix";
 
+import { selectVerifiedPrimaryClerkEmail } from "@/lib/clerk-identity";
+import { linkCleanerExternalAuthIdByVerifiedEmail } from "@/lib/crew-data";
 import { upsertCustomerFromClerk } from "@/lib/data";
 import { optionalEnv } from "@/lib/env";
 
@@ -8,7 +10,11 @@ type ClerkUserEvent = {
   type: string;
   data: {
     id: string;
-    email_addresses?: { email_address: string; id: string }[];
+    email_addresses?: {
+      email_address: string;
+      id: string;
+      verification?: { status?: string | null } | null;
+    }[];
     primary_email_address_id?: string | null;
     first_name?: string | null;
     last_name?: string | null;
@@ -39,17 +45,24 @@ export async function POST(request: Request) {
 
   if (event.type === "user.created" || event.type === "user.updated") {
     const data = event.data;
-    const primaryEmail =
-      data.email_addresses?.find((e) => e.id === data.primary_email_address_id)?.email_address ??
-      data.email_addresses?.[0]?.email_address ??
-      null;
+    const verifiedEmail = selectVerifiedPrimaryClerkEmail(
+      (data.email_addresses ?? []).map((email) => ({
+        id: email.id,
+        emailAddress: email.email_address,
+        verificationStatus: email.verification?.status,
+      })),
+      data.primary_email_address_id,
+    );
     const fullName = [data.first_name, data.last_name].filter(Boolean).join(" ") || null;
     await upsertCustomerFromClerk({
       clerkUserId: data.id,
-      email: primaryEmail,
+      verifiedEmail,
       fullName,
       phone: data.phone_numbers?.[0]?.phone_number ?? null,
     });
+    if (verifiedEmail) {
+      await linkCleanerExternalAuthIdByVerifiedEmail(data.id, verifiedEmail);
+    }
   }
 
   return NextResponse.json({ received: true });

@@ -2,48 +2,51 @@ import Link from "next/link";
 
 import { BrandMark } from "./BrandMark";
 
-export function Footer() {
+type Props = { email?: string; phone?: string; phoneTel?: string };
+
+export function Footer({ email, phone, phoneTel }: Props) {
   return (
     <footer className="footer">
-      <div className="container footer-grid">
-        <div>
+      <div className="container footer-grid premium-footer-grid">
+        <div className="footer-brand">
           <BrandMark />
-          <p>
-            Premium home cleaning across Coeur d&rsquo;Alene, Spokane, Post Falls, Hayden,
-            Liberty Lake, Spokane Valley, and Rathdrum.
-          </p>
+          <p>Interior care for exceptional properties—from final walkthrough to ready-for-arrival.</p>
+          <p className="footer-note">Scope and availability are reviewed before service is confirmed.</p>
         </div>
         <div>
-          <h4>Services</h4>
-          <Link href="/services">Essential Reset</Link>
-          <Link href="/services">Deep Clean</Link>
-          <Link href="/services">Move In / Out</Link>
-          <Link href="/services">Turnover</Link>
+          <h4>Programs</h4>
+          <Link href="/who-we-serve#estate">Private estates</Link>
+          <Link href="/who-we-serve#construction">Construction handoff</Link>
+          <Link href="/who-we-serve#marine">Marine interiors</Link>
+          <Link href="/who-we-serve#commercial">Commercial care</Link>
         </div>
         <div>
-          <h4>Book</h4>
-          <Link href="/pricing">Pricing</Link>
-          <Link href="/book">Schedule</Link>
-          <Link href="/dashboard">Dashboard</Link>
+          <h4>Plan</h4>
+          <Link href="/services">Services</Link>
+          <Link href="/pricing">Pricing + proposals</Link>
+          <Link href="/areas">Planning areas</Link>
+          <Link href="/book">Request consultation</Link>
         </div>
         <div>
-          <h4>Areas</h4>
-          <Link href="/areas/coeur-dalene">CDA</Link>
-          <Link href="/areas/spokane">Spokane</Link>
-          <Link href="/areas/post-falls">Post Falls</Link>
-          <Link href="/areas/liberty-lake">Liberty Lake</Link>
+          <h4>Service</h4>
+          <Link href="/reviews">Customer feedback</Link>
+          <Link href="/terms">Request terms</Link>
+          <Link href="/privacy">Privacy notice</Link>
+          <Link href="/service-support">Service support</Link>
+          <Link href="/dashboard">Customer dashboard</Link>
         </div>
         <div>
-          <h4>Trust</h4>
-          <p>Licensed</p>
-          <p>Bonded</p>
-          <p>Insured</p>
-          <p>Background checked</p>
+          <h4>Contact</h4>
+          {phone && phoneTel ? <a href={phoneTel}>{phone}</a> : null}
+          {email ? <a href={`mailto:${email}`}>{email}</a> : null}
+          {!phone && !email ? <p>Direct phone and email are being activated.</p> : null}
+          <Link href="/book">Start with a property request</Link>
+          <Link href="/join">Work with Lake &amp; Pine</Link>
         </div>
       </div>
       <div className="container footer-bottom">
         <span>© {new Date().getFullYear()} Lake &amp; Pine Cleaning Co.</span>
-        <span>Licensed · Bonded · Insured · Inland Northwest</span>
+        <span>Request · scope · confirm · close out</span>
       </div>
     </footer>
   );

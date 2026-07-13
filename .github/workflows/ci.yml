@@ -18,9 +18,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lakeandpine_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d lakeandpine_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -36,6 +53,23 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check changed lines for whitespace errors
+        shell: bash
+        run: |
+          if [[ -n "${GITHUB_BASE_REF}" ]]; then
+            git fetch --no-tags --depth=1 origin "${GITHUB_BASE_REF}"
+            git diff --check "origin/${GITHUB_BASE_REF}...HEAD"
+          elif git rev-parse HEAD^ >/dev/null 2>&1; then
+            git diff --check HEAD^ HEAD
+          else
+            git diff --check
+          fi
+
+      - name: Verify fresh PostgreSQL migrations and application-role access
+        run: pnpm quality:verify-migrations
+        env:
+          MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/lakeandpine_test
+
       - name: Test
         run: pnpm test
 
@@ -48,4 +82,4 @@ jobs:
       - name: Build
         run: pnpm build
         env:
-          DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/lakeandpine
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/lakeandpine_test

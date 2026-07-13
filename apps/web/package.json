@@ -1,6 +1,7 @@
 {
   "name": "@lakeandpine/web",
   "version": "0.1.0",
+  "type": "module",
   "private": true,
   "scripts": {
     "dev": "next dev -p 3010",
@@ -12,7 +13,8 @@
     "ops:seed-content": "node scripts/seed-content.mjs",
     "ops:seed-dev": "node scripts/seed-dev.mjs",
     "ops:purge-dev-seed": "node scripts/purge-dev-seed.mjs",
-    "ops:smoke-runtime": "node scripts/runtime-smoke.mjs"
+    "ops:smoke-runtime": "node scripts/runtime-smoke.mjs",
+    "quality:verify-migrations": "node scripts/verify-migrations.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.5.13",

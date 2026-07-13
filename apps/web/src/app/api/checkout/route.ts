@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { paymentsEnabled } from "@/lib/env";
 import { createPlanCheckout, stripeConfigured } from "@/lib/stripe";
 
 const schema = z.object({
@@ -9,7 +10,7 @@ const schema = z.object({
 });
 
 export async function POST(request: Request) {
-  if (!stripeConfigured()) {
+  if (!paymentsEnabled || !stripeConfigured()) {
     return NextResponse.json(
       { error: "Online payment isn't live yet — your visit is invoiced after service." },
       { status: 503 },

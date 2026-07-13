@@ -5,9 +5,16 @@ import { ClerkProvider } from "@clerk/nextjs";
 import { ChatDock } from "@/components/ChatDock";
 import { Footer } from "@/components/Footer";
 import { Nav } from "@/components/Nav";
+import { PrivacyPreferences } from "@/components/PrivacyPreferences";
 import { StickyCta } from "@/components/StickyCta";
 import { Toast } from "@/components/Toast";
-import { APP_URL, authEnabled, BUSINESS_EMAIL, BUSINESS_PHONE, BUSINESS_PHONE_TEL } from "@/lib/env";
+import {
+  APP_URL,
+  authEnabled,
+  BUSINESS_PHONE,
+  BUSINESS_PHONE_TEL,
+  PUBLIC_BUSINESS_EMAIL,
+} from "@/lib/env";
 import { serializeJsonLd } from "@/lib/json-ld";
 
 import "./globals.css";
@@ -17,24 +24,26 @@ const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 export const metadata: Metadata = {
   metadataBase: new URL(APP_URL),
   title: {
-    default: "Lake & Pine Cleaning Co. | Premium Home Cleaning in Coeur d'Alene + Spokane",
+    default: "Lake & Pine Cleaning Co. | Premium Property Care",
     template: "%s | Lake & Pine Cleaning Co.",
   },
   description:
-    "Premium home cleaning for Coeur d'Alene and Spokane: instant estimates, calendar scheduling, vetted cleaners, eco-conscious products, and a customer dashboard that remembers your home.",
+    "Premium interior care for private estates, construction handoffs, lake and marine interiors, and select professional spaces.",
   keywords: [
-    "premium house cleaning Coeur d'Alene",
-    "maid service Spokane",
-    "deep cleaning CDA",
-    "move out cleaning Spokane",
-    "Airbnb turnover Post Falls",
-    "eco cleaning Hayden",
-    "Liberty Lake home cleaners",
+    "premium property cleaning",
+    "private estate cleaning",
+    "post construction cleaning",
+    "marine interior cleaning",
+    "commercial cleaning consultation",
   ],
   openGraph: {
     siteName: "Lake & Pine Cleaning Co.",
     type: "website",
+    title: "Lake & Pine Cleaning Co. | Premium Property Care",
+    description:
+      "From final walkthrough to ready-for-arrival: defined interior-care plans for exceptional properties.",
   },
+  twitter: { card: "summary", title: "Lake & Pine Cleaning Co. | Premium Property Care" },
 };
 
 export const viewport = {
@@ -45,24 +54,16 @@ const localBusinessJsonLd = {
   "@context": "https://schema.org",
   "@type": "LocalBusiness",
   name: "Lake & Pine Cleaning Co.",
+  url: APP_URL,
   description:
-    "Premium home cleaning, recurring maid service, deep cleaning, move-in and move-out cleaning, vacation rental turnover, and small office cleaning across Coeur d'Alene and Spokane.",
-  email: BUSINESS_EMAIL,
-  priceRange: "$$",
-  areaServed: [
-    "Coeur d'Alene ID",
-    "Spokane WA",
-    "Post Falls ID",
-    "Hayden ID",
-    "Liberty Lake WA",
-    "Spokane Valley WA",
-    "Rathdrum ID",
-  ],
+    "Premium interior-care planning for private residences, construction handoffs, marine interiors, and select professional spaces.",
+  priceRange: "Custom proposal",
+  ...(PUBLIC_BUSINESS_EMAIL ? { email: PUBLIC_BUSINESS_EMAIL } : {}),
   makesOffer: [
-    { "@type": "Offer", name: "Essential Home Reset", price: "139", priceCurrency: "USD" },
-    { "@type": "Offer", name: "Pine & Polish Deep Clean", price: "299", priceCurrency: "USD" },
-    { "@type": "Offer", name: "Move In / Move Out Detail", price: "369", priceCurrency: "USD" },
-    { "@type": "Offer", name: "Lakehouse Turnover", price: "125", priceCurrency: "USD" },
+    { "@type": "Offer", name: "Private Estate Care" },
+    { "@type": "Offer", name: "Construction Handoff" },
+    { "@type": "Offer", name: "Lake & Marine Interior Care" },
+    { "@type": "Offer", name: "Select Commercial Care" },
   ],
   ...(BUSINESS_PHONE ? { telephone: BUSINESS_PHONE } : {}),
 };
@@ -92,7 +93,12 @@ export default function RootLayout({
         <main id="main">{children}</main>
         <StickyCta phoneTel={BUSINESS_PHONE_TEL} />
         <ChatDock />
-        <Footer />
+        <Footer
+          email={PUBLIC_BUSINESS_EMAIL}
+          phone={BUSINESS_PHONE}
+          phoneTel={BUSINESS_PHONE_TEL}
+        />
+        <PrivacyPreferences />
         <Toast />
       </body>
     </html>

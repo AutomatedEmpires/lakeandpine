@@ -1,144 +1,415 @@
 import { auth, currentUser } from "@clerk/nextjs/server";
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { createBooking, createQuote, getCustomerByEmail, upsertCustomerFromClerk } from "@/lib/data";
+import { deriveBookingReference } from "@/lib/booking-reference";
+import { normalizeVerifiedClerkEmail } from "@/lib/clerk-identity";
+import { buildBookingConsentRecord } from "@/lib/consent-policy";
+import {
+  createBooking,
+  recordBookingNotificationDelivery,
+  upsertCustomerFromClerk,
+} from "@/lib/data";
 import { sendBookingConfirmation, sendOpsNotification } from "@/lib/email";
-import { authEnabled } from "@/lib/env";
-import { calculateEstimate, ESTIMATE_SERVICES } from "@/lib/pricing";
+import {
+  authEnabled,
+  getIntakeReadinessIssues,
+  requestIntakeEnabled,
+} from "@/lib/env";
+import { deriveRequestPlanning, PREMIUM_PROGRAMS } from "@/lib/premium-request";
+import { checkRequestRateLimit } from "@/lib/rate-limit";
+import {
+  isHoneypotFilled,
+  readJsonBody,
+  RequestBodyError,
+} from "@/lib/request-security";
 import { getRuntimeSmokeDisposition } from "@/lib/runtime-smoke-request";
-import { isBookableDate, isBookableWindow } from "@/lib/scheduling";
+
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const PROGRAM_TITLES = {
+  estate: "Private Estate Care",
+  construction: "Construction Handoff",
+  marine: "Lake & Marine Interior Care",
+  commercial: "Select Commercial Care",
+} as const;
 
 const bookingSchema = z.object({
-  serviceId: z.enum(["essential", "deep", "move", "rental"]),
-  addonIds: z.array(z.enum(["fridge", "oven", "laundry", "windows", "organization"])).default([]),
-  frequency: z.enum(["weekly", "biweekly", "monthly", "onetime"]),
-  scheduledDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  scheduledWindow: z.string(),
-  home: z.object({
-    sizeBand: z.enum(["under_1200", "1200_2000", "2000_3000", "3000_plus"]),
-    bedrooms: z.enum(["1_2", "3", "4", "5_plus"]),
-    bathrooms: z.enum(["1", "2", "3", "4_plus"]),
-    pets: z.enum(["none", "one", "two_plus"]),
-    condition: z.enum(["maintained", "needs_detail"]),
-    notes: z.string().max(2000).optional(),
+  idempotencyKey: z.string().uuid(),
+  companyWebsite: z.string().max(200).optional().default(""),
+  program: z.enum(PREMIUM_PROGRAMS),
+  property: z.object({
+    sizeBand: z.enum(["compact", "standard", "large", "exceptional"]),
+    condition: z.enum(["maintained", "detailed", "project"]),
+    zoneCount: z.number().int().min(1).max(80),
+    context: z.string().min(1).max(80),
+    cadence: z.enum([
+      "project",
+      "weekly",
+      "biweekly",
+      "monthly",
+      "seasonal",
+      "custom",
+    ]),
+  }),
+  scope: z.object({
+    priorities: z.string().trim().min(10).max(3000),
+    finishNotes: z.string().trim().max(1000).default(""),
+  }),
+  scheduling: z.object({
+    preferredDate: z.string().regex(DATE_PATTERN),
+    alternateDates: z.array(z.string().regex(DATE_PATTERN)).min(1).max(2),
+    windowPreference: z.enum([
+      "Morning",
+      "Midday",
+      "Afternoon",
+      "After-hours review",
+    ]),
+    deadlineCritical: z.boolean(),
+    accessComplex: z.boolean(),
   }),
   contact: z.object({
-    name: z.string().min(1).max(200),
-    phone: z.string().min(7).max(30),
-    email: z.string().email(),
-    zip: z.string().min(3).max(12),
+    name: z.string().trim().min(2).max(200),
+    email: z.string().trim().email().max(320),
+    phone: z.string().trim().min(7).max(30),
+    zip: z.string().trim().min(3).max(12),
   }),
-  accessNotes: z.string().max(2000).optional(),
+  acknowledgements: z.object({
+    siteReady: z.literal(true),
+    privacyConsent: z.literal(true),
+    termsConsent: z.literal(true),
+    photoPermission: z.boolean(),
+  }),
 });
+
+function todayInOperatingTimezone() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+function validPlanningDate(value: string) {
+  const today = todayInOperatingTimezone();
+  const lastDate = new Date(`${today}T12:00:00Z`);
+  lastDate.setUTCMonth(lastDate.getUTCMonth() + 18);
+  return value >= today && value <= lastDate.toISOString().slice(0, 10);
+}
+
+function sha256(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function checklistFor(
+  program: keyof typeof PROGRAM_TITLES,
+  photoPermission: boolean,
+) {
+  const verticalTask = {
+    estate: "Follow the approved room, finish, and product care plan",
+    construction:
+      "Confirm trade completion and final-clean site readiness before mobilization",
+    marine: "Confirm vessel access and interior-only material restrictions",
+    commercial: "Confirm security, occupant, and operating-window requirements",
+  }[program];
+  return [
+    {
+      roomLabel: null,
+      label: "Confirm written scope, exclusions, access, and safety conditions",
+    },
+    { roomLabel: null, label: verticalTask },
+    {
+      roomLabel: null,
+      label: "Complete agreed cleaning scope with finish-safe methods",
+    },
+    ...(photoPermission
+      ? [
+          {
+            roomLabel: null,
+            label:
+              "Capture approved closeout photos without people or sensitive information",
+          },
+        ]
+      : []),
+    {
+      roomLabel: null,
+      label:
+        "Run operator quality review and document exceptions before closeout",
+    },
+  ];
+}
 
 export async function POST(request: Request) {
   const smokeDisposition = getRuntimeSmokeDisposition(request.headers);
   if (smokeDisposition === "rejected") {
-    return NextResponse.json({ error: "Invalid runtime smoke authorization" }, { status: 403 });
+    return NextResponse.json(
+      { error: "Invalid runtime smoke authorization" },
+      { status: 403 },
+    );
+  }
+  if (!requestIntakeEnabled && smokeDisposition !== "authorized") {
+    return NextResponse.json(
+      {
+        error:
+          "Request intake is in preview mode and is not storing customer data yet.",
+      },
+      { status: 503 },
+    );
   }
 
-  const body = await request.json().catch(() => null);
+  const readinessIssues = getIntakeReadinessIssues().filter(
+    (issue) => issue !== "intake_disabled",
+  );
+  if (smokeDisposition !== "authorized" && readinessIssues.length > 0) {
+    return NextResponse.json(
+      {
+        error:
+          "Request intake is temporarily unavailable while operations are being configured.",
+      },
+      { status: 503 },
+    );
+  }
+
+  if (smokeDisposition !== "authorized") {
+    try {
+      const rateLimit = await checkRequestRateLimit(request, {
+        scope: "booking",
+        limit: 5,
+        windowMs: 60 * 60 * 1000,
+      });
+      if (!rateLimit.allowed) {
+        const status = rateLimit.reason === "limit" ? 429 : 503;
+        return NextResponse.json(
+          {
+            error:
+              status === 429
+                ? "Too many requests. Please try again later."
+                : "Request intake is temporarily unavailable.",
+          },
+          {
+            status,
+            headers: { "retry-after": String(rateLimit.retryAfterSeconds) },
+          },
+        );
+      }
+    } catch {
+      return NextResponse.json(
+        { error: "Request intake is temporarily unavailable." },
+        { status: 503 },
+      );
+    }
+  }
+
+  let body: unknown;
+  try {
+    body = await readJsonBody(request);
+  } catch (error) {
+    if (error instanceof RequestBodyError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status },
+      );
+    }
+    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+  }
   const parsed = bookingSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Invalid booking", issues: parsed.error.flatten().fieldErrors },
+      { error: "Review the property brief and try again." },
       { status: 400 },
     );
   }
   const input = parsed.data;
-
-  if (!isBookableDate(input.scheduledDate)) {
+  if (isHoneypotFilled(input.companyWebsite)) {
+    return NextResponse.json({ accepted: true }, { status: 202 });
+  }
+  if (
+    ![input.scheduling.preferredDate, ...input.scheduling.alternateDates].every(
+      validPlanningDate,
+    )
+  ) {
     return NextResponse.json(
-      { error: "That date isn't bookable — choose a day within the next five weeks (Mon–Sat)." },
+      { error: "Choose planning dates from today through the next 18 months." },
       { status: 422 },
     );
   }
-  if (!isBookableWindow(input.scheduledWindow)) {
-    return NextResponse.json({ error: "That arrival window isn't available." }, { status: 422 });
-  }
 
-  // Canonical server-side estimate.
-  const estimate = calculateEstimate({
-    sizeBand: input.home.sizeBand,
-    serviceId: input.serviceId,
-    bedrooms: input.home.bedrooms,
-    bathrooms: input.home.bathrooms,
-    frequency: input.frequency,
-    pets: input.home.pets,
-    addonIds: input.addonIds,
+  const planning = deriveRequestPlanning({
+    program: input.program,
+    sizeBand: input.property.sizeBand,
+    condition: input.property.condition,
+    zoneCount: input.property.zoneCount,
+    deadlineCritical: input.scheduling.deadlineCritical,
+    finishSensitive: Boolean(input.scope.finishNotes),
+    accessComplex: input.scheduling.accessComplex,
   });
 
-  // Attach the signed-in customer when Clerk is live; otherwise link by
-  // existing guest-customer email if one exists.
   let customerId: string | null = null;
   if (authEnabled) {
     const { userId } = await auth();
     if (userId) {
       const user = await currentUser();
+      const verifiedEmail = normalizeVerifiedClerkEmail(
+        user?.primaryEmailAddress?.emailAddress,
+        user?.primaryEmailAddress?.verification?.status,
+      );
       const customer = await upsertCustomerFromClerk({
         clerkUserId: userId,
-        email: user?.primaryEmailAddress?.emailAddress ?? input.contact.email,
+        verifiedEmail,
         fullName: user?.fullName ?? input.contact.name,
         phone: input.contact.phone,
       });
       customerId = customer.id;
     }
   }
-  if (!customerId) {
-    const existing = await getCustomerByEmail(input.contact.email);
-    customerId = existing?.id ?? null;
+  // Guest contact email is unverified. Keep the request unowned until a later
+  // Clerk sign-in proves the primary email and adopts matching null-owned rows.
+
+  const frequency = ["weekly", "biweekly", "monthly"].includes(
+    input.property.cadence,
+  )
+    ? input.property.cadence
+    : "onetime";
+  const qualificationStatus =
+    planning.reviewPath === "walkthrough recommended"
+      ? "walkthrough_needed"
+      : "requested";
+  const requiredSkills = [
+    `${input.program}-care`,
+    "finish-awareness",
+    ...(input.scope.finishNotes ? ["specialty-finishes"] : []),
+  ];
+  const planningScore = Math.min(
+    100,
+    25 +
+      planning.estimatedCrewSize * 10 +
+      Math.ceil(planning.estimatedMinutes / 60) * 3,
+  );
+  const consent = buildBookingConsentRecord(input.acknowledgements);
+
+  let booking;
+  try {
+    booking = await createBooking({
+      serviceId: input.program,
+      frequency,
+      scheduledDate: input.scheduling.preferredDate,
+      scheduledWindow: input.scheduling.windowPreference,
+      customerId,
+      contact: input.contact,
+      homeDetails: {
+        propertyContext: input.property.context,
+        requestedCadence: input.property.cadence,
+        alternateDates: input.scheduling.alternateDates,
+        deadlineCritical: input.scheduling.deadlineCritical,
+      },
+      accessNotes: input.scheduling.accessComplex
+        ? "Access coordination requested; collect details securely after review."
+        : null,
+      propertyProfile: {
+        program: input.program,
+        context: input.property.context,
+        sizeBand: input.property.sizeBand,
+        condition: input.property.condition,
+        zoneCount: input.property.zoneCount,
+      },
+      roomPlan: [
+        {
+          id: "property_scope",
+          label: "Approved property scope",
+          selected: true,
+          note: input.scope.priorities,
+        },
+      ],
+      cleaningPreferences: planning.factors,
+      specialInstructions: input.scope.finishNotes || null,
+      planningDirection: `${planning.reviewPath} · ${planning.estimatedMinutes} labor minutes · ${planning.estimatedCrewSize} suggested crew`,
+      planningScore,
+      estimatedDurationMinutes: planning.estimatedMinutes,
+      requiredCrewSize: planning.estimatedCrewSize,
+      requiredSkills,
+      qualificationStatus,
+      qualificationRequirements: {
+        reviewPath: planning.reviewPath,
+        siteReady: input.acknowledgements.siteReady,
+        deadlineCritical: input.scheduling.deadlineCritical,
+        accessComplex: input.scheduling.accessComplex,
+        photoPermission: input.acknowledgements.photoPermission,
+      },
+      requestSource:
+        smokeDisposition === "authorized" ? "runtime_smoke" : "web_booking",
+      isDevSeed: smokeDisposition === "authorized",
+      idempotencyKeyHash: sha256(input.idempotencyKey),
+      consentSnapshot: consent.snapshot,
+      consentVersion: consent.version,
+      consentNoticeDate: consent.noticeDate,
+      checklist: checklistFor(
+        input.program,
+        input.acknowledgements.photoPermission,
+      ),
+    });
+  } catch (error) {
+    console.error(
+      "[booking:error]",
+      error instanceof Error ? error.message : "unknown",
+    );
+    return NextResponse.json(
+      { error: "We couldn't store this request. Please try again shortly." },
+      { status: 503 },
+    );
   }
 
-  const quote = await createQuote({
-    serviceId: input.serviceId,
-    inputs: { ...input.home, frequency: input.frequency, addonIds: input.addonIds },
-    estimateCents: estimate.cents,
-    email: input.contact.email,
-    source: "booking",
-  });
+  const reference = deriveBookingReference(booking.id);
+  if (!booking.duplicate) {
+    const [customerOutcome, opsOutcome] = await Promise.all([
+      sendBookingConfirmation(
+        {
+          to: input.contact.email,
+          name: input.contact.name,
+          serviceTitle: PROGRAM_TITLES[input.program],
+          date: input.scheduling.preferredDate,
+          window: input.scheduling.windowPreference,
+          bookingId: booking.id,
+          publicReference: reference,
+        },
+        { suppress: smokeDisposition === "authorized" },
+      ),
+      sendOpsNotification(
+        {
+          kind: "booking",
+          summary: `${PROGRAM_TITLES[input.program]} · ${input.scheduling.preferredDate} · ${qualificationStatus.replaceAll("_", " ")}`,
+          detailLines: [
+            `Customer: ${input.contact.name} (${input.contact.email}, ${input.contact.phone}, ${input.contact.zip})`,
+            `Context: ${input.property.context} · ${input.property.sizeBand} · ${input.property.zoneCount} zones · ${input.property.cadence}`,
+            `Planning: ${planning.reviewPath} · ${planning.estimatedMinutes} labor minutes · ${planning.estimatedCrewSize} suggested crew`,
+            `Reference: ${reference}`,
+          ],
+        },
+        { suppress: smokeDisposition === "authorized" },
+      ),
+    ]);
+    await Promise.allSettled([
+      recordBookingNotificationDelivery(
+        booking.id,
+        "customer_confirmation",
+        customerOutcome,
+      ),
+      recordBookingNotificationDelivery(
+        booking.id,
+        "ops_notification",
+        opsOutcome,
+      ),
+    ]);
+  }
 
-  const booking = await createBooking({
-    serviceId: input.serviceId,
-    addonIds: input.addonIds,
-    frequency: input.frequency,
-    scheduledDate: input.scheduledDate,
-    scheduledWindow: input.scheduledWindow,
-    estimateCents: estimate.cents,
-    quoteId: quote.id,
-    customerId,
-    contact: input.contact,
-    homeDetails: input.home,
-    accessNotes: input.accessNotes ?? null,
-  });
-
-  const serviceTitle =
-    ESTIMATE_SERVICES.find((s) => s.id === input.serviceId)?.label ?? input.serviceId;
-  await sendBookingConfirmation(
-    {
-      to: input.contact.email,
-      name: input.contact.name,
-      serviceTitle,
-      date: input.scheduledDate,
-      window: input.scheduledWindow,
-      estimateDollars: estimate.dollars,
-      bookingId: booking.id,
+  return NextResponse.json({
+    id: booking.id,
+    reference,
+    duplicate: booking.duplicate,
+    planning: {
+      reviewPath: planning.reviewPath,
+      estimatedCrewSize: planning.estimatedCrewSize,
+      estimatedMinutes: planning.estimatedMinutes,
     },
-    { suppress: smokeDisposition === "authorized" },
-  );
-  await sendOpsNotification(
-    {
-      kind: "booking",
-      summary: `${serviceTitle} · ${input.scheduledDate} ${input.scheduledWindow} · $${estimate.dollars}+`,
-      detailLines: [
-        `Customer: ${input.contact.name} (${input.contact.email}, ${input.contact.phone}, ${input.contact.zip})`,
-        `Frequency: ${input.frequency} · Add-ons: ${input.addonIds.join(", ") || "none"}`,
-        `Home: ${input.home.sizeBand} · ${input.home.bedrooms} bd · ${input.home.bathrooms} ba · pets ${input.home.pets} · ${input.home.condition}`,
-        `Booking: ${booking.id}`,
-      ],
-    },
-    { suppress: smokeDisposition === "authorized" },
-  );
-
-  return NextResponse.json({ id: booking.id, estimate: estimate.dollars });
+  });
 }

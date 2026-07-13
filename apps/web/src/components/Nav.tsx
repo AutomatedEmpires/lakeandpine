@@ -4,17 +4,11 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { PUBLIC_ROUTE_LINKS } from "@/lib/market-content";
+
 import { BrandMark } from "./BrandMark";
 
-const LINKS = [
-  { href: "/", label: "Home" },
-  { href: "/services", label: "Services" },
-  { href: "/pricing", label: "Pricing" },
-  { href: "/book", label: "Book" },
-  { href: "/areas", label: "Areas" },
-  { href: "/reviews", label: "Reviews" },
-  { href: "/dashboard", label: "Dashboard" },
-];
+const LINKS = PUBLIC_ROUTE_LINKS;
 
 function isActive(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname.startsWith(href);
@@ -27,6 +21,15 @@ export function Nav({ phone, phoneTel }: { phone?: string; phoneTel?: string }) 
   useEffect(() => {
     document.body.classList.toggle("menu-open", menuOpen);
     return () => document.body.classList.remove("menu-open");
+  }, [menuOpen]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, [menuOpen]);
 
   useEffect(() => {
@@ -62,6 +65,7 @@ export function Nav({ phone, phoneTel }: { phone?: string; phoneTel?: string }) 
                 key={link.href}
                 className={`nav-link${isActive(pathname, link.href) ? " active" : ""}`}
                 href={link.href}
+                aria-current={isActive(pathname, link.href) ? "page" : undefined}
               >
                 {link.label}
               </Link>
@@ -77,12 +81,12 @@ export function Nav({ phone, phoneTel }: { phone?: string; phoneTel?: string }) 
               ◐
             </button>
             <Link className="btn btn-primary" href="/book">
-              Book a Clean
+              Request consultation
             </Link>
             <button
               className="icon-btn hamb"
               onClick={() => setMenuOpen((open) => !open)}
-              aria-label="Menu"
+              aria-label={menuOpen ? "Close navigation menu" : "Open navigation menu"}
               aria-expanded={menuOpen}
             >
               ☰
@@ -90,13 +94,19 @@ export function Nav({ phone, phoneTel }: { phone?: string; phoneTel?: string }) 
           </div>
         </div>
       </header>
-      <aside className={`mobile-menu${menuOpen ? " open" : ""}`}>
+      <aside
+        className={`mobile-menu${menuOpen ? " open" : ""}`}
+        aria-label="Mobile navigation"
+        aria-hidden={!menuOpen}
+        inert={!menuOpen}
+      >
         {LINKS.map((link) => (
           <Link
             key={link.href}
             className={`nav-link${isActive(pathname, link.href) ? " active" : ""}`}
             href={link.href}
             onClick={() => setMenuOpen(false)}
+            aria-current={isActive(pathname, link.href) ? "page" : undefined}
           >
             {link.label}
           </Link>
@@ -107,7 +117,7 @@ export function Nav({ phone, phoneTel }: { phone?: string; phoneTel?: string }) 
           </a>
         ) : (
           <Link className="btn btn-primary" href="/book">
-            Book a Clean
+            Request consultation
           </Link>
         )}
       </aside>

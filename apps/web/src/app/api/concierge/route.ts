@@ -1,110 +1,97 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { getFaqs } from "@/lib/data";
-import { BUSINESS_PHONE } from "@/lib/env";
-import { calculateEstimate } from "@/lib/pricing";
+import { checkRequestRateLimit } from "@/lib/rate-limit";
+import { readJsonBody, RequestBodyError } from "@/lib/request-security";
 
-// Pine Concierge is deliberately rule-based and honest: it explains real anchors
-// from the canonical pricing engine and routes people to the estimate studio and
-// booking flow. It NEVER invents prices or confirms bookings — those come only
-// from /api/quote and /api/bookings.
-
-const schema = z.object({ message: z.string().min(1).max(1000) });
+const schema = z.object({ message: z.string().trim().min(1).max(1000) });
 
 function reply(text: string) {
   return NextResponse.json({ reply: text });
 }
-
 export async function POST(request: Request) {
-  const body = await request.json().catch(() => null);
+  try {
+    const rateLimit = await checkRequestRateLimit(request, {
+      scope: "concierge",
+      limit: 30,
+      windowMs: 10 * 60 * 1000,
+    });
+    if (!rateLimit.allowed) {
+      const status = rateLimit.reason === "limit" ? 429 : 503;
+      return NextResponse.json(
+        { error: status === 429 ? "Please pause before sending more questions." : "Concierge is temporarily unavailable." },
+        { status, headers: { "retry-after": String(rateLimit.retryAfterSeconds) } },
+      );
+    }
+  } catch {
+    return NextResponse.json({ error: "Concierge is temporarily unavailable." }, { status: 503 });
+  }
+
+  let body: unknown;
+  try {
+    body = await readJsonBody(request, 4_000);
+  } catch (error) {
+    if (error instanceof RequestBodyError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    return NextResponse.json({ error: "Invalid message" }, { status: 400 });
+  }
+
   const parsed = schema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid message" }, { status: 400 });
   }
+
   const msg = parsed.data.message.toLowerCase();
+  const has = (...words: string[]) => words.some((word) => msg.includes(word));
 
-  const has = (...words: string[]) => words.some((w) => msg.includes(w));
-
-  // Deep clean pricing
-  if (has("deep") && has("cost", "price", "much", "estimate")) {
-    const anchor = calculateEstimate({
-      sizeBand: "1200_2000", serviceId: "deep", bedrooms: "3", bathrooms: "2",
-      frequency: "onetime", pets: "none",
-    });
+  if (has("price", "cost", "quote", "estimate", "rate")) {
     return reply(
-      `A Pine & Polish Deep Clean starts at $299, and a typical 3-bed/2-bath around 1,200–2,000 sq ft lands near $${anchor.dollars} as a one-time visit. That's a starting anchor, not a locked quote — the estimate studio on the home page gives you your own number in about 20 seconds.`,
+      "Exceptional properties are quoted to the scope rather than forced into a commodity price. Size, condition, rooms or zones, finish sensitivity, access, crew needs, frequency, travel, and deadlines shape the proposal. The consultation request collects those inputs; no appointment or price is confirmed online.",
+    );
+  }
+  if (has("estate", "home", "residential", "house", "seasonal")) {
+    return reply(
+      "Private Estate Care is for large primary and seasonal residences, arrival or departure preparation, detailed resets, and recurring care that benefits from a durable room-and-finish plan.",
+    );
+  }
+  if (has("construction", "builder", "renovation", "dust", "handoff", "walkthrough")) {
+    return reply(
+      "Construction Handoff can cover reviewed rough-clean, detailed final-clean, walkthrough touch-up, and owner-arrival scopes. Active hazardous debris, mold or remediation, missing required utilities, specialty restoration, and high-access exterior work are outside the assumed scope.",
+    );
+  }
+  if (has("marine", "boat", "yacht", "cabin", "dock", "marina")) {
+    return reply(
+      "Lake & Marine Interior Care focuses on cabins, lounges, galleys, heads, linens, and owner arrival or departure resets. Hulls, gelcoat, oxidation, engines, bilges, coatings, and mechanical or remediation work are not included.",
+    );
+  }
+  if (has("commercial", "office", "studio", "showroom", "business")) {
+    return reply(
+      "Select Commercial Care is designed for ordinary professional offices, studios, showrooms, model homes, marina offices, and similar presentation-led spaces. Medical, laboratory, food-production, industrial, hazardous, or regulated sanitation work requires separate qualifications and is not assumed.",
+    );
+  }
+  if (has("schedule", "available", "book", "appointment", "when", "reschedule")) {
+    return reply(
+      "Choose a preferred date and alternatives in the consultation request. The scheduler checks territory, qualified crew, travel, duration, access, and current capacity; an operator then confirms a feasible window. For an existing service, use the Service Support page to request a change.",
+    );
+  }
+  if (has("complaint", "missed", "reclean", "refund", "damage", "cancel")) {
+    return reply(
+      "Use Service Support to create an auditable reschedule, cancellation, concern, re-clean, damage, or refund-review request. Submission does not automatically change a visit or move money; an operator reviews the agreed scope and service record before confirming an outcome.",
+    );
+  }
+  if (has("insured", "bonded", "licensed", "background", "screened", "guarantee")) {
+    return reply(
+      "Lake & Pine does not publish a credential, screening, or guarantee claim until it has current evidence and an approved operating policy. Ask the operator for the verified details relevant to your scope before approving service.",
+    );
+  }
+  if (has("area", "spokane", "coeur", "cda", "post falls", "hayden", "liberty", "where")) {
+    return reply(
+      "Requests in the Coeur d'Alene–Spokane corridor are reviewed property by property. A named city is not a capacity promise: territory, travel, project scale, access, and the qualified team needed must all be confirmed.",
     );
   }
 
-  // General pricing
-  if (has("cost", "price", "much", "estimate", "quote", "rate")) {
-    return reply(
-      `Prices are transparent starting anchors: Essential Home Reset from $139, Deep Clean from $299, Move In/Out from $369, Lakehouse Turnover from $125. Home size, bedrooms, bathrooms, pets, and frequency adjust it — the estimate studio on the home page computes your exact starting number, and we confirm the final quote before the visit.`,
-    );
-  }
-
-  // Service recommendation
-  if (has("which service", "right for me", "what service", "recommend", "choose")) {
-    return reply(
-      `Quick guide: staying on top of a lived-in home → Essential Home Reset (recurring). First clean, buildup, or hosting → Pine & Polish Deep Clean. Lease turn or sale → Move In/Out Detail. Short-term rental → Lakehouse Turnover. Office or studio → Small Office Refresh (custom quote). Tell me about the home or just open the booking flow — step one lets you compare all four.`,
-    );
-  }
-
-  // Pets
-  if (has("pet", "dog", "cat")) {
-    return reply(
-      `Yes — pet homes are our normal. Add pet names, room instructions, and product preferences during booking or in your dashboard, and we default to eco-conscious, pet-aware supplies (unscented on request).`,
-    );
-  }
-
-  // Supplies / products
-  if (has("supplies", "products", "bring", "chemical", "eco")) {
-    return reply(
-      `We bring everything — eco-conscious supplies are included, with unscented and pet-aware options you can save to your home notes so every visit remembers your preferences.`,
-    );
-  }
-
-  // Scheduling / availability
-  if (has("schedule", "when", "soon", "available", "book", "appointment", "today", "tomorrow")) {
-    return reply(
-      `We typically have same-week windows Monday–Saturday with 8 AM, 10 AM, 12 PM, and 2 PM arrivals. The booking flow shows live selectable dates — it takes about two minutes, and you get text updates plus a dashboard for your home.`,
-    );
-  }
-
-  // Trust
-  if (has("insured", "bonded", "background", "trust", "vetted", "licensed")) {
-    return reply(
-      `Every cleaner is background-checked, and the company is licensed, bonded, and insured. There's also a 24-hour make-right window: if anything misses the agreed scope, we come back and fix it.`,
-    );
-  }
-
-  // Guarantee
-  if (has("guarantee", "make-right", "satisfaction", "refund")) {
-    return reply(
-      `The promise is a 24-hour make-right window — if something wasn't completed to the agreed scope, tell us within a day and we return to fix it.`,
-    );
-  }
-
-  // Areas
-  if (has("area", "spokane", "coeur", "cda", "post falls", "hayden", "liberty", "rathdrum", "where")) {
-    return reply(
-      `We serve Coeur d'Alene, Spokane, Post Falls, Hayden, Liberty Lake, Spokane Valley, and Rathdrum. Each city has its own page under Areas with local details — and booking works the same everywhere.`,
-    );
-  }
-
-  // FAQ sweep from the real database content
-  const faqs = await getFaqs();
-  const words = msg.split(/\W+/).filter((w) => w.length > 3);
-  const match = faqs.find((faq) =>
-    words.some((w) => faq.question.toLowerCase().includes(w)),
-  );
-  if (match) {
-    return reply(match.answer);
-  }
-
-  const contactFallback = BUSINESS_PHONE ? `, or call or text ${BUSINESS_PHONE}` : "";
   return reply(
-    `I can help with service choice, starting prices, pets, supplies, scheduling, and service areas. For an exact starting number use the estimate studio on the home page, or start a booking${contactFallback}.`,
+    "I can explain Private Estate Care, Construction Handoff, Lake & Marine Interior Care, Select Commercial Care, custom proposals, capacity-aware scheduling, and service recovery. Start a private consultation request when you are ready to build a property brief.",
   );
 }

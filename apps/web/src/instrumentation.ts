@@ -7,6 +7,16 @@ export async function register() {
       dsn: process.env.SENTRY_DSN,
       tracesSampleRate: 0.1,
       enableLogs: true,
+      sendDefaultPii: false,
+      beforeSend(event) {
+        delete event.user;
+        if (event.request) {
+          delete event.request.cookies;
+          delete event.request.data;
+          delete event.request.headers;
+        }
+        return event;
+      },
     });
   }
 }

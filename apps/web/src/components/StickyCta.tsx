@@ -4,10 +4,10 @@ export function StickyCta({ phoneTel }: { phoneTel?: string }) {
   return (
     <div className="sticky-cta">
       <Link className="btn btn-primary" href="/book">
-        Book
+        Consult
       </Link>
-      <Link className="btn btn-soft" href="/#quote">
-        Estimate
+      <Link className="btn btn-soft" href="/pricing">
+        Pricing
       </Link>
       {phoneTel ? (
         <a className="btn btn-ghost" href={phoneTel}>

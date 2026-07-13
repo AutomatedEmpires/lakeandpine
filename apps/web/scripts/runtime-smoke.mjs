@@ -1,7 +1,6 @@
-// Non-production runtime smoke for the public conversion and booking paths.
-// Requires a migrated disposable DATABASE_URL and a running app at
-// RUNTIME_SMOKE_BASE_URL (defaults to http://127.0.0.1:3010).
-// All synthetic rows are removed before the command exits, including on failure.
+// Non-production runtime smoke for premium public pages and the durable request path.
+// Requires a fully migrated disposable DATABASE_URL and a running app at
+// RUNTIME_SMOKE_BASE_URL. Synthetic rows are removed even when an assertion fails.
 import { randomUUID } from "node:crypto";
 
 import { connect } from "./_db.mjs";
@@ -16,23 +15,17 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-assert(
-  smokeToken && smokeToken.length >= 32,
-  "RUNTIME_SMOKE_TOKEN must be set to the same 32+ character value in the app server and smoke process",
-);
-assert(
-  !forceFailure || forceFailure === "after-booking",
-  "RUNTIME_SMOKE_FORCE_FAILURE only supports after-booking",
-);
+assert(smokeToken && smokeToken.length >= 32, "RUNTIME_SMOKE_TOKEN must match the app server and contain at least 32 characters");
+assert(!forceFailure || forceFailure === "after-booking", "RUNTIME_SMOKE_FORCE_FAILURE only supports after-booking");
 
 const sql = connect();
 
 async function getPage(path, marker) {
   const response = await fetch(`${baseUrl}${path}`);
-  const text = await response.text();
+  const body = await response.text();
   assert(response.ok, `GET ${path} returned ${response.status}`);
-  if (marker) assert(text.includes(marker), `GET ${path} did not include ${marker}`);
-  return { path, status: response.status, bytes: Buffer.byteLength(text) };
+  if (marker) assert(body.includes(marker), `GET ${path} did not include ${marker}`);
+  return { path, status: response.status, bytes: Buffer.byteLength(body) };
 }
 
 async function postJson(path, body) {
@@ -45,140 +38,109 @@ async function postJson(path, body) {
     body: JSON.stringify(body),
   });
   const text = await response.text();
-  let payload;
-  try {
-    payload = JSON.parse(text);
-  } catch {
-    throw new Error(`POST ${path} returned non-JSON (${response.status}): ${text.slice(0, 200)}`);
-  }
-  assert(response.ok, `POST ${path} returned ${response.status}: ${text.slice(0, 200)}`);
+  const payload = JSON.parse(text);
+  assert(response.ok, `POST ${path} returned ${response.status}: ${text.slice(0, 240)}`);
   return payload;
 }
 
-function nextBookableDate() {
+function planningDate(offset) {
   const date = new Date();
-  date.setHours(12, 0, 0, 0);
-  date.setDate(date.getDate() + 2);
-  while (date.getDay() === 0) date.setDate(date.getDate() + 1);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  date.setUTCHours(12, 0, 0, 0);
+  date.setUTCDate(date.getUTCDate() + offset);
+  return date.toISOString().slice(0, 10);
 }
 
 async function cleanup() {
-  await sql`
-    delete from booking_events using bookings
-    where booking_events.booking_id = bookings.id
-      and bookings.contact ->> 'email' = ${email}`;
+  await sql`delete from operations_state_events where is_dev_seed
+    and booking_id in (select id from bookings where contact ->> 'email' = ${email})`;
   await sql`delete from bookings where contact ->> 'email' = ${email}`;
-  await sql`delete from quotes where email = ${email}`;
-  await sql`delete from leads where email = ${email}`;
 }
 
 try {
   const pages = [];
-  pages.push(await getPage("/"));
-  pages.push(await getPage("/services", "Essential Home Reset"));
-  pages.push(await getPage("/pricing", "Weekly"));
-  pages.push(await getPage("/areas", "Coeur"));
-  pages.push(await getPage("/areas/coeur-dalene", "Coeur"));
-  pages.push(await getPage("/reviews"));
-  pages.push(await getPage("/book", "Book"));
+  pages.push(await getPage("/", "Interior care"));
+  pages.push(await getPage("/services", "Private Estate Care"));
+  pages.push(await getPage("/who-we-serve", "Who we serve"));
+  pages.push(await getPage("/pricing", "Custom"));
+  pages.push(await getPage("/areas", "Service area planning"));
+  pages.push(await getPage("/book", "Request"));
+  pages.push(await getPage("/service-support", "Service Support"));
+  pages.push(await getPage("/join", "Lake &amp; Pine"));
+  pages.push(await getPage("/privacy", "Privacy"));
+  pages.push(await getPage("/terms", "Terms"));
 
-  const quote = await postJson("/api/quote", {
-    sizeBand: "1200_2000",
-    serviceId: "deep",
-    bedrooms: "3",
-    bathrooms: "2",
-    frequency: "onetime",
-    pets: "one",
-    priorities: "Synthetic non-production runtime smoke",
-    email,
-  });
-  assert(quote.id && quote.estimate === 377, "quote response did not match the canonical estimate");
-
-  const lead = await postJson("/api/leads", {
-    fullName: "Runtime Smoke",
-    zip: "83814",
-    serviceId: "deep",
-    email,
-    phone: "2085550100",
-  });
-  assert(lead.id, "lead response did not include an id");
-
-  const scheduledDate = nextBookableDate();
-  const booking = await postJson("/api/bookings", {
-    serviceId: "deep",
-    addonIds: ["fridge", "oven"],
-    frequency: "onetime",
-    scheduledDate,
-    scheduledWindow: "10:00 AM",
-    home: {
-      sizeBand: "1200_2000",
-      bedrooms: "3",
-      bathrooms: "2",
-      pets: "one",
-      condition: "needs_detail",
-      notes: "Synthetic non-production runtime smoke",
+  const idempotencyKey = randomUUID();
+  const payload = {
+    idempotencyKey,
+    companyWebsite: "",
+    program: "construction",
+    property: {
+      sizeBand: "large",
+      condition: "project",
+      zoneCount: 14,
+      context: "owner_handoff",
+      cadence: "project",
     },
-    contact: {
-      name: "Runtime Smoke",
-      phone: "2085550100",
-      email,
-      zip: "83814",
+    scope: {
+      priorities: "Synthetic final-clean handoff request for disposable runtime verification only.",
+      finishNotes: "Synthetic specialty-finish note; no real property data.",
     },
-    accessNotes: "Synthetic non-production runtime smoke; discard",
-  });
-  assert(booking.id && booking.estimate === 427, "booking response did not match the canonical estimate");
-  if (forceFailure === "after-booking") {
-    throw new Error("Forced runtime smoke failure after booking persistence");
-  }
+    scheduling: {
+      preferredDate: planningDate(5),
+      alternateDates: [planningDate(6), planningDate(7)],
+      windowPreference: "Morning",
+      deadlineCritical: true,
+      accessComplex: false,
+    },
+    contact: { name: "Runtime Smoke", phone: "2085550100", email, zip: "83814" },
+    acknowledgements: {
+      siteReady: true,
+      privacyConsent: true,
+      termsConsent: true,
+      photoPermission: false,
+      version: "2026-07-13",
+    },
+  };
+  const booking = await postJson("/api/bookings", payload);
+  assert(booking.id && /^LP-[A-F0-9-]+$/.test(booking.reference), "booking response did not include a protected public reference");
+  assert(booking.planning?.reviewPath === "walkthrough recommended", "construction request did not route to walkthrough review");
 
-  const concierge = await postJson("/api/concierge", {
-    message: "How much is a deep clean?",
-  });
-  assert(
-    typeof concierge.reply === "string" && concierge.reply.includes("starting anchor"),
-    "concierge response lost its starting-anchor qualification",
-  );
-
-  const [quoteRow] = await sql`
-    select id::text, estimate_cents
-    from quotes where id = ${quote.id}`;
-  assert(quoteRow?.estimate_cents === 37700, "quote was not persisted at 37700 cents");
-
-  const [leadRow] = await sql`
-    select id::text, status
-    from leads where id = ${lead.id}`;
-  assert(leadRow?.status === "new", "lead was not persisted with new status");
+  const duplicate = await postJson("/api/bookings", payload);
+  assert(duplicate.id === booking.id && duplicate.duplicate === true, "idempotent retry created or returned a different booking");
+  if (forceFailure === "after-booking") throw new Error("Forced runtime smoke failure after booking persistence");
 
   const [bookingRow] = await sql`
-    select b.id::text, b.status, b.estimate_cents,
-      exists (
-        select 1 from booking_events e
-        where e.booking_id = b.id and e.type = 'requested'
-      ) as has_requested_event
+    select b.id::text, b.service_vertical, b.status, b.qualification_status,
+      b.estimate_cents, b.required_crew_size, b.estimated_duration_minutes,
+      exists(select 1 from booking_events e where e.booking_id = b.id and e.type = 'requested') as has_requested_event,
+      (select count(*)::int from checklist_items c where c.booking_id = b.id) as checklist_count,
+      (select count(*)::int from notification_outbox o where o.booking_id = b.id) as outbox_count
     from bookings b where b.id = ${booking.id}`;
-  assert(bookingRow?.status === "requested", "booking was not persisted with requested status");
-  assert(bookingRow?.estimate_cents === 42700, "booking was not persisted at 42700 cents");
-  assert(bookingRow?.has_requested_event, "booking did not receive a requested event");
+  assert(bookingRow?.service_vertical === "construction", "premium vertical was not persisted");
+  assert(bookingRow?.status === "requested", "request did not stay unconfirmed");
+  assert(bookingRow?.qualification_status === "walkthrough_needed", "qualification path was not persisted");
+  assert(bookingRow?.estimate_cents == null, "custom-proposal request fabricated a price");
+  assert(bookingRow?.required_crew_size > 0 && bookingRow?.estimated_duration_minutes > 0, "planning capacity was not persisted");
+  assert(bookingRow?.has_requested_event && bookingRow?.checklist_count > 0, "atomic event/checklist evidence is missing");
+  assert(bookingRow?.outbox_count === 2, "customer and operations notifications were not durably recorded");
 
   console.log(JSON.stringify({
     result: "PASS",
     database: "disposable/non-production target supplied through DATABASE_URL",
     pages,
     writes: {
-      quote: { status: "persisted", estimateCents: quoteRow.estimate_cents },
-      lead: { status: leadRow.status },
       booking: {
         status: bookingRow.status,
-        estimateCents: bookingRow.estimate_cents,
+        qualificationStatus: bookingRow.qualification_status,
+        serviceVertical: bookingRow.service_vertical,
+        requiredCrewSize: bookingRow.required_crew_size,
+        estimatedDurationMinutes: bookingRow.estimated_duration_minutes,
         requestedEvent: bookingRow.has_requested_event,
-        scheduledDate,
+        checklistCount: bookingRow.checklist_count,
+        outboxCount: bookingRow.outbox_count,
+        idempotentRetry: true,
       },
     },
-    concierge: "canonical starting-anchor language present",
     cleanup: "synthetic rows removed in finally",
   }, null, 2));
 } finally {

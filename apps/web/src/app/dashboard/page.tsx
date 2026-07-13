@@ -3,14 +3,13 @@ import Link from "next/link";
 
 import { resolveDashboardIdentity } from "@/lib/auth";
 import {
-  getBillingRecords,
   getCustomerBookings,
+  getCustomerServiceCases,
   getNextBooking,
   getPrimaryHome,
   getSupportThread,
 } from "@/lib/data";
-import { authEnabled } from "@/lib/env";
-import { formatDollars } from "@/lib/pricing";
+import { authEnabled, requestIntakeEnabled } from "@/lib/env";
 import { formatLongDate } from "@/lib/scheduling";
 
 import { rescheduleAction, saveNotesAction, supportMessageAction } from "./actions";
@@ -25,8 +24,7 @@ export const metadata: Metadata = {
 const TABS = [
   ["overview", "🏠 Overview"],
   ["bookings", "📅 Bookings"],
-  ["notes", "⚙️ Home notes"],
-  ["billing", "🧾 Billing"],
+  ["notes", "⚙️ Property notes"],
   ["support", "💬 Support"],
 ] as const;
 
@@ -36,10 +34,20 @@ function StatusBadge({ status }: { status: string }) {
   return <span className={`status-badge ${status}`}>{status}</span>;
 }
 
+function windowLabel(booking: { status: string; scheduled_window: string }) {
+  if (["confirmed", "scheduled", "in_progress", "completed", "follow_up"].includes(booking.status)) {
+    return `${booking.scheduled_window} · confirmed window`;
+  }
+  if (booking.status === "ready") {
+    return `${booking.scheduled_window} · proposed, not confirmed`;
+  }
+  return `${booking.scheduled_window} · requested preference`;
+}
+
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; booking?: string }>;
 }) {
   const identity = await resolveDashboardIdentity();
 
@@ -51,8 +59,7 @@ export default async function DashboardPage({
             <span className="eyebrow">Customer dashboard</span>
             <h1>Your home, remembered.</h1>
             <p className="lead">
-              Upcoming cleans, home notes, invoices, referral credit, and support — the portal
-              is part of the premium experience.
+              Service requests, home notes, status, and support in one calm place.
             </p>
             <div className="hero-actions">
               {authEnabled ? (
@@ -67,11 +74,11 @@ export default async function DashboardPage({
               ) : (
                 <>
                   <Link className="btn btn-primary" href="/book">
-                    Book your first clean
+                    Request a consultation
                   </Link>
                   <p className="copy" style={{ alignSelf: "center" }}>
-                    Accounts activate at launch — book now and your dashboard will be ready
-                    with this email.
+                    A private workspace becomes useful after an operator has reviewed your first
+                    property request.
                   </p>
                 </>
               )}
@@ -86,15 +93,13 @@ export default async function DashboardPage({
   const params = await searchParams;
   const tab: TabId = (TABS.some(([id]) => id === params.tab) ? params.tab : "overview") as TabId;
 
-  const [nextBooking, bookings, home, billing, support] = await Promise.all([
+  const [nextBooking, bookings, home, support, serviceCases] = await Promise.all([
     getNextBooking(customer.id),
     getCustomerBookings(customer.id),
     getPrimaryHome(customer.id),
-    getBillingRecords(customer.id),
     getSupportThread(customer.id),
+    getCustomerServiceCases(customer.id),
   ]);
-
-  const recurring = bookings.find((b) => b.frequency !== "onetime");
 
   return (
     <div className="route-page">
@@ -105,8 +110,8 @@ export default async function DashboardPage({
           </span>
           <h1>Welcome back{customer.full_name ? `, ${customer.full_name.split(" ")[0]}` : ""}.</h1>
           <p className="lead">
-            Manage upcoming cleans, home notes, invoices, support, referral credit, and your
-            recurring plan.
+            See requested and confirmed work, keep property care notes organized, and understand
+            what happens next.
           </p>
         </div>
       </div>
@@ -130,32 +135,32 @@ export default async function DashboardPage({
               <>
                 <div className="dash-grid">
                   <div className="dash-metric card">
-                    <span className="eyebrow">Next clean</span>
+                    <span className="eyebrow">Requested window</span>
                     <b>
                       {nextBooking
                         ? formatLongDate(nextBooking.scheduled_date).replace(/^[^,]+, /, "")
                         : "—"}
                     </b>
                     <p className="copy">
-                      {nextBooking ? `${nextBooking.scheduled_window} arrival` : "Nothing scheduled"}
+                      {nextBooking ? windowLabel(nextBooking) : "No active request"}
                     </p>
                   </div>
                   <div className="dash-metric card">
-                    <span className="eyebrow">Plan</span>
-                    <b>{recurring ? formatDollars(recurring.estimate_cents ?? 0) : "—"}</b>
+                    <span className="eyebrow">Program</span>
+                    <b>{nextBooking?.service_title ?? "—"}</b>
                     <p className="copy">
-                      {recurring ? `${recurring.frequency} reset` : "No recurring plan yet"}
+                      {nextBooking ? "Scope reviewed before confirmation" : "No program selected"}
                     </p>
                   </div>
                   <div className="dash-metric card">
-                    <span className="eyebrow">Credit</span>
-                    <b>{formatDollars(customer.referral_credit_cents)}</b>
-                    <p className="copy">Referral balance</p>
+                    <span className="eyebrow">Confirmation</span>
+                    <b>{nextBooking ? nextBooking.status : "—"}</b>
+                    <p className="copy">No time or price is implied by a request</p>
                   </div>
                   <div className="dash-metric card">
-                    <span className="eyebrow">Status</span>
-                    <b>Active</b>
-                    <p className="copy">Good standing</p>
+                    <span className="eyebrow">Requests</span>
+                    <b>{bookings.length}</b>
+                    <p className="copy">Visible in this account</p>
                   </div>
                 </div>
                 <div className="timeline">
@@ -163,15 +168,32 @@ export default async function DashboardPage({
                     <div className="timeline-row card">
                       <span className="timeline-dot" />
                       <div>
-                        <h3>Upcoming {nextBooking.service_title}</h3>
+                        <h3>{nextBooking.service_title} request</h3>
                         <p className="copy">
-                          {formatLongDate(nextBooking.scheduled_date)} · {nextBooking.scheduled_window}{" "}
-                          arrival · <StatusBadge status={nextBooking.status} />
+                          {formatLongDate(nextBooking.scheduled_date)} · {windowLabel(nextBooking)} ·{" "}
+                          <StatusBadge status={nextBooking.status} />
                         </p>
-                        <form action={rescheduleAction} style={{ marginTop: 12 }}>
-                          <input type="hidden" name="bookingId" value={nextBooking.id} />
-                          <button className="btn btn-primary">Request reschedule</button>
-                        </form>
+                        {requestIntakeEnabled && [
+                          "requested",
+                          "reviewing",
+                          "ready",
+                          "confirmed",
+                          "scheduled",
+                        ].includes(nextBooking.status) ? (
+                          <form action={rescheduleAction} style={{ marginTop: 12 }}>
+                            <input type="hidden" name="bookingId" value={nextBooking.id} />
+                            <button className="btn btn-primary">Request reschedule</button>
+                          </form>
+                        ) : !requestIntakeEnabled ? <p className="copy" style={{ marginTop: 12 }}>Request changes are disabled while customer-data intake is in preview.</p> : null}
+                        {requestIntakeEnabled && (
+                          <Link
+                            className="btn btn-soft"
+                            style={{ marginTop: 8 }}
+                            href={`/dashboard?tab=support&booking=${nextBooking.id}`}
+                          >
+                            Cancellation, concern, reclean, or refund help
+                          </Link>
+                        )}
                       </div>
                     </div>
                   )}
@@ -179,7 +201,7 @@ export default async function DashboardPage({
                     <div className="timeline-row card">
                       <span className="timeline-dot" />
                       <div>
-                        <h3>Cleaner notes</h3>
+                        <h3>Property care notes</h3>
                         <p className="copy">{home.cleaner_notes}</p>
                       </div>
                     </div>
@@ -188,10 +210,10 @@ export default async function DashboardPage({
                     <div className="timeline-row card">
                       <span className="timeline-dot" />
                       <div>
-                        <h3>No clean on the calendar</h3>
-                        <p className="copy">Lock a same-week window in about two minutes.</p>
+                        <h3>No active property request</h3>
+                        <p className="copy">Build a scoped property brief for operator review.</p>
                         <Link className="btn btn-primary" style={{ marginTop: 12 }} href="/book">
-                          Book a clean
+                          Request consultation
                         </Link>
                       </div>
                     </div>
@@ -207,7 +229,7 @@ export default async function DashboardPage({
                     <span className="timeline-dot" />
                     <div>
                       <h3>No bookings yet</h3>
-                      <p className="copy">Your visits will appear here with live status.</p>
+                      <p className="copy">Your reviewed requests and confirmed service will appear here.</p>
                     </div>
                   </div>
                 )}
@@ -219,9 +241,7 @@ export default async function DashboardPage({
                         {formatLongDate(booking.scheduled_date)} · <StatusBadge status={booking.status} />
                       </h3>
                       <p className="copy">
-                        {booking.service_title} · {booking.scheduled_window} ·{" "}
-                        {booking.estimate_cents ? `${formatDollars(booking.estimate_cents)} anchor` : "quoted"}
-                        {booking.addon_ids.length > 0 && ` · add-ons: ${booking.addon_ids.join(", ")}`}
+                        {booking.service_title} · {windowLabel(booking)} · {booking.frequency}
                       </p>
                     </div>
                   </div>
@@ -231,9 +251,9 @@ export default async function DashboardPage({
 
             {tab === "notes" && (
               <div className="card" style={{ padding: 28 }}>
-                <h2>Home preferences</h2>
+                <h2>Property preferences</h2>
                 <p className="copy">
-                  Durable preferences so the cleaning feels personal every time.
+                  Durable finish, access, and care notes for consistent service planning.
                 </p>
                 {home ? (
                   <>
@@ -246,62 +266,46 @@ export default async function DashboardPage({
                         ))}
                       </div>
                     )}
-                    <form action={saveNotesAction}>
+                    {requestIntakeEnabled ? <form action={saveNotesAction}>
                       <input type="hidden" name="homeId" value={home.id} />
                       <div className="field">
-                        <label htmlFor="notes">Cleaner notes</label>
+                        <label htmlFor="notes">Property care notes</label>
                         <textarea id="notes" name="notes" defaultValue={home.cleaner_notes ?? ""} />
                       </div>
                       <button className="btn btn-primary" style={{ marginTop: 14 }}>
                         Save preferences
                       </button>
-                    </form>
+                    </form> : <div className="notice-card"><strong>Home-note editing is in preview.</strong><p>Changes are not accepted until customer-data collection is approved.</p></div>}
                   </>
                 ) : (
                   <p className="copy" style={{ marginTop: 14 }}>
-                    Your home profile is created with your first booking.
+                    Your property profile is created after an operator reviews your first request.
                   </p>
                 )}
               </div>
             )}
 
-            {tab === "billing" && (
-              <div className="timeline">
-                {billing.length === 0 && (
-                  <div className="timeline-row card">
-                    <span className="timeline-dot" />
-                    <div>
-                      <h3>No invoices yet</h3>
-                      <p className="copy">Receipts and invoices appear here after each visit.</p>
-                    </div>
-                  </div>
-                )}
-                {billing.map((record) => (
-                  <div key={record.id} className="timeline-row card">
-                    <span className="timeline-dot" />
-                    <div>
-                      <h3>
-                        {new Date(record.occurred_at).toLocaleDateString("en-US", {
-                          month: "long",
-                          day: "numeric",
-                        })}{" "}
-                        · {formatDollars(record.amount_cents)} · <StatusBadge status={record.status} />
-                      </h3>
-                      <p className="copy">{record.description}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
             {tab === "support" && (
               <div className="card" style={{ padding: 28 }}>
-                <h2>Support thread</h2>
+                <h2>Support requests</h2>
+                {serviceCases.length > 0 && (
+                  <div className="ops-list" style={{ marginTop: 18 }}>
+                    {serviceCases.map((serviceCase) => (
+                      <article className="notice-card" key={serviceCase.id}>
+                        <div className="ops-row-head">
+                          <strong>{serviceCase.public_reference} · {serviceCase.case_type.replaceAll("_", " ")}</strong>
+                          <span className={`status-badge ${serviceCase.status}`}>{serviceCase.status.replaceAll("_", " ")}</span>
+                        </div>
+                        <p>{serviceCase.resolution_summary ?? serviceCase.details}</p>
+                      </article>
+                    ))}
+                  </div>
+                )}
                 <div style={{ display: "grid", gap: 10, margin: "18px 0" }}>
                   {support.length === 0 && (
                     <div className="msg bot">
-                      Need help adding an add-on or moving your date? Send a message — a real
-                      person replies.
+                      Need to adjust a requested window, report a concern, or clarify scope? Send
+                      a message and an operator will review it.
                     </div>
                   )}
                   {support.map((message) => (
@@ -313,10 +317,38 @@ export default async function DashboardPage({
                     </div>
                   ))}
                 </div>
-                <form action={supportMessageAction} className="chat-input" style={{ padding: 0, border: 0 }}>
-                  <input name="body" placeholder="Message support..." required />
-                  <button className="btn btn-primary">Send</button>
-                </form>
+                {requestIntakeEnabled ? <form action={supportMessageAction} className="ops-form" style={{ padding: 0, border: 0 }}>
+                  <div className="field">
+                    <label htmlFor="dashboard-case-type">What do you need?</label>
+                    <select id="dashboard-case-type" name="caseType" required defaultValue="">
+                      <option value="" disabled>Choose request type</option>
+                      <option value="reschedule">Reschedule</option>
+                      <option value="cancel">Cancellation</option>
+                      <option value="complaint">Complaint or missed scope</option>
+                      <option value="reclean">Reclean review</option>
+                      <option value="refund_review">Refund review</option>
+                      <option value="damage">Property damage concern</option>
+                      <option value="other">Other support</option>
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label htmlFor="dashboard-case-booking">Related booking</label>
+                    <select id="dashboard-case-booking" name="bookingId" defaultValue={params.booking ?? ""}>
+                      <option value="">No booking / general concern</option>
+                      {bookings.map((booking) => (
+                        <option value={booking.id} key={booking.id}>
+                          {formatLongDate(booking.scheduled_date)} · {booking.service_title} · {booking.status}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field full">
+                    <label htmlFor="dashboard-case-details">Details</label>
+                    <textarea id="dashboard-case-details" name="body" maxLength={4000} placeholder="What happened, what outcome are you requesting, and how should we follow up?" required />
+                  </div>
+                  <p className="copy">Schedule changes, refunds, and recleans remain pending until an operator confirms them. Booking-linked request types require a related booking.</p>
+                  <button className="btn btn-primary">Send to operations</button>
+                </form> : <div className="notice-card"><strong>Messaging is not live.</strong><p>Support intake is a preview until customer-data collection and communications are approved.</p></div>}
               </div>
             )}
           </div>

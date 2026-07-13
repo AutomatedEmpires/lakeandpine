@@ -1,24 +1,23 @@
 import type { MetadataRoute } from "next";
 
-import { getServiceAreas } from "@/lib/data";
 import { APP_URL } from "@/lib/env";
 
-export const dynamic = "force-dynamic";
-
-export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const areas = await getServiceAreas().catch(() => []);
-  const now = new Date();
-  const staticRoutes = ["", "/services", "/pricing", "/book", "/areas", "/reviews"].map(
-    (path) => ({
+export default function sitemap(): MetadataRoute.Sitemap {
+  const staticRoutes = [
+    { path: "", priority: 1 },
+    { path: "/who-we-serve", priority: 0.9 },
+    { path: "/services", priority: 0.9 },
+    { path: "/pricing", priority: 0.8 },
+    { path: "/areas", priority: 0.7 },
+    { path: "/book", priority: 0.9 },
+    { path: "/privacy", priority: 0.3 },
+    { path: "/terms", priority: 0.3 },
+  ].map(
+    ({ path, priority }) => ({
       url: `${APP_URL}${path}`,
-      lastModified: now,
-      priority: path === "" ? 1 : 0.8,
+      lastModified: new Date("2026-07-13T00:00:00.000Z"),
+      priority,
     }),
   );
-  const areaRoutes = areas.map((area) => ({
-    url: `${APP_URL}/areas/${area.slug}`,
-    lastModified: now,
-    priority: 0.7,
-  }));
-  return [...staticRoutes, ...areaRoutes];
+  return staticRoutes;
 }
