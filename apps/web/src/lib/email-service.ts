@@ -33,10 +33,10 @@ export type OpsNotificationInput = {
 export function createEmailService(config: {
   apiKey?: string;
   appUrl: string;
-  businessEmail: string;
+  businessEmail?: string;
   businessPhone?: string;
-  from: string;
-  replyTo: string;
+  from?: string;
+  replyTo?: string;
   formatLongDate(isoDate: string): string;
   createTransport(apiKey: string): EmailTransport;
   log?(message: string): void;
@@ -57,7 +57,7 @@ export function createEmailService(config: {
   }
 
   async function deliver(
-    message: EmailMessage,
+    message: Omit<EmailMessage, "from" | "replyTo">,
     delivery: EmailDeliveryContext,
     skippedDescription: string,
   ): Promise<void> {
@@ -67,13 +67,13 @@ export function createEmailService(config: {
     }
 
     const client = getTransport();
-    if (!client) {
-      log(`[email:skipped] RESEND_API_KEY unset — ${skippedDescription}`);
+    if (!client || !config.from || !config.replyTo || !message.to) {
+      log(`[email:skipped] transactional email is not fully configured — ${skippedDescription}`);
       return;
     }
 
     try {
-      await client.send(message);
+      await client.send({ ...message, from: config.from, replyTo: config.replyTo });
     } catch (error) {
       // Email must never fail a booking or lead write.
       logError("[email:error]", error);
@@ -88,8 +88,6 @@ export function createEmailService(config: {
     const subject = `Booking request received — ${input.serviceTitle}, ${longDate}`;
     await deliver(
       {
-        from: config.from,
-        replyTo: config.replyTo,
         to: input.to,
         subject,
         html: `
@@ -128,9 +126,7 @@ export function createEmailService(config: {
     const subject = `New ${input.kind}: ${input.summary}`;
     await deliver(
       {
-        from: config.from,
-        replyTo: config.replyTo,
-        to: config.businessEmail,
+        to: config.businessEmail ?? "",
         subject,
         html: `<div style="font-family:ui-monospace,monospace;color:#061f1b"><h2>${escapeHtml(subject)}</h2><ul>${input.detailLines
           .map((line) => `<li>${escapeHtml(line)}</li>`)

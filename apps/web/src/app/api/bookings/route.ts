@@ -4,13 +4,16 @@ import { z } from "zod";
 
 import { createBooking, createQuote, getCustomerByEmail, upsertCustomerFromClerk } from "@/lib/data";
 import { sendBookingConfirmation, sendOpsNotification } from "@/lib/email";
-import { authEnabled, requestIntakeEnabled } from "@/lib/env";
+import { authEnabled, getIntakeReadinessIssues, requestIntakeEnabled } from "@/lib/env";
 import { calculateEstimate, ESTIMATE_SERVICES } from "@/lib/pricing";
+import { checkRequestRateLimit } from "@/lib/rate-limit";
+import { isHoneypotFilled, readJsonBody, RequestBodyError } from "@/lib/request-security";
 import { getRuntimeSmokeDisposition } from "@/lib/runtime-smoke-request";
 import { isBookableDate, isBookableWindow } from "@/lib/scheduling";
 import { buildPlanningDirection } from "@/lib/service-planning";
 
 const bookingSchema = z.object({
+  companyWebsite: z.string().max(200).optional().default(""),
   serviceId: z.enum(["essential", "deep", "move", "rental"]),
   addonIds: z.array(z.enum(["fridge", "oven", "laundry", "windows", "organization"])).default([]),
   frequency: z.enum(["weekly", "biweekly", "monthly", "onetime"]),
@@ -56,7 +59,48 @@ export async function POST(request: Request) {
     );
   }
 
-  const body = await request.json().catch(() => null);
+  if (smokeDisposition !== "authorized") {
+    const readinessIssues = getIntakeReadinessIssues().filter((issue) => issue !== "intake_disabled");
+    if (readinessIssues.length > 0) {
+      return NextResponse.json(
+        { error: "Request intake is temporarily unavailable while operations are being configured." },
+        { status: 503 },
+      );
+    }
+
+    try {
+      const rateLimit = await checkRequestRateLimit(request, {
+        scope: "booking",
+        limit: 5,
+        windowMs: 60 * 60 * 1000,
+      });
+      if (!rateLimit.allowed) {
+        const status = rateLimit.reason === "limit" ? 429 : 503;
+        return NextResponse.json(
+          { error: status === 429 ? "Too many requests. Please try again later." : "Request intake is temporarily unavailable." },
+          {
+            status,
+            headers: { "retry-after": String(rateLimit.retryAfterSeconds) },
+          },
+        );
+      }
+    } catch {
+      return NextResponse.json(
+        { error: "Request intake is temporarily unavailable." },
+        { status: 503 },
+      );
+    }
+  }
+
+  let body: unknown;
+  try {
+    body = await readJsonBody(request);
+  } catch (error) {
+    if (error instanceof RequestBodyError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+  }
   const parsed = bookingSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
@@ -65,6 +109,10 @@ export async function POST(request: Request) {
     );
   }
   const input = parsed.data;
+
+  if (isHoneypotFilled(input.companyWebsite)) {
+    return NextResponse.json({ accepted: true }, { status: 202 });
+  }
 
   if (!isBookableDate(input.scheduledDate)) {
     return NextResponse.json(

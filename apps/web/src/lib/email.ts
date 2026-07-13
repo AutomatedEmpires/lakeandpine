@@ -8,7 +8,7 @@ import { formatLongDate } from "./scheduling";
 
 const FROM = process.env.RESEND_FROM?.trim()
   || process.env.RESEND_FROM_EMAIL?.trim()
-  || `Lake & Pine <${BUSINESS_EMAIL}>`;
+  || (BUSINESS_EMAIL ? `Lake & Pine <${BUSINESS_EMAIL}>` : undefined);
 const REPLY_TO = process.env.RESEND_REPLY_TO?.trim()
   || process.env.SUPPORT_EMAIL?.trim()
   || BUSINESS_EMAIL;
