@@ -107,3 +107,13 @@ test("construction work cannot be suggested before site readiness", () => {
   assert.equal(result.eligible, false);
   assert.ok(result.blockers.includes("Construction readiness is not confirmed"));
 });
+
+test("rejects malformed or reversed work intervals", () => {
+  const result = evaluateAssignment(
+    { ...job, start: "2026-07-20T13:00:00-07:00", end: "2026-07-20T09:00:00-07:00" },
+    candidate(),
+  );
+
+  assert.equal(result.eligible, false);
+  assert.ok(result.blockers.includes("Job start and end must define a valid positive interval"));
+});

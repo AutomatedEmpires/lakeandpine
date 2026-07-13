@@ -589,22 +589,65 @@ set search_path = public, pg_temp
 as $$
 declare
   booking_qualification text;
+  booking_vertical text;
+  assigned_cleaner record;
 begin
-  if new.status in ('confirmed', 'en_route', 'in_progress', 'quality_review', 'completed') then
-    select qualification_status into booking_qualification
+  select qualification_status, service_vertical into booking_qualification, booking_vertical
     from bookings
     where id = new.booking_id;
+
+  if booking_vertical is not null and booking_vertical is distinct from new.service_vertical then
+    raise exception 'Schedule vertical % does not match booking vertical %', new.service_vertical, booking_vertical
+      using errcode = '23514';
+  end if;
+
+  if new.status in ('confirmed', 'en_route', 'in_progress', 'quality_review', 'completed') then
     if booking_qualification is distinct from 'approved' then
       raise exception 'Booking % must be qualification-approved before schedule confirmation', new.booking_id
         using errcode = '23514';
     end if;
   end if;
+
+  for assigned_cleaner in
+    select a.id as assignment_id, a.cleaner_id
+    from job_assignments a
+    where a.job_schedule_id = new.id
+      and a.status in ('accepted', 'confirmed')
+  loop
+    perform pg_advisory_xact_lock(hashtextextended(assigned_cleaner.cleaner_id::text, 0));
+
+    if exists (
+      select 1 from cleaner_time_off t
+      where t.cleaner_id = assigned_cleaner.cleaner_id
+        and t.status = 'approved'
+        and t.start_at < new.end_at
+        and t.end_at > new.start_at
+    ) then
+      raise exception 'Reschedule conflicts with approved time off for cleaner %', assigned_cleaner.cleaner_id
+        using errcode = '23P01';
+    end if;
+
+    if exists (
+      select 1
+      from job_assignments a
+      join job_schedules s on s.id = a.job_schedule_id
+      where a.cleaner_id = assigned_cleaner.cleaner_id
+        and a.id <> assigned_cleaner.assignment_id
+        and a.status in ('accepted', 'confirmed')
+        and s.status not in ('completed', 'canceled')
+        and s.start_at < new.end_at + make_interval(mins => new.travel_buffer_minutes)
+        and s.end_at + make_interval(mins => s.travel_buffer_minutes) > new.start_at
+    ) then
+      raise exception 'Reschedule overlaps another assignment for cleaner %', assigned_cleaner.cleaner_id
+        using errcode = '23P01';
+    end if;
+  end loop;
   return new;
 end
 $$;
 
 create trigger job_schedules_readiness_guard
-before insert or update of status, booking_id on job_schedules
+before insert or update on job_schedules
 for each row execute function validate_job_schedule_readiness();
 
 create function validate_job_assignment_capacity() returns trigger

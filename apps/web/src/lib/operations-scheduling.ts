@@ -126,6 +126,10 @@ export function evaluateAssignment(job: SchedulingJob, candidate: AssignmentCand
   const requiredMinutes = durationMinutes(requestedSpan);
   const activeCleaners = candidate.cleaners.filter((cleaner) => cleaner.active);
 
+  if (!Number.isFinite(toMillis(job.start)) || !Number.isFinite(toMillis(job.end)) || toMillis(job.end) <= toMillis(job.start)) {
+    blockers.push("Job start and end must define a valid positive interval");
+  }
+
   if (!job.qualificationApproved) blockers.push("Service qualification is not approved");
   if (!candidate.territoryIds.includes(job.territoryId)) blockers.push("Outside the candidate territory");
   if (!job.safeAccessReady) blockers.push("Safe access is not confirmed");
