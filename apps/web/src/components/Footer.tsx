@@ -32,6 +32,7 @@ export function Footer({ email, phone, phoneTel }: Props) {
           <Link href="/reviews">Customer feedback</Link>
           <Link href="/terms">Request terms</Link>
           <Link href="/privacy">Privacy notice</Link>
+          <Link href="/service-support">Service support</Link>
           <Link href="/dashboard">Customer dashboard</Link>
         </div>
         <div>
@@ -40,6 +41,7 @@ export function Footer({ email, phone, phoneTel }: Props) {
           {email ? <a href={`mailto:${email}`}>{email}</a> : null}
           {!phone && !email ? <p>Direct phone and email are being activated.</p> : null}
           <Link href="/book">Start with a property request</Link>
+          <Link href="/join">Work with Lake &amp; Pine</Link>
         </div>
       </div>
       <div className="container footer-bottom">

@@ -5,6 +5,7 @@ import { ClerkProvider } from "@clerk/nextjs";
 import { ChatDock } from "@/components/ChatDock";
 import { Footer } from "@/components/Footer";
 import { Nav } from "@/components/Nav";
+import { PrivacyPreferences } from "@/components/PrivacyPreferences";
 import { StickyCta } from "@/components/StickyCta";
 import { Toast } from "@/components/Toast";
 import {
@@ -97,6 +98,7 @@ export default function RootLayout({
           phone={BUSINESS_PHONE}
           phoneTel={BUSINESS_PHONE_TEL}
         />
+        <PrivacyPreferences />
         <Toast />
       </body>
     </html>

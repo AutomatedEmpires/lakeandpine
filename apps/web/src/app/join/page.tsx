@@ -6,6 +6,7 @@ import { cleanerApplicationsEnabled } from "@/lib/env";
 export const metadata: Metadata = {
   title: "Join the Team | Lake & Pine",
   description: "Introduce yourself for future Lake & Pine estate, construction, marine-interior, and select commercial cleaning work.",
+  robots: cleanerApplicationsEnabled ? undefined : { index: false, follow: false },
 };
 
 export default function JoinPage() {
@@ -24,4 +25,3 @@ export default function JoinPage() {
     </main>
   );
 }
-
