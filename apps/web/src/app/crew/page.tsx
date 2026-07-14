@@ -3,8 +3,17 @@ import Link from "next/link";
 
 import { resolveCleanerIdentity } from "@/lib/auth";
 import { getCleanerAvailability, getCleanerTimeOff, getCrewAssignments } from "@/lib/crew-data";
+import { getCrewTeamOperations } from "@/lib/team-operations-data";
 
-import { assignmentResponseAction, timeOffRequestAction } from "./actions";
+import {
+  assignmentResponseAction,
+  cleanerCalloutAction,
+  cleanerInventoryUsageAction,
+  cleanerRestockRequestAction,
+  startTimeEntryAction,
+  stopTimeEntryAction,
+  timeOffRequestAction,
+} from "./actions";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
@@ -43,10 +52,11 @@ export default async function CrewPage() {
   }
 
   const cleaner = identity.cleaner;
-  const [assignments, availability, timeOff] = await Promise.all([
+  const [assignments, availability, timeOff, teamOperations] = await Promise.all([
     getCrewAssignments(cleaner.id, identity.devOnly),
     getCleanerAvailability(cleaner.id),
     getCleanerTimeOff(cleaner.id),
+    getCrewTeamOperations(cleaner.id, identity.devOnly),
   ]);
 
   return (
@@ -118,13 +128,64 @@ export default async function CrewPage() {
               </div>
               <form action={timeOffRequestAction} className="time-off-form">
                 <p className="copy">Enter local time in {identity.cleaner.home_territory_timezone ?? "your assigned territory"}. Daylight-saving gaps and repeated times are rejected.</p>
+                <div className="field"><label htmlFor="time-off-team">Team</label><select id="time-off-team" name="membershipId" required disabled={identity.devOnly || teamOperations.memberships.length === 0}>{teamOperations.memberships.map((membership) => <option key={membership.id} value={membership.id}>{membership.team_name}</option>)}</select></div>
                 <div className="field"><label htmlFor="time-off-start">Start</label><input id="time-off-start" name="startAt" type="datetime-local" required disabled={identity.devOnly} /></div>
                 <div className="field"><label htmlFor="time-off-end">End</label><input id="time-off-end" name="endAt" type="datetime-local" required disabled={identity.devOnly} /></div>
                 <div className="field"><label htmlFor="time-off-reason">Category</label><select id="time-off-reason" name="reasonCategory" disabled={identity.devOnly}><option value="unavailable">Unavailable</option><option value="personal">Personal</option><option value="medical">Medical</option><option value="training">Training</option><option value="other">Other</option></select></div>
-                <button className="btn btn-primary" disabled={identity.devOnly}>Request time off</button>
+                <button className="btn btn-primary" disabled={identity.devOnly || teamOperations.memberships.length === 0}>Request time off</button>
               </form>
             </article>
           </aside>
+        </div>
+
+        <div className="crew-operations-stack">
+          <article className="card operator-panel">
+            <span className="eyebrow">Accountable time</span>
+            <h2>Clock only against assigned team work</h2>
+            <div className="crew-assignment-list">
+              {teamOperations.assignments.map((assignment) => <article key={assignment.allocation_id}>
+                <div><strong>{assignment.service_vertical}</strong><span>{assignment.territory_name}</span></div>
+                <p>{formatDateTime(assignment.start_at, cleaner.home_territory_timezone ?? "America/Los_Angeles")}</p>
+                {assignment.open_time_entry_id ? <form action={stopTimeEntryAction} className="assignment-actions"><input type="hidden" name="entryId" value={assignment.open_time_entry_id} /><label>Break minutes<input name="breakMinutes" type="number" min="0" max="720" defaultValue="0" /></label><button className="btn btn-primary" disabled={identity.devOnly}>Stop + submit time</button></form> : <form action={startTimeEntryAction}><input type="hidden" name="allocationId" value={assignment.allocation_id} /><button className="btn btn-primary" disabled={identity.devOnly}>Start assigned work clock</button></form>}
+              </article>)}
+              {teamOperations.assignments.length === 0 && <p className="copy">No team-allocated accepted work is ready for time tracking.</p>}
+            </div>
+            {teamOperations.timeEntries.length > 0 && <div className="availability-list crew-time-history">{teamOperations.timeEntries.map((entry) => <div key={entry.id}><strong>{entry.status}</strong><span>{entry.actual_minutes === null ? "Open" : `${entry.actual_minutes} minutes`} · plan {entry.estimated_minutes_snapshot} minutes{entry.variance_percent === null ? "" : ` · ${entry.variance_percent > 0 ? "+" : ""}${entry.variance_percent}%`}</span></div>)}</div>}
+          </article>
+
+          {teamOperations.memberships.map((membership) => {
+            const teamInventory = teamOperations.inventory.filter((item) => item.team_id === membership.team_id);
+            return <article className="card operator-panel" key={membership.id}>
+              <span className="eyebrow">{membership.team_name} supplies</span>
+              <h2>Use + restock</h2>
+              <p className="copy">Usage immediately updates this team&apos;s stock ledger. Restock requests go to this team&apos;s manager and never place an order automatically.</p>
+              {teamInventory.length > 0 ? <div className="split-form-grid">
+                <form action={cleanerInventoryUsageAction} className="operations-form-grid">
+                  <input type="hidden" name="membershipId" value={membership.id} />
+                  <label>Product<select name="inventoryKey">{teamInventory.map((item) => <option key={`${item.id}-${item.location_id}`} value={`${item.id}|${item.location_id}`}>{item.name} · {item.on_hand} {item.unit_label}</option>)}</select></label>
+                  <label>Quantity used<input name="quantity" type="number" min="0.001" step="0.001" required /></label>
+                  <label>Job/use note<input name="note" placeholder="Where and why it was used" /></label>
+                  <button className="btn btn-primary" disabled={identity.devOnly}>Log product use</button>
+                </form>
+                <form action={cleanerRestockRequestAction} className="operations-form-grid">
+                  <input type="hidden" name="membershipId" value={membership.id} />
+                  <label>Product<select name="inventoryKey">{teamInventory.map((item) => <option key={`${item.id}-${item.location_id}`} value={`${item.id}|${item.location_id}`}>{item.name} · reorder at {item.reorder_point}</option>)}</select></label>
+                  <label>Quantity requested<input name="quantity" type="number" min="0.001" step="0.001" required /></label>
+                  <button className="btn btn-soft" disabled={identity.devOnly}>Request restock</button>
+                </form>
+              </div> : <p className="copy">This team has not published an inventory catalog yet.</p>}
+              <form action={cleanerCalloutAction} className="crew-callout-form">
+                <input type="hidden" name="membershipId" value={membership.id} />
+                <label>Callout / urgent availability impact<textarea name="summary" required placeholder="State the affected shift or assignment and immediate impact. Do not include medical details." /></label>
+                <button className="btn btn-soft" disabled={identity.devOnly}>Notify team manager</button>
+              </form>
+            </article>;
+          })}
+
+          <article className="card operator-panel">
+            <span className="eyebrow">My recognition</span><h2>Bonus history</h2>
+            <div className="availability-list">{teamOperations.bonuses.map((bonus) => <div key={bonus.id}><strong>{bonus.status}</strong><span>{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(bonus.amount_cents / 100)} · {bonus.reason}</span></div>)}{teamOperations.bonuses.length === 0 && <p className="copy">No bonus awards recorded yet.</p>}</div>
+          </article>
         </div>
       </section>
     </div>

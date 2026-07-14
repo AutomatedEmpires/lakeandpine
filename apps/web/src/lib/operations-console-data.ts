@@ -161,7 +161,30 @@ export type OutboxQueueRow = {
   created_at: string;
 };
 
-export async function getOperationsConsole(devOnly: boolean) {
+type QueryClient = typeof sql | postgres.TransactionSql;
+
+export async function withStaffActor<T>(
+  customerId: string,
+  run: (transaction: postgres.TransactionSql) => Promise<T>,
+) {
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_customer_id', ${customerId}, true)`;
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select private.lock_current_workforce_access(${customerId})`;
+    const access = await transaction<{ id: string }[]>`
+      select id from workforce_memberships
+      where customer_id = ${customerId} and team_id is null
+        and role in ('owner','gm') and status = 'active'
+      limit 1`;
+    if (!access[0]) {
+      throw new Error("Owner or GM access is required for national service operations");
+    }
+    return run(transaction);
+  });
+}
+
+export async function getOperationsConsole(customerId: string, devOnly: boolean) {
+  return withStaffActor(customerId, async (query) => {
   const [
     territories,
     cleaners,
@@ -176,7 +199,7 @@ export async function getOperationsConsole(devOnly: boolean) {
     outbox,
     outboxQueue,
   ] = await Promise.all([
-    sql<TerritoryRow[]>`
+    query<TerritoryRow[]>`
       select t.id, t.code, t.name, t.timezone, t.status, t.travel_buffer_minutes, t.is_dev_seed,
              coalesce(jsonb_agg(jsonb_build_object('code', p.postal_code, 'status', p.status)
                order by p.postal_code) filter (where p.postal_code is not null), '[]') as postal_codes
@@ -184,7 +207,7 @@ export async function getOperationsConsole(devOnly: boolean) {
       left join territory_postal_codes p on p.territory_id = t.id
       where (${devOnly} = false or t.is_dev_seed)
       group by t.id order by t.name`,
-    sql<CleanerOpsRow[]>`
+    query<CleanerOpsRow[]>`
       select c.id, c.full_name, c.email, c.status, c.screening_status,
              c.home_territory_id, t.name as home_territory_name, c.skills,
              c.vertical_experience, c.is_dev_seed,
@@ -194,14 +217,14 @@ export async function getOperationsConsole(devOnly: boolean) {
       left join cleaner_availability_rules a on a.cleaner_id = c.id and a.status = 'active'
       where (${devOnly} = false or c.is_dev_seed)
       group by c.id, t.name order by c.full_name`,
-    sql<ApplicationRow[]>`
+    query<ApplicationRow[]>`
       select id, public_reference, full_name, email, home_base, service_interests,
              status, created_at::text, is_dev_seed
       from cleaner_applications
       where (${devOnly} = false or is_dev_seed)
         and status not in ('declined', 'withdrawn')
       order by created_at desc limit 50`,
-    sql<QualificationRow[]>`
+    query<QualificationRow[]>`
       select id, service_vertical, to_char(scheduled_date, 'YYYY-MM-DD') as scheduled_date,
              scheduled_window, qualification_status, required_crew_size,
              estimated_duration_minutes, required_skills,
@@ -212,7 +235,7 @@ export async function getOperationsConsole(devOnly: boolean) {
         and qualification_status not in ('declined')
         and status not in ('completed', 'follow_up', 'canceled')
       order by created_at desc limit 60`,
-    sql<ScheduleRow[]>`
+    query<ScheduleRow[]>`
       select s.id, s.booking_id, s.service_vertical, s.territory_id, t.name as territory_name,
              t.timezone as territory_timezone, s.start_at::text, s.end_at::text, s.status,
              s.required_crew_size, s.required_skills, s.labor_minutes,
@@ -224,7 +247,7 @@ export async function getOperationsConsole(devOnly: boolean) {
         and s.end_at >= now() - interval '7 days'
       group by s.id, t.name, t.timezone
       order by s.start_at asc limit 60`,
-    sql<AssignmentOpsRow[]>`
+    query<AssignmentOpsRow[]>`
       select assignment.id, assignment.job_schedule_id,
              cleaner.full_name as cleaner_name, assignment.assignment_role,
              assignment.status
@@ -235,7 +258,7 @@ export async function getOperationsConsole(devOnly: boolean) {
         and schedule.status in ('tentative', 'held')
         and (${devOnly} = false or (assignment.is_dev_seed and schedule.is_dev_seed))
       order by assignment.assigned_at asc`,
-    sql<ServiceCaseRow[]>`
+    query<ServiceCaseRow[]>`
       select c.id, c.public_reference, c.case_type, c.booking_id,
              coalesce(contact ->> 'name', 'Unnamed customer') as contact_name,
              nullif(contact ->> 'email', '') as contact_email,
@@ -298,7 +321,7 @@ export async function getOperationsConsole(devOnly: boolean) {
         and c.status not in ('closed', 'canceled')
       order by case c.priority when 'urgent' then 0 when 'high' then 1 else 2 end,
                c.created_at asc limit 60`,
-    sql<RecoveryRow[]>`
+    query<RecoveryRow[]>`
       select recovery.id, service_case.public_reference, recovery.action_type,
              recovery.status, recovery.owner_label, recovery.scheduled_at::text,
              recovery.completed_at::text, recovery.notes,
@@ -313,13 +336,13 @@ export async function getOperationsConsole(devOnly: boolean) {
       where (${devOnly} = false or recovery.is_dev_seed)
         and recovery.status not in ('completed', 'canceled')
       order by recovery.scheduled_at asc, recovery.created_at asc limit 60`,
-    sql<RefundRow[]>`
+    query<RefundRow[]>`
       select id, service_case_id, booking_id, amount_cents, status, provider,
              reason_code, provider_refund_id, created_at::text
       from refund_records
       where (${devOnly} = false or is_dev_seed)
       order by created_at desc limit 50`,
-    sql<TimeOffOpsRow[]>`
+    query<TimeOffOpsRow[]>`
       select o.id, o.cleaner_id, c.full_name as cleaner_name, o.start_at::text,
              o.end_at::text, o.status, o.reason_category, o.is_dev_seed,
              territory.timezone as territory_timezone
@@ -328,14 +351,14 @@ export async function getOperationsConsole(devOnly: boolean) {
       where (${devOnly} = false or o.is_dev_seed)
         and o.status = 'requested'
       order by o.start_at asc limit 50`,
-    sql<OutboxSummary[]>`
+    query<OutboxSummary[]>`
       select status, count(*)::int as count from notification_outbox
       where (${devOnly} = false or exists (
         select 1 from bookings b where b.id = notification_outbox.booking_id and b.is_dev_seed
       ) or exists (
         select 1 from service_cases c where c.id = notification_outbox.service_case_id and c.is_dev_seed
       )) group by status order by status`,
-    sql<OutboxQueueRow[]>`
+    query<OutboxQueueRow[]>`
       select o.id, o.booking_id, o.notification_type, o.recipient_kind, o.status,
              o.attempt_count, o.last_error_code, o.created_at::text
       from notification_outbox o left join bookings b on b.id = o.booking_id
@@ -358,6 +381,7 @@ export async function getOperationsConsole(devOnly: boolean) {
     outbox,
     outboxQueue,
   };
+  });
 }
 
 type CapacityRow = {
@@ -378,7 +402,7 @@ type SpanRow = {
   minutes_week?: number;
 };
 
-function combinations<T>(items: T[], size: number, limit = 30): T[][] {
+function combinations<T>(items: T[], size: number, limit = 50_000): T[][] {
   const result: T[][] = [];
   function visit(start: number, selected: T[]) {
     if (result.length >= limit) return;
@@ -406,8 +430,13 @@ export type ConsoleSuggestion = AssignmentSuggestion & {
 export async function getScheduleSuggestions(
   scheduleId: string,
   devOnly: boolean,
+  eligibleCleanerIds?: readonly string[],
+  query: QueryClient = sql,
 ): Promise<ConsoleSuggestion[]> {
-  const schedules = await sql<
+  const restrictCleanerIds = eligibleCleanerIds !== undefined;
+  const scopedCleanerIds = [...(eligibleCleanerIds ?? [])];
+  if (restrictCleanerIds && scopedCleanerIds.length === 0) return [];
+  const schedules = await query<
     (ScheduleRow & {
       qualification_status: string;
       qualification_requirements: Record<string, unknown>;
@@ -427,14 +456,19 @@ export async function getScheduleSuggestions(
 
   const [capacity, availability, timeOff, assignments, loads, acceptedAssignments] =
     await Promise.all([
-      sql<(CapacityRow & { full_name: string })[]>`
+      query<(CapacityRow & { full_name: string })[]>`
       select id, full_name, skills, vertical_experience, max_daily_minutes,
              max_weekly_minutes, max_daily_jobs, home_territory_id
       from cleaners where status = 'active' and screening_status = 'verified'
         and home_territory_id = ${schedule.territory_id}
         and (${devOnly} = false or is_dev_seed)
-      order by full_name limit 20`,
-      sql<SpanRow[]>`
+        and (${restrictCleanerIds} = false or id = any(${scopedCleanerIds}::uuid[]))
+      order by
+        (vertical_experience @> array[${schedule.service_vertical}]::text[]) desc,
+        (skills @> ${schedule.required_skills}::text[]) desc,
+        full_name
+      limit 60`,
+      query<SpanRow[]>`
       select a.cleaner_id,
         (((s.start_at at time zone t.timezone)::date + a.start_time) at time zone t.timezone)::text as start_at,
         (((s.start_at at time zone t.timezone)::date + a.end_time) at time zone t.timezone)::text as end_at
@@ -445,19 +479,22 @@ export async function getScheduleSuggestions(
         and a.status = 'active'
         and a.effective_from <= (s.start_at at time zone t.timezone)::date
         and (a.effective_to is null or a.effective_to >= (s.start_at at time zone t.timezone)::date)
-      where s.id = ${scheduleId}`,
-      sql<SpanRow[]>`
+      where s.id = ${scheduleId}
+        and (${restrictCleanerIds} = false or a.cleaner_id = any(${scopedCleanerIds}::uuid[]))`,
+      query<SpanRow[]>`
       select o.cleaner_id, o.start_at::text, o.end_at::text
       from cleaner_time_off o where o.status = 'approved'
-        and o.start_at < ${schedule.end_at}::timestamptz and o.end_at > ${schedule.start_at}::timestamptz`,
-      sql<SpanRow[]>`
+        and o.start_at < ${schedule.end_at}::timestamptz and o.end_at > ${schedule.start_at}::timestamptz
+        and (${restrictCleanerIds} = false or o.cleaner_id = any(${scopedCleanerIds}::uuid[]))`,
+      query<SpanRow[]>`
       select a.cleaner_id, s.start_at::text, s.end_at::text
       from job_assignments a join job_schedules s on s.id = a.job_schedule_id
       where a.status in ('accepted', 'confirmed') and s.id <> ${scheduleId}
         and s.status not in ('completed', 'canceled')
         and s.start_at < ${schedule.end_at}::timestamptz + interval '3 hours'
-        and s.end_at > ${schedule.start_at}::timestamptz - interval '3 hours'`,
-      sql<
+        and s.end_at > ${schedule.start_at}::timestamptz - interval '3 hours'
+        and (${restrictCleanerIds} = false or a.cleaner_id = any(${scopedCleanerIds}::uuid[]))`,
+      query<
         { cleaner_id: string; jobs_today: number; minutes_today: number; minutes_week: number }[]
       >`
       select c.id as cleaner_id,
@@ -475,12 +512,15 @@ export async function getScheduleSuggestions(
         and s.id <> ${scheduleId}
         and s.status not in ('completed', 'canceled')
       where c.status = 'active' and c.home_territory_id = ${schedule.territory_id}
-        and (${devOnly} = false or c.is_dev_seed) group by c.id`,
-      sql<{ cleaner_id: string }[]>`
+        and (${devOnly} = false or c.is_dev_seed)
+        and (${restrictCleanerIds} = false or c.id = any(${scopedCleanerIds}::uuid[]))
+      group by c.id`,
+      query<{ cleaner_id: string }[]>`
       select cleaner_id
       from job_assignments
       where job_schedule_id = ${scheduleId}
-        and status in ('accepted', 'confirmed')`,
+        and status in ('accepted', 'confirmed')
+        and (${restrictCleanerIds} = false or cleaner_id = any(${scopedCleanerIds}::uuid[]))`,
     ]);
 
   const nameById = new Map(
@@ -565,13 +605,24 @@ export async function getScheduleSuggestions(
   });
 }
 
+export async function getStaffScheduleSuggestions(
+  customerId: string,
+  scheduleId: string,
+  devOnly: boolean,
+) {
+  return withStaffActor(customerId, (transaction) =>
+    getScheduleSuggestions(scheduleId, devOnly, undefined, transaction),
+  );
+}
+
 export async function createTerritoryDraft(input: {
+  customerId: string;
   code: string;
   name: string;
   postalCodes: string[];
   devOnly: boolean;
 }) {
-  return sql.begin(async (tx) => {
+  return withStaffActor(input.customerId, async (tx) => {
     const rows = await tx<{ id: string }[]>`
       insert into service_territories (code, name, status, is_dev_seed)
       values (${input.code}, ${input.name}, 'draft', ${input.devOnly}) returning id`;
@@ -584,65 +635,75 @@ export async function createTerritoryDraft(input: {
 }
 
 export async function setPostalCodeStatus(
+  customerId: string,
   territoryId: string,
   postalCode: string,
   status: "review" | "active" | "excluded",
   devOnly: boolean,
 ) {
-  await sql`update territory_postal_codes p set status = ${status}
-    from service_territories t where p.territory_id = t.id and t.id = ${territoryId}
-      and p.postal_code = ${postalCode} and (${devOnly} = false or t.is_dev_seed)`;
+  await withStaffActor(customerId, async (tx) => {
+    await tx`update territory_postal_codes p set status = ${status}
+      from service_territories t where p.territory_id = t.id and t.id = ${territoryId}
+        and p.postal_code = ${postalCode} and (${devOnly} = false or t.is_dev_seed)`;
+  });
 }
 
 export async function setTerritoryStatus(
+  customerId: string,
   territoryId: string,
   status: "draft" | "active" | "paused",
   devOnly: boolean,
 ) {
-  if (status === "active") {
-    const readiness = await sql<{ ready: boolean }[]>`
-      select exists(select 1 from territory_postal_codes where territory_id = ${territoryId} and status = 'active')
-        and exists(
-          select 1 from cleaners cleaner
-          where cleaner.home_territory_id = ${territoryId}
-            and cleaner.status = 'active'
-            and cleaner.screening_status = 'verified'
-            and exists (
-              select 1 from cleaner_availability_rules availability
-              where availability.cleaner_id = cleaner.id
-                and availability.status = 'active'
-                and (availability.territory_id is null or availability.territory_id = ${territoryId})
-            )
-        ) as ready`;
-    if (!readiness[0]?.ready)
-      throw new Error(
-        "An active postal code and a screened, available cleaner are required before territory activation",
-      );
-  }
-  await sql`update service_territories set status = ${status} where id = ${territoryId}
-    and (${devOnly} = false or is_dev_seed)`;
+  await withStaffActor(customerId, async (tx) => {
+    if (status === "active") {
+      const readiness = await tx<{ ready: boolean }[]>`
+        select exists(select 1 from territory_postal_codes where territory_id = ${territoryId} and status = 'active')
+          and exists(
+            select 1 from cleaners cleaner
+            where cleaner.home_territory_id = ${territoryId}
+              and cleaner.status = 'active'
+              and cleaner.screening_status = 'verified'
+              and exists (
+                select 1 from cleaner_availability_rules availability
+                where availability.cleaner_id = cleaner.id
+                  and availability.status = 'active'
+                  and (availability.territory_id is null or availability.territory_id = ${territoryId})
+              )
+          ) as ready`;
+      if (!readiness[0]?.ready)
+        throw new Error(
+          "An active postal code and a screened, available cleaner are required before territory activation",
+        );
+    }
+    await tx`update service_territories set status = ${status} where id = ${territoryId}
+      and (${devOnly} = false or is_dev_seed)`;
+  });
 }
 
 export async function setCleanerApplicationStatus(
+  customerId: string,
   applicationId: string,
   from: string,
   to: string,
   devOnly: boolean,
 ) {
-  const rows = await sql<
-    { id: string }[]
-  >`update cleaner_applications set status = ${to}
-    where id = ${applicationId} and status = ${from}
-      and (${devOnly} = false or is_dev_seed) returning id`;
-  return Boolean(rows[0]);
+  return withStaffActor(customerId, async (tx) => {
+    const rows = await tx<
+      { id: string }[]
+    >`update cleaner_applications set status = ${to}
+      where id = ${applicationId} and status = ${from}
+        and (${devOnly} = false or is_dev_seed) returning id`;
+    return Boolean(rows[0]);
+  });
 }
 
 export async function createOnboardingCleaner(
+  customerId: string,
   applicationId: string,
   territoryId: string,
   devOnly: boolean,
 ) {
-  return sql.begin(async (tx) => {
+  return withStaffActor(customerId, async (tx) => {
     const applications = await tx<
       {
         full_name: string;
@@ -678,17 +739,21 @@ export async function createOnboardingCleaner(
 }
 
 export async function verifyCleanerScreening(
+  customerId: string,
   cleanerId: string,
   devOnly: boolean,
 ) {
-  const rows = await sql<{ id: string }[]>`update cleaners
-    set screening_status = 'verified', screening_verified_at = now()
-    where id = ${cleanerId} and status = 'onboarding'
-      and (${devOnly} = false or is_dev_seed) returning id`;
-  return Boolean(rows[0]);
+  return withStaffActor(customerId, async (tx) => {
+    const rows = await tx<{ id: string }[]>`update cleaners
+      set screening_status = 'verified', screening_verified_at = now()
+      where id = ${cleanerId} and status = 'onboarding'
+        and (${devOnly} = false or is_dev_seed) returning id`;
+    return Boolean(rows[0]);
+  });
 }
 
 export async function addCleanerAvailability(input: {
+  customerId: string;
   cleanerId: string;
   territoryId: string;
   dayOfWeek: number;
@@ -696,68 +761,80 @@ export async function addCleanerAvailability(input: {
   endTime: string;
   devOnly: boolean;
 }) {
-  const cleaners = await sql<
-    { id: string }[]
-  >`select id from cleaners where id = ${input.cleanerId}
-    and home_territory_id = ${input.territoryId} and (${input.devOnly} = false or is_dev_seed)`;
-  if (!cleaners[0]) throw new Error("Cleaner and territory do not match");
-  await sql`insert into cleaner_availability_rules
-    (cleaner_id, territory_id, day_of_week, start_time, end_time, status)
-    values (${input.cleanerId}, ${input.territoryId}, ${input.dayOfWeek}, ${input.startTime}, ${input.endTime}, 'active')`;
+  await withStaffActor(input.customerId, async (tx) => {
+    const cleaners = await tx<
+      { id: string }[]
+    >`select id from cleaners where id = ${input.cleanerId}
+      and home_territory_id = ${input.territoryId} and (${input.devOnly} = false or is_dev_seed)`;
+    if (!cleaners[0]) throw new Error("Cleaner and territory do not match");
+    await tx`insert into cleaner_availability_rules
+      (cleaner_id, territory_id, day_of_week, start_time, end_time, status)
+      values (${input.cleanerId}, ${input.territoryId}, ${input.dayOfWeek}, ${input.startTime}, ${input.endTime}, 'active')`;
+  });
 }
 
 export async function setCleanerStatus(
+  customerId: string,
   cleanerId: string,
   status: "active" | "paused" | "inactive",
   devOnly: boolean,
 ) {
-  if (status === "active") {
-    const readiness = await sql<{ ready: boolean }[]>`select
-      c.screening_status = 'verified'
-      and c.home_territory_id is not null
-      and exists(select 1 from cleaner_availability_rules a where a.cleaner_id = c.id and a.status = 'active') as ready
-      from cleaners c where c.id = ${cleanerId} and (${devOnly} = false or c.is_dev_seed)`;
-    if (!readiness[0]?.ready)
-      throw new Error(
-        "Verified screening, a home territory, and active availability are required before activation",
-      );
-  }
-  await sql`update cleaners set status = ${status} where id = ${cleanerId}
-    and (${devOnly} = false or is_dev_seed)`;
+  await withStaffActor(customerId, async (tx) => {
+    if (status === "active") {
+      const readiness = await tx<{ ready: boolean }[]>`select
+        c.screening_status = 'verified'
+        and c.home_territory_id is not null
+        and exists(select 1 from cleaner_availability_rules a where a.cleaner_id = c.id and a.status = 'active') as ready
+        from cleaners c where c.id = ${cleanerId} and (${devOnly} = false or c.is_dev_seed)`;
+      if (!readiness[0]?.ready)
+        throw new Error(
+          "Verified screening, a home territory, and active availability are required before activation",
+        );
+    }
+    await tx`update cleaners set status = ${status} where id = ${cleanerId}
+      and (${devOnly} = false or is_dev_seed)`;
+  });
 }
 
 export async function setCleanerCapabilities(input: {
+  customerId: string;
   cleanerId: string;
   skills: string[];
   verticalExperience: ServiceVertical[];
   devOnly: boolean;
 }) {
-  await sql`update cleaners set skills = ${input.skills}, vertical_experience = ${input.verticalExperience}
-    where id = ${input.cleanerId} and (${input.devOnly} = false or is_dev_seed)`;
+  await withStaffActor(input.customerId, async (tx) => {
+    await tx`update cleaners set skills = ${input.skills}, vertical_experience = ${input.verticalExperience}
+      where id = ${input.cleanerId} and (${input.devOnly} = false or is_dev_seed)`;
+  });
 }
 
 export async function setQualificationStatus(
+  customerId: string,
   bookingId: string,
   from: string,
   to: string,
   requirements: Record<string, unknown>,
   devOnly: boolean,
 ) {
-  const rows = await sql<{ id: string }[]>`
-    update bookings set qualification_status = ${to}, qualification_requirements = qualification_requirements || ${sql.json(requirements as postgres.JSONValue)}
-    where id = ${bookingId} and qualification_status = ${from}
-      and (${devOnly} = false or is_dev_seed) returning id`;
-  return Boolean(rows[0]);
+  return withStaffActor(customerId, async (tx) => {
+    const rows = await tx<{ id: string }[]>`
+      update bookings set qualification_status = ${to}, qualification_requirements = qualification_requirements || ${tx.json(requirements as postgres.JSONValue)}
+      where id = ${bookingId} and qualification_status = ${from}
+        and (${devOnly} = false or is_dev_seed) returning id`;
+    return Boolean(rows[0]);
+  });
 }
 
 export async function createJobSchedule(input: {
+  customerId: string;
   bookingId: string;
   territoryId: string;
   startLocal: string;
   endLocal: string;
   devOnly: boolean;
 }) {
-  return sql.begin(async (tx) => {
+  return withStaffActor(input.customerId, async (tx) => {
     const bookings = await tx<
       {
         service_vertical: ServiceVertical;
@@ -812,31 +889,29 @@ export async function createJobSchedule(input: {
 }
 
 export async function setJobScheduleStatus(
+  customerId: string,
   scheduleId: string,
   from: string,
   to: string,
   devOnly: boolean,
 ) {
-  const rows = await sql<
-    { id: string }[]
-  >`update job_schedules set status = ${to}, version = version + 1
-    where id = ${scheduleId} and status = ${from}
-      and (${devOnly} = false or is_dev_seed) returning id`;
-  return Boolean(rows[0]);
+  return withStaffActor(customerId, async (tx) => {
+    const rows = await tx<
+      { id: string }[]
+    >`update job_schedules set status = ${to}, version = version + 1
+      where id = ${scheduleId} and status = ${from}
+        and (${devOnly} = false or is_dev_seed) returning id`;
+    return Boolean(rows[0]);
+  });
 }
 
 export async function proposeAssignmentCandidate(
+  customerId: string,
   scheduleId: string,
   candidateId: string,
   devOnly: boolean,
 ) {
-  const suggestions = await getScheduleSuggestions(scheduleId, devOnly);
-  const suggestion = suggestions.find(
-    (item) => item.candidateId === candidateId && item.eligible,
-  );
-  if (!suggestion)
-    throw new Error("That crew is no longer eligible; refresh suggestions");
-  await sql.begin(async (tx) => {
+  await withStaffActor(customerId, async (tx) => {
     const lockedSchedules = await tx<{ id: string }[]>`
       select id from job_schedules
       where id = ${scheduleId} and status in ('tentative', 'held')
@@ -844,6 +919,18 @@ export async function proposeAssignmentCandidate(
       for update`;
     if (!lockedSchedules[0]) {
       throw new Error("Crew proposals are limited to tentative or held schedules");
+    }
+    const suggestions = await getScheduleSuggestions(
+      scheduleId,
+      devOnly,
+      undefined,
+      tx,
+    );
+    const suggestion = suggestions.find(
+      (item) => item.candidateId === candidateId && item.eligible,
+    );
+    if (!suggestion) {
+      throw new Error("That crew is no longer eligible; refresh suggestions");
     }
     const acceptedAssignments = await tx<{ cleaner_id: string }[]>`
       select cleaner_id
@@ -884,10 +971,11 @@ export async function proposeAssignmentCandidate(
 }
 
 export async function removeAssignmentFromPlanningSchedule(
+  customerId: string,
   assignmentId: string,
   devOnly: boolean,
 ) {
-  return sql.begin(async (tx) => {
+  return withStaffActor(customerId, async (tx) => {
     const rows = await tx<{ id: string }[]>`
       select assignment.id
       from job_assignments assignment
@@ -912,46 +1000,50 @@ export async function removeAssignmentFromPlanningSchedule(
 }
 
 export async function setServiceCaseStatus(
+  customerId: string,
   caseId: string,
   from: string,
   to: string,
   resolutionSummary: string | null,
   devOnly: boolean,
 ) {
-  const rows = await sql<
-    { id: string }[]
-  >`update service_cases
-    set status = ${to},
-        resolution_summary = case
-          when ${to} in ('resolved', 'closed') then ${resolutionSummary}
-          when ${to} not in ('declined', 'canceled') then null
-          else resolution_summary
-        end,
-        resolution_type = case
-          when ${to} not in ('resolved', 'closed', 'declined', 'canceled') then null
-          else resolution_type
-        end,
-        resolved_at = case
-          when ${to} = 'resolved' then now()
-          when ${to} not in ('resolved', 'closed', 'declined', 'canceled') then null
-          else resolved_at
-        end,
-        closed_at = case
-          when ${to} = 'closed' then now()
-          when ${to} not in ('resolved', 'closed', 'declined', 'canceled') then null
-          else closed_at
-        end
-    where id = ${caseId} and status = ${from} and (${devOnly} = false or is_dev_seed) returning id`;
-  return Boolean(rows[0]);
+  return withStaffActor(customerId, async (tx) => {
+    const rows = await tx<
+      { id: string }[]
+    >`update service_cases
+      set status = ${to},
+          resolution_summary = case
+            when ${to} in ('resolved', 'closed') then ${resolutionSummary}
+            when ${to} not in ('declined', 'canceled') then null
+            else resolution_summary
+          end,
+          resolution_type = case
+            when ${to} not in ('resolved', 'closed', 'declined', 'canceled') then null
+            else resolution_type
+          end,
+          resolved_at = case
+            when ${to} = 'resolved' then now()
+            when ${to} not in ('resolved', 'closed', 'declined', 'canceled') then null
+            else resolved_at
+          end,
+          closed_at = case
+            when ${to} = 'closed' then now()
+            when ${to} not in ('resolved', 'closed', 'declined', 'canceled') then null
+            else closed_at
+          end
+      where id = ${caseId} and status = ${from} and (${devOnly} = false or is_dev_seed) returning id`;
+    return Boolean(rows[0]);
+  });
 }
 
 export async function rescheduleBookingFromCase(input: {
+  customerId: string;
   caseId: string;
   startLocal: string;
   endLocal: string;
   devOnly: boolean;
 }) {
-  return sql.begin(async (tx) => {
+  return withStaffActor(input.customerId, async (tx) => {
     const rows = await tx<
       {
         schedule_id: string;
@@ -999,6 +1091,7 @@ export async function rescheduleBookingFromCase(input: {
 }
 
 export async function updateUnscheduledBookingPreferenceFromCase(input: {
+  customerId: string;
   caseId: string;
   preferredDate: string;
   devOnly: boolean;
@@ -1014,7 +1107,7 @@ export async function updateUnscheduledBookingPreferenceFromCase(input: {
   ) {
     throw new Error("Choose a future preferred date");
   }
-  return sql.begin(async (tx) => {
+  return withStaffActor(input.customerId, async (tx) => {
     const rows = await tx<{ booking_id: string }[]>`
       select service_case.booking_id
       from service_cases service_case
@@ -1052,8 +1145,12 @@ export async function updateUnscheduledBookingPreferenceFromCase(input: {
   });
 }
 
-export async function cancelBookingFromCase(caseId: string, devOnly: boolean) {
-  return sql.begin(async (tx) => {
+export async function cancelBookingFromCase(
+  customerId: string,
+  caseId: string,
+  devOnly: boolean,
+) {
+  return withStaffActor(customerId, async (tx) => {
     const rows = await tx<
       { booking_id: string }[]
     >`select service_case.booking_id
@@ -1103,14 +1200,14 @@ export async function cancelBookingFromCase(caseId: string, devOnly: boolean) {
 }
 
 export async function createRecoveryAction(input: {
+  customerId: string;
   caseId: string;
   type: string;
-  ownerLabel: string;
   scheduledLocal: string;
   notes: string;
   devOnly: boolean;
 }) {
-  return sql.begin(async (tx) => {
+  return withStaffActor(input.customerId, async (tx) => {
     const cases = await tx<
       { booking_id: string | null; timezone: string }[]
     >`
@@ -1134,12 +1231,16 @@ export async function createRecoveryAction(input: {
     if (Date.parse(scheduledAt) < Date.now() - 5 * 60_000) {
       throw new Error("Recovery target time must be in the future");
     }
+    const actors = await tx<{ label: string }[]>`
+      select coalesce(full_name, email, 'Authorized operator') as label
+      from customers where id = ${input.customerId} and role = 'staff'`;
+    if (!actors[0]) throw new Error("An accountable operator identity is required");
     const rows = await tx<{ id: string }[]>`
       insert into service_recovery_actions
         (service_case_id, booking_id, action_type, owner_label, scheduled_at,
          notes, status, is_dev_seed)
       values (${input.caseId}, ${cases[0].booking_id}, ${input.type},
-        ${input.ownerLabel}, ${scheduledAt}, ${input.notes || null}, 'planned',
+        ${actors[0].label}, ${scheduledAt}, ${input.notes || null}, 'planned',
         ${input.devOnly})
       returning id`;
     return rows[0];
@@ -1147,33 +1248,37 @@ export async function createRecoveryAction(input: {
 }
 
 export async function setRecoveryStatus(
+  customerId: string,
   recoveryId: string,
   from: string,
   to: string,
   devOnly: boolean,
 ) {
-  const rows = await sql<{ id: string }[]>`
-    update service_recovery_actions
-    set status = ${to},
-        approved_by_label = case
-          when ${to} in ('approved', 'scheduled', 'completed')
-            then coalesce(approved_by_label, 'Operator')
-          else approved_by_label
-        end,
-        completed_at = case when ${to} = 'completed' then now() else null end
-    where id = ${recoveryId} and status = ${from}
-      and (${devOnly} = false or is_dev_seed)
-    returning id`;
-  return Boolean(rows[0]);
+  return withStaffActor(customerId, async (tx) => {
+    const rows = await tx<{ id: string }[]>`
+      update service_recovery_actions
+      set status = ${to},
+          approved_by_label = case
+            when ${to} in ('approved', 'scheduled', 'completed')
+              then coalesce(approved_by_label, 'Operator')
+            else approved_by_label
+          end,
+          completed_at = case when ${to} = 'completed' then now() else null end
+      where id = ${recoveryId} and status = ${from}
+        and (${devOnly} = false or is_dev_seed)
+      returning id`;
+    return Boolean(rows[0]);
+  });
 }
 
 export async function createRefundReview(input: {
+  customerId: string;
   caseId: string;
   amountCents: number;
   reasonCode: string;
   devOnly: boolean;
 }) {
-  return sql.begin(async (tx) => {
+  return withStaffActor(input.customerId, async (tx) => {
     const rows = await tx<
       { booking_id: string; billing_record_id: string; remaining_cents: number }[]
     >`
@@ -1218,28 +1323,39 @@ export async function createRefundReview(input: {
 }
 
 export async function setRefundStatus(
+  customerId: string,
   refundId: string,
   from: string,
   to: string,
   providerReference: string | null,
   devOnly: boolean,
 ) {
-  const rows = await sql<
-    { id: string }[]
-  >`update refund_records set status = ${to},
-      approved_by_label = case when ${to} = 'approved' then 'Operator' else approved_by_label end,
-      approved_at = case when ${to} = 'approved' then now() else approved_at end,
-      processed_at = case when ${to} = 'processed' then now() else processed_at end,
-      provider_refund_id = case when ${to} = 'processed' then ${providerReference} else provider_refund_id end
-    where id = ${refundId} and status = ${from} and (${devOnly} = false or is_dev_seed) returning id`;
-  return Boolean(rows[0]);
+  return withStaffActor(customerId, async (tx) => {
+    const rows = await tx<
+      { id: string }[]
+    >`update refund_records set status = ${to},
+        approved_by_label = case when ${to} = 'approved' then 'Operator' else approved_by_label end,
+        approved_at = case when ${to} = 'approved' then now() else approved_at end,
+        processed_at = case when ${to} = 'processed' then now() else processed_at end,
+        provider_refund_id = case when ${to} = 'processed' then ${providerReference} else provider_refund_id end
+      where id = ${refundId} and status = ${from} and (${devOnly} = false or is_dev_seed) returning id`;
+    return Boolean(rows[0]);
+  });
 }
 
 export async function reviewTimeOff(
+  customerId: string,
   timeOffId: string,
   status: "approved" | "declined",
   devOnly: boolean,
 ) {
-  await sql`update cleaner_time_off set status = ${status}, reviewed_by_label = 'Operator', reviewed_at = now()
-    where id = ${timeOffId} and status = 'requested' and (${devOnly} = false or is_dev_seed)`;
+  await withStaffActor(customerId, async (transaction) => {
+    const rows = await transaction<{ id: string }[]>`
+      update cleaner_time_off
+      set status = ${status}, reviewed_by_label = 'Operator', reviewed_at = now()
+      where id = ${timeOffId} and status = 'requested'
+        and (${devOnly} = false or is_dev_seed)
+      returning id`;
+    if (!rows[0]) throw new Error("Time-off request changed or is outside your scope");
+  });
 }

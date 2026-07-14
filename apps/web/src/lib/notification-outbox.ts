@@ -1,8 +1,8 @@
 import "server-only";
 
 import { deriveBookingReference } from "./booking-reference";
-import { sql } from "./db";
 import { sendBookingConfirmation, sendOpsNotification } from "./email";
+import { withStaffActor } from "./operations-console-data";
 
 type ClaimedNotification = {
   id: string;
@@ -20,8 +20,13 @@ type ClaimedNotification = {
   case_contact: { name?: string; email?: string; phone?: string } | null;
 };
 
-export async function retryOutboxNotification(outboxId: string, devOnly: boolean) {
-  const rows = await sql<ClaimedNotification[]>`
+export async function retryOutboxNotification(
+  customerId: string,
+  outboxId: string,
+  devOnly: boolean,
+) {
+  return withStaffActor(customerId, async (tx) => {
+  const rows = await tx<ClaimedNotification[]>`
     with claimed as (
       update notification_outbox o set status = 'processing', locked_at = now()
       where o.id = ${outboxId}
@@ -89,10 +94,11 @@ export async function retryOutboxNotification(outboxId: string, devOnly: boolean
   }
 
   const status = outcome === "sent" ? "sent" : outcome === "suppressed" ? "canceled" : outcome === "failed" ? "retry" : "failed";
-  await sql`update notification_outbox set status = ${status}, attempt_count = attempt_count + 1,
+  await tx`update notification_outbox set status = ${status}, attempt_count = attempt_count + 1,
       sent_at = case when ${status} = 'sent' then now() else sent_at end,
       next_attempt_at = case when ${status} = 'retry' then now() + interval '15 minutes' else next_attempt_at end,
       last_error_code = case when ${status} = 'sent' then null else ${outcome} end,
       locked_at = null where id = ${item.id}`;
   return outcome;
+  });
 }

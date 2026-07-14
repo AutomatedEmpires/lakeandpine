@@ -4,6 +4,13 @@ import { revalidatePath } from "next/cache";
 
 import { resolveCleanerIdentity } from "@/lib/auth";
 import { requestTimeOff, respondToAssignment } from "@/lib/crew-data";
+import {
+  createCleanerCallout,
+  recordCleanerInventoryUsage,
+  requestCleanerRestock,
+  startCrewTimeEntry,
+  stopCrewTimeEntry,
+} from "@/lib/team-operations-data";
 
 async function requireCleaner() {
   const identity = await resolveCleanerIdentity();
@@ -45,10 +52,105 @@ export async function timeOffRequestAction(formData: FormData) {
 
   await requestTimeOff({
     cleanerId: identity.cleaner.id,
+    membershipId: uuid(formData, "membershipId"),
     startLocal,
     endLocal,
     reasonCategory: reasonCategory as (typeof validReasons)[number],
     devOnly: identity.devOnly,
   });
   revalidatePath("/crew");
+}
+
+function value(formData: FormData, key: string) {
+  return String(formData.get(key) ?? "").trim();
+}
+
+function uuid(formData: FormData, key: string) {
+  const result = value(formData, key);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(result)) {
+    throw new Error(`Invalid ${key}`);
+  }
+  return result;
+}
+
+function quantity(formData: FormData, key: string, max: number) {
+  const result = Number(value(formData, key));
+  if (!Number.isFinite(result) || result <= 0 || result > max || Math.round(result * 1000) !== result * 1000) {
+    throw new Error(`Invalid ${key}`);
+  }
+  return result;
+}
+
+export async function cleanerInventoryUsageAction(formData: FormData) {
+  const identity = await requireCleaner();
+  const [productId, locationId] = value(formData, "inventoryKey").split("|");
+  if (!productId || !locationId) throw new Error("Choose a team inventory item");
+  await recordCleanerInventoryUsage({
+    cleanerId: identity.cleaner.id,
+    devOnly: identity.devOnly,
+    membershipId: uuid(formData, "membershipId"),
+    productId,
+    locationId,
+    quantity: quantity(formData, "quantity", 100_000),
+    note: value(formData, "note").slice(0, 1000) || null,
+  });
+  revalidatePath("/crew");
+  revalidatePath("/operator/inventory");
+}
+
+export async function cleanerRestockRequestAction(formData: FormData) {
+  const identity = await requireCleaner();
+  const [productId, locationId] = value(formData, "inventoryKey").split("|");
+  if (!productId || !locationId) throw new Error("Choose a team inventory item");
+  await requestCleanerRestock({
+    cleanerId: identity.cleaner.id,
+    devOnly: identity.devOnly,
+    membershipId: uuid(formData, "membershipId"),
+    productId,
+    locationId,
+    quantity: quantity(formData, "quantity", 100_000),
+  });
+  revalidatePath("/crew");
+  revalidatePath("/operator/inventory");
+}
+
+export async function startTimeEntryAction(formData: FormData) {
+  const identity = await requireCleaner();
+  await startCrewTimeEntry({
+    cleanerId: identity.cleaner.id,
+    devOnly: identity.devOnly,
+    allocationId: uuid(formData, "allocationId"),
+  });
+  revalidatePath("/crew");
+  revalidatePath("/operator/time");
+}
+
+export async function stopTimeEntryAction(formData: FormData) {
+  const identity = await requireCleaner();
+  const breakMinutes = Number(value(formData, "breakMinutes") || "0");
+  if (!Number.isInteger(breakMinutes) || breakMinutes < 0 || breakMinutes > 720) {
+    throw new Error("Break minutes must be between 0 and 720");
+  }
+  await stopCrewTimeEntry({
+    cleanerId: identity.cleaner.id,
+    devOnly: identity.devOnly,
+    entryId: uuid(formData, "entryId"),
+    breakMinutes,
+  });
+  revalidatePath("/crew");
+  revalidatePath("/operator/time");
+}
+
+export async function cleanerCalloutAction(formData: FormData) {
+  const identity = await requireCleaner();
+  const summary = value(formData, "summary").slice(0, 1000);
+  if (summary.length < 2) throw new Error("Explain the callout and immediate scheduling impact");
+  await createCleanerCallout({
+    cleanerId: identity.cleaner.id,
+    devOnly: identity.devOnly,
+    membershipId: uuid(formData, "membershipId"),
+    summary,
+  });
+  revalidatePath("/crew");
+  revalidatePath("/operator/workforce");
 }
