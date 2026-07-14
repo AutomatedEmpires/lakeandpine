@@ -30,6 +30,8 @@ create table workforce_memberships (
   constraint workforce_memberships_role_scope_check check (
     (role in ('owner', 'gm') and team_id is null and customer_id is not null)
     or (role = 'manager' and team_id is not null and customer_id is not null)
+    -- Shift leads intentionally support two mutually exclusive identities:
+    -- staff-backed dispatch supervisors and cleaner-backed field leads.
     or (role = 'shift_lead' and team_id is not null)
     or (role = 'cleaner' and team_id is not null and cleaner_id is not null)
   ),

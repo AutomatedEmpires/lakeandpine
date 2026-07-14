@@ -157,7 +157,11 @@ function cleanerSearchPreference(
     cleaner.maxWeeklyMinutes > 0
       ? cleaner.assignedMinutesThisWeek / cleaner.maxWeeklyMinutes
       : 1;
+  const continuityPreference =
+    (job.recurringCleanerIds?.includes(cleaner.id) ? 1_000 : 0) +
+    (job.preferredCleanerIds?.includes(cleaner.id) ? 500 : 0);
   return (
+    continuityPreference +
     requiredSkillCount * 100 +
     (cleaner.verticalExperience.includes(job.vertical) ? 40 : 0) +
     Math.max(0, Math.round((1 - utilization) * 20))
@@ -263,9 +267,10 @@ function selectSkillAwareCandidates(
 
 /**
  * Builds a bounded, skill-aware crew search. Candidates are filtered for their
- * individual hard constraints before search, while accepted cleaners remain
- * fixed in every crew. Dynamic programming retains complementary skill states,
- * so a valid crew is not lost merely because it appears late lexicographically.
+ * individual hard constraints before search. Accepted cleaners are revalidated
+ * against those same constraints and then remain fixed in every crew. Dynamic
+ * programming retains complementary skill states, so a valid crew is not lost
+ * merely because it appears late lexicographically.
  */
 export function buildBoundedCrewGroups({
   job,
@@ -274,6 +279,19 @@ export function buildBoundedCrewGroups({
   travelBufferMinutes,
   limit = 2_000,
 }: CrewSearchInput): CleanerCapacity[][] {
+  if (
+    acceptedCleaners.some(
+      (cleaner) =>
+        !cleanerMeetsIndividualSchedulingConstraints(
+          job,
+          cleaner,
+          travelBufferMinutes,
+        ),
+    )
+  ) {
+    return [];
+  }
+
   const remainingSlots = job.requiredCrewSize - acceptedCleaners.length;
   if (remainingSlots < 0 || limit < 1) return [];
   if (remainingSlots === 0) return [acceptedCleaners];

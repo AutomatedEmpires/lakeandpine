@@ -209,6 +209,66 @@ test("keeps accepted cleaners fixed independently of the candidate pool", () => 
   );
 });
 
+test("rejects accepted cleaners who now violate a hard scheduling constraint", () => {
+  const accepted = cleaner("accepted-on-pto", {
+    skills: ["delicate_finishes"],
+    timeOff: [{
+      start: "2026-07-20T10:00:00-07:00",
+      end: "2026-07-20T12:00:00-07:00",
+    }],
+  });
+  const groups = buildBoundedCrewGroups({
+    job,
+    acceptedCleaners: [accepted],
+    availableCleaners: [cleaner("available-partner", { skills: ["estate_detail"] })],
+    travelBufferMinutes: 30,
+  });
+
+  assert.deepEqual(groups, []);
+});
+
+test("bounded pruning preserves requested continuity within equal skill coverage", () => {
+  const oneCleanerJob: SchedulingJob = {
+    ...job,
+    requiredCrewSize: 1,
+    requiredSkills: ["estate_detail"],
+    recurringCleanerIds: ["recurring-request"],
+    preferredCleanerIds: [],
+  };
+  const recurring = cleaner("recurring-request", {
+    skills: ["estate_detail"],
+    verticalExperience: [],
+    assignedMinutesThisWeek: 2_000,
+  });
+  const otherwiseHigher = cleaner("otherwise-higher", {
+    skills: ["estate_detail"],
+    verticalExperience: ["estate"],
+    assignedMinutesThisWeek: 0,
+  });
+  const recurringGroups = buildBoundedCrewGroups({
+    job: oneCleanerJob,
+    acceptedCleaners: [],
+    availableCleaners: [otherwiseHigher, recurring],
+    travelBufferMinutes: 30,
+  });
+  assert.equal(recurringGroups[0][0].id, "recurring-request");
+
+  const preferredGroups = buildBoundedCrewGroups({
+    job: {
+      ...oneCleanerJob,
+      recurringCleanerIds: [],
+      preferredCleanerIds: ["preferred-request"],
+    },
+    acceptedCleaners: [],
+    availableCleaners: [
+      otherwiseHigher,
+      { ...recurring, id: "preferred-request" },
+    ],
+    travelBufferMinutes: 30,
+  });
+  assert.equal(preferredGroups[0][0].id, "preferred-request");
+});
+
 test("finds complementary skills beyond the first 2,000 lexical combinations", () => {
   const requiredSkills = ["skill-a", "skill-b", "skill-c", "skill-d"];
   const largeCrewJob = {

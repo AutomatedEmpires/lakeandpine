@@ -2,6 +2,11 @@
 
 import { useState, type ReactNode } from "react";
 
+import {
+  confirmationPreventsSubmission,
+  resolutionSummaryFieldState,
+} from "./recovery-form-state";
+
 type TransitionFormProps = {
   action: (formData: FormData) => Promise<void>;
   teamId: string;
@@ -20,7 +25,7 @@ export function ServiceCaseTransitionForm({
   reference,
 }: TransitionFormProps) {
   const [to, setTo] = useState("");
-  const requiresResolution = to === "resolved" || to === "closed";
+  const summaryField = resolutionSummaryFieldState(to);
   return (
     <form action={action} className="inline-ops-form">
       <input type="hidden" name="teamId" value={teamId} />
@@ -41,12 +46,8 @@ export function ServiceCaseTransitionForm({
       <input
         name="resolutionSummary"
         maxLength={2000}
-        required={requiresResolution}
-        placeholder={
-          requiresResolution
-            ? "Required customer-visible outcome"
-            : "Customer-visible outcome when resolving or closing"
-        }
+        required={summaryField.required}
+        placeholder={summaryField.placeholder}
         aria-label={`Resolution summary for ${reference}`}
       />
       <button className="btn btn-soft">Update case</button>
@@ -66,7 +67,13 @@ export function ConfirmSubmitButton({
       className="btn btn-soft"
       type="submit"
       onClick={(event) => {
-        if (!window.confirm(message)) event.preventDefault();
+        if (
+          confirmationPreventsSubmission(message, (prompt) =>
+            window.confirm(prompt),
+          )
+        ) {
+          event.preventDefault();
+        }
       }}
     >
       {children}
