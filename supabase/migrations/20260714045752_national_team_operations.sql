@@ -6,133 +6,11 @@
 -- Purchasing and payroll remain approval/export ledgers: no trigger spends or
 -- moves money.
 
+set local lock_timeout = '5s';
+set local statement_timeout = '5min';
+
 create schema if not exists private;
 revoke all on schema private from public;
-
-create table organizations (
-  id uuid primary key default gen_random_uuid(),
-  slug text not null unique check (slug ~ '^[a-z0-9][a-z0-9-]{1,62}$'),
-  name text not null check (char_length(name) between 2 and 120),
-  status text not null default 'active' check (status in ('active', 'paused')),
-  is_dev_seed boolean not null default false,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-insert into organizations (slug, name)
-values ('lake-and-pine', 'Lake & Pine')
-on conflict (slug) do nothing;
-
-alter table cleaning_teams
-  add column organization_id uuid references organizations(id),
-  add column timezone text not null default 'America/Los_Angeles',
-  add column region_label text;
-
-update cleaning_teams
-set organization_id = (select id from organizations where slug = 'lake-and-pine')
-where organization_id is null;
-
-alter table cleaning_teams alter column organization_id set not null;
-alter table cleaning_teams
-  add constraint cleaning_teams_organization_id_id_key unique (organization_id, id);
-
-create table workforce_memberships (
-  id uuid primary key default gen_random_uuid(),
-  organization_id uuid not null references organizations(id) on delete cascade,
-  team_id uuid,
-  customer_id uuid references customers(id) on delete restrict,
-  cleaner_id uuid references cleaners(id) on delete restrict,
-  role text not null check (role in ('owner', 'gm', 'manager', 'shift_lead', 'cleaner')),
-  status text not null default 'active'
-    check (status in ('invited', 'active', 'paused', 'ended')),
-  title text,
-  hired_at date,
-  ended_at date,
-  status_reason text check (status_reason is null or char_length(status_reason) <= 1000),
-  status_changed_by_membership_id uuid references workforce_memberships(id) on delete set null,
-  status_changed_at timestamptz,
-  is_dev_seed boolean not null default false,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint workforce_memberships_team_fkey
-    foreign key (organization_id, team_id)
-    references cleaning_teams (organization_id, id),
-  constraint workforce_memberships_one_identity_check
-    check ((customer_id is not null)::integer + (cleaner_id is not null)::integer = 1),
-  constraint workforce_memberships_role_scope_check check (
-    (role in ('owner', 'gm') and team_id is null and customer_id is not null)
-    or (role = 'manager' and team_id is not null and customer_id is not null)
-    or (role = 'shift_lead' and team_id is not null)
-    or (role = 'cleaner' and team_id is not null and cleaner_id is not null)
-  ),
-  check (ended_at is null or hired_at is null or ended_at >= hired_at)
-);
-
-create unique index workforce_active_staff_team_idx
-  on workforce_memberships (organization_id, team_id, customer_id)
-  where status = 'active' and customer_id is not null;
-create unique index workforce_active_staff_organization_idx
-  on workforce_memberships (organization_id, customer_id)
-  where status = 'active' and team_id is null and customer_id is not null;
-create unique index workforce_active_cleaner_team_idx
-  on workforce_memberships (organization_id, team_id, cleaner_id)
-  where status = 'active' and cleaner_id is not null;
-create unique index workforce_one_active_owner_idx
-  on workforce_memberships (organization_id)
-  where role = 'owner' and status = 'active';
-create index workforce_customer_scope_idx
-  on workforce_memberships (customer_id, status, organization_id, team_id)
-  where customer_id is not null;
-create index workforce_cleaner_scope_idx
-  on workforce_memberships (cleaner_id, status, organization_id, team_id)
-  where cleaner_id is not null;
-create index workforce_status_actor_idx
-  on workforce_memberships (status_changed_by_membership_id)
-  where status_changed_by_membership_id is not null;
-alter table workforce_memberships
-  add constraint workforce_memberships_scope_id_key
-  unique (organization_id, team_id, id);
-
-insert into workforce_memberships
-  (organization_id, team_id, cleaner_id, role, status, title, hired_at, is_dev_seed)
-select team.organization_id, member.team_id, member.cleaner_id,
-       case when member.team_role = 'lead' then 'shift_lead' else 'cleaner' end,
-       'active', case when member.team_role = 'lead' then 'Legacy team lead' else 'Cleaner' end,
-       member.effective_from, team.is_dev_seed or cleaner.is_dev_seed
-from cleaning_team_members member
-join cleaning_teams team on team.id = member.team_id
-join cleaners cleaner on cleaner.id = member.cleaner_id
-where member.effective_to is null
-on conflict do nothing;
-
-alter table cleaner_time_off
-  add column organization_id uuid references organizations(id) on delete cascade,
-  add column team_id uuid,
-  add column reviewed_by_membership_id uuid references workforce_memberships(id) on delete set null,
-  add constraint cleaner_time_off_team_fkey
-    foreign key (organization_id, team_id)
-    references cleaning_teams (organization_id, id);
-
-with first_membership as (
-  select distinct on (candidate.cleaner_id)
-    candidate.cleaner_id, candidate.organization_id, candidate.team_id
-  from workforce_memberships candidate
-  where candidate.team_id is not null and candidate.status = 'active'
-  order by candidate.cleaner_id, candidate.created_at
-)
-update cleaner_time_off time_off
-set organization_id = membership.organization_id,
-    team_id = membership.team_id
-from first_membership membership
-where time_off.organization_id is null
-  and membership.cleaner_id = time_off.cleaner_id;
-
-create index cleaner_time_off_team_status_idx
-  on cleaner_time_off (organization_id, team_id, status, start_at)
-  where organization_id is not null and team_id is not null;
-create index cleaner_time_off_reviewer_idx
-  on cleaner_time_off (reviewed_by_membership_id)
-  where reviewed_by_membership_id is not null;
 
 create table team_job_allocations (
   id uuid primary key default gen_random_uuid(),
@@ -1015,10 +893,6 @@ begin
   return new;
 end
 $$;
-create trigger service_cases_team_assignment_guard
-  before insert or update of booking_id, assigned_team_id on public.service_cases
-  for each row execute function private.validate_service_case_team_assignment();
-
 create function private.assign_booking_cases_from_allocation() returns trigger
 language plpgsql
 security definer
@@ -1037,14 +911,6 @@ $$;
 create trigger team_job_allocations_assign_cases
   after insert or update of team_id, job_schedule_id on public.team_job_allocations
   for each row execute function private.assign_booking_cases_from_allocation();
-
-update public.service_cases service_case
-set assigned_team_id = allocation.team_id
-from public.job_schedules schedule
-join public.team_job_allocations allocation
-  on allocation.job_schedule_id = schedule.id
-where service_case.booking_id = schedule.booking_id
-  and service_case.assigned_team_id is null;
 
 create function validate_team_assignment_membership() returns trigger
 language plpgsql
@@ -1077,10 +943,6 @@ begin
   return new;
 end
 $$;
-create trigger job_assignments_team_membership_guard
-  before insert or update of team_id, cleaner_id on job_assignments
-  for each row execute function validate_team_assignment_membership();
-
 create function validate_team_time_entry() returns trigger
 language plpgsql
 security invoker
@@ -2095,32 +1957,6 @@ create policy restock_requests_update on restock_requests for update to lakeandp
 create policy restock_requests_delete on restock_requests for delete to lakeandpine_app
   using (private.can_access_team(organization_id, team_id, array['owner','gm']));
 
-drop policy lakeandpine_app_all_cleaner_time_off on cleaner_time_off;
-create policy cleaner_time_off_read on cleaner_time_off for select to lakeandpine_app
-  using (
-    cleaner_id = private.current_cleaner_id()
-    or (organization_id is not null and team_id is not null
-      and private.can_access_team(
-        organization_id, team_id, array['owner','gm','manager','shift_lead']))
-  );
-create policy cleaner_time_off_insert on cleaner_time_off for insert to lakeandpine_app
-  with check (
-    cleaner_id = private.current_cleaner_id()
-    and organization_id is not null and team_id is not null
-    and private.can_access_team(organization_id, team_id, array['cleaner','shift_lead'])
-  );
-create policy cleaner_time_off_update on cleaner_time_off for update to lakeandpine_app
-  using (
-    organization_id is not null and team_id is not null
-    and private.can_access_team(organization_id, team_id, array['owner','gm','manager'])
-  )
-  with check (
-    organization_id is not null and team_id is not null
-    and private.can_access_team(organization_id, team_id, array['owner','gm','manager'])
-  );
-create policy cleaner_time_off_delete on cleaner_time_off for delete to lakeandpine_app
-  using (false);
-
 drop policy lakeandpine_app_all_job_time_entries on job_time_entries;
 create policy job_time_entries_read on job_time_entries for select to lakeandpine_app
   using (
@@ -2251,18 +2087,6 @@ create policy workforce_events_update on workforce_events for update to lakeandp
   using (false) with check (false);
 create policy workforce_events_delete on workforce_events for delete to lakeandpine_app
   using (false);
-
--- Existing team rows become part of the same fail-closed boundary.
-drop policy if exists lakeandpine_app_all_cleaning_teams on cleaning_teams;
-create policy cleaning_teams_scoped_read on cleaning_teams for select to lakeandpine_app
-  using (private.can_access_team(organization_id, id, array['owner','gm','manager','shift_lead','cleaner']));
-create policy cleaning_teams_scoped_insert on cleaning_teams for insert to lakeandpine_app
-  with check (private.can_access_organization(organization_id, array['owner','gm']));
-create policy cleaning_teams_scoped_update on cleaning_teams for update to lakeandpine_app
-  using (private.can_access_team(organization_id, id, array['owner','gm','manager']))
-  with check (private.can_access_team(organization_id, id, array['owner','gm','manager']));
-create policy cleaning_teams_scoped_delete on cleaning_teams for delete to lakeandpine_app
-  using (private.can_access_team(organization_id, id, array['owner','gm']));
 
 grant execute on function guard_compensation_rate_overlap() to lakeandpine_app;
 grant execute on function guard_compensation_rate_history() to lakeandpine_app;

@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { OperatorDenied, OwnerBootstrap } from "@/components/OperatorAccessState";
 import { OperatorTeamNav } from "@/components/OperatorTeamNav";
 import { resolveOperatorIdentity } from "@/lib/auth";
+import { formatUsdCents } from "@/lib/format-currency";
 import { hasCapability } from "@/lib/team-operations";
 import { getOperationsDashboard } from "@/lib/team-operations-data";
 
@@ -14,10 +15,6 @@ import {
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Team inventory", robots: { index: false, follow: false } };
-
-function money(cents: number | null) {
-  return cents === null ? "Not recorded" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
-}
 
 export default async function InventoryPage({ searchParams }: { searchParams: Promise<{ team?: string }> }) {
   const identity = await resolveOperatorIdentity();
@@ -47,7 +44,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
               return <article className={`card inventory-card${low ? " low" : ""}`} key={`${item.id}-${item.location_id}`}>
                 <div className="operator-panel-head"><div><span className="eyebrow">{item.sku} · {item.category.replaceAll("_", " ")}</span><h2>{item.name}</h2></div><span className={`status-badge ${low ? "watch" : "healthy"}`}>{low ? "restock" : "in range"}</span></div>
                 <div className="inventory-balance"><strong>{item.on_hand}</strong><span>{item.unit_label} on hand</span></div>
-                <div className="metric-grid compact"><div><span>Reorder at</span><strong>{item.reorder_point}</strong></div><div><span>Target</span><strong>{item.target_level}</strong></div><div><span>Location</span><strong>{item.location_name}</strong></div><div><span>Unit cost</span><strong>{money(item.unit_cost_cents)}</strong></div></div>
+                <div className="metric-grid compact"><div><span>Reorder at</span><strong>{item.reorder_point}</strong></div><div><span>Target</span><strong>{item.target_level}</strong></div><div><span>Location</span><strong>{item.location_name}</strong></div><div><span>Unit cost</span><strong>{formatUsdCents(item.unit_cost_cents)}</strong></div></div>
                 {(item.preferred_vendor || item.purchase_url) && <p className="copy">{item.preferred_vendor || "Preferred vendor"}{item.purchase_url && <> · <a href={item.purchase_url} rel="noreferrer" target="_blank">Purchase source</a></>}</p>}
               </article>;
             })}
@@ -88,7 +85,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
             <span className="eyebrow">Approval queue</span><h2>Restock requests</h2>
             <div className="ops-ledger-list">
               {dashboard.restocks.map((request) => <article key={request.id}>
-                <div><span className={`status-badge ${request.status}`}>{request.status}</span><strong>{request.product_name}</strong><small>{request.quantity_requested} requested · {request.request_source.replaceAll("_", " ")} · {money(request.estimated_unit_cost_cents)} each</small></div>
+                <div><span className={`status-badge ${request.status}`}>{request.status}</span><strong>{request.product_name}</strong><small>{request.quantity_requested} requested · {request.request_source.replaceAll("_", " ")} · {formatUsdCents(request.estimated_unit_cost_cents)} each</small></div>
                 {request.purchase_url_snapshot && <a href={request.purchase_url_snapshot} rel="noreferrer" target="_blank">Open purchase source</a>}
                 {canApprove && <div className="inline-action-row">
                   {request.status === "requested" && <><form action={reviewRestockAction}><input type="hidden" name="teamId" value={dashboard.selectedTeamId!} /><input type="hidden" name="restockId" value={request.id} /><input type="hidden" name="from" value="requested" /><input type="hidden" name="to" value="declined" /><input type="hidden" name="version" value={request.version} /><button className="btn btn-soft">Decline</button></form><form action={reviewRestockAction}><input type="hidden" name="teamId" value={dashboard.selectedTeamId!} /><input type="hidden" name="restockId" value={request.id} /><input type="hidden" name="from" value="requested" /><input type="hidden" name="to" value="approved" /><input type="hidden" name="version" value={request.version} /><button className="btn btn-primary">Approve draft</button></form></>}

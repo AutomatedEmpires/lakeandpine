@@ -529,8 +529,10 @@ await sql.begin(async (tx) => {
          quantity_delta, balance_after, actor_membership_id, unit_cost_cents,
          note, is_dev_seed)
       values (${organization.id}, ${team.id}, ${location.id}, ${product.id},
-        'receipt', 18, 0, ${ownerMembership.id}, 1299,
+        'receipt', 18, 18, ${ownerMembership.id}, 1299,
         'Synthetic opening stock', true)`;
+    // The ledger trigger atomically applies the +18 receipt to inventory_stock
+    // and replaces balance_after with the database-calculated balance.
     await tx`update inventory_stock set reorder_point = 5, target_level = 18
       where location_id = ${location.id} and product_id = ${product.id}`;
   }

@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { OperatorDenied, OwnerBootstrap } from "@/components/OperatorAccessState";
 import { OperatorTeamNav } from "@/components/OperatorTeamNav";
 import { resolveOperatorIdentity } from "@/lib/auth";
+import { formatUsdCents } from "@/lib/format-currency";
 import { hasCapability } from "@/lib/team-operations";
 import {
   getOperationsDashboard,
@@ -19,6 +20,10 @@ import {
   rescheduleServiceCaseAction,
   serviceCaseStatusAction,
 } from "./actions";
+import {
+  ConfirmSubmitButton,
+  ServiceCaseTransitionForm,
+} from "./RecoveryFormControls";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
@@ -69,13 +74,6 @@ function formatDateTime(value: string, timeZone: string) {
     hour: "numeric",
     minute: "2-digit",
   });
-}
-
-function money(cents: number) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-  }).format(cents / 100);
 }
 
 export default async function TeamRecoveryPage({
@@ -210,22 +208,14 @@ export default async function TeamRecoveryPage({
                     </p>
 
                     {nextStates.length > 0 && (
-                      <form action={serviceCaseStatusAction} className="inline-ops-form">
-                        <input type="hidden" name="teamId" value={dashboard.selectedTeamId!} />
-                        <input type="hidden" name="caseId" value={serviceCase.id} />
-                        <input type="hidden" name="from" value={serviceCase.status} />
-                        <select name="to" required defaultValue="" aria-label={`Next state for ${serviceCase.public_reference}`}>
-                          <option value="" disabled>Next case state</option>
-                          {nextStates.map((next) => <option value={next} key={next}>{label(next)}</option>)}
-                        </select>
-                        <input
-                          name="resolutionSummary"
-                          maxLength={2000}
-                          placeholder="Customer-visible outcome when resolving or closing"
-                          aria-label={`Resolution summary for ${serviceCase.public_reference}`}
-                        />
-                        <button className="btn btn-soft">Update case</button>
-                      </form>
+                      <ServiceCaseTransitionForm
+                        action={serviceCaseStatusAction}
+                        teamId={dashboard.selectedTeamId!}
+                        caseId={serviceCase.id}
+                        from={serviceCase.status}
+                        nextStates={nextStates}
+                        reference={serviceCase.public_reference}
+                      />
                     )}
                     {serviceCase.has_open_refund && (
                       <p className="copy">
@@ -256,7 +246,9 @@ export default async function TeamRecoveryPage({
                           <input type="hidden" name="teamId" value={dashboard.selectedTeamId!} />
                           <input type="hidden" name="caseId" value={serviceCase.id} />
                           <input type="hidden" name="confirmation" value="cancel" />
-                          <button className="btn btn-soft">Cancel booking + active schedule</button>
+                          <ConfirmSubmitButton message="Cancel this booking and its active schedule? This customer-facing action cannot be undone.">
+                            Cancel booking + active schedule
+                          </ConfirmSubmitButton>
                         </form>
                       )}
 
@@ -296,7 +288,7 @@ export default async function TeamRecoveryPage({
                         />
                         <input name="reasonCode" required placeholder="Reason code" aria-label={`Refund reason for ${serviceCase.public_reference}`} />
                         <button className="btn btn-soft">
-                          Open refund review · up to {money(serviceCase.refundable_balance_cents)}
+                          Open refund review · up to {formatUsdCents(serviceCase.refundable_balance_cents)}
                         </button>
                       </form>
                     )}
@@ -360,7 +352,7 @@ export default async function TeamRecoveryPage({
                     <article key={refund.id}>
                       <div>
                         <span className={`status-badge ${refund.status}`}>{label(refund.status)}</span>
-                        <strong>{money(refund.amount_cents)} · {refund.public_reference}</strong>
+                        <strong>{formatUsdCents(refund.amount_cents)} · {refund.public_reference}</strong>
                         <small>
                           {label(refund.reason_code)}
                           {refund.provider_refund_id ? ` · receipt ${refund.provider_refund_id}` : " · no money movement recorded"}

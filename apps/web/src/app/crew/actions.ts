@@ -5,6 +5,11 @@ import { revalidatePath } from "next/cache";
 import { resolveCleanerIdentity } from "@/lib/auth";
 import { requestTimeOff, respondToAssignment } from "@/lib/crew-data";
 import {
+  boundedDecimalValue,
+  formUuid as uuid,
+  formValue as value,
+} from "@/lib/form-values";
+import {
   createCleanerCallout,
   recordCleanerInventoryUsage,
   requestCleanerRestock,
@@ -61,23 +66,13 @@ export async function timeOffRequestAction(formData: FormData) {
   revalidatePath("/crew");
 }
 
-function value(formData: FormData, key: string) {
-  return String(formData.get(key) ?? "").trim();
-}
-
-function uuid(formData: FormData, key: string) {
-  const result = value(formData, key);
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(result)) {
-    throw new Error(`Invalid ${key}`);
-  }
-  return result;
-}
-
 function quantity(formData: FormData, key: string, max: number) {
-  const result = Number(value(formData, key));
-  if (!Number.isFinite(result) || result <= 0 || result > max || Math.round(result * 1000) !== result * 1000) {
-    throw new Error(`Invalid ${key}`);
-  }
+  const result = boundedDecimalValue(formData, key, {
+    min: 0,
+    max,
+    decimals: 3,
+  });
+  if (result <= 0) throw new Error(`Invalid ${key}`);
   return result;
 }
 

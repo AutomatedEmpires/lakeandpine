@@ -4,7 +4,9 @@ import { connect } from "./_db.mjs";
 const sql = connect();
 const counts = {};
 
-await sql`select set_config('lakeandpine.dev_seed_purge', '1', false)`;
+try {
+  await sql`select set_config('lakeandpine.dev_seed_purge', '1', false)`;
+  try {
 
 counts.bonus_awards = (await sql`delete from bonus_awards where is_dev_seed returning id`).length;
 counts.quality_reviews = (await sql`delete from quality_reviews where is_dev_seed returning id`).length;
@@ -67,8 +69,10 @@ counts.leads = (await sql`delete from leads where is_dev_seed returning id`).len
 counts.homes = (await sql`delete from homes where is_dev_seed returning id`).length;
 counts.customers = (await sql`delete from customers where is_dev_seed returning id`).length;
 counts.reviews = (await sql`delete from reviews where is_dev_seed returning id`).length;
-
-await sql`select set_config('lakeandpine.dev_seed_purge', '0', false)`;
-
-console.table(counts);
-await sql.end();
+  } finally {
+    await sql`select set_config('lakeandpine.dev_seed_purge', '0', false)`;
+  }
+  console.table(counts);
+} finally {
+  await sql.end();
+}

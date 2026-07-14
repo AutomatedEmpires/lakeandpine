@@ -135,6 +135,7 @@ export async function getCleanerAvailability(cleanerId: string) {
 
 export async function getCleanerTimeOff(cleanerId: string) {
   return sql.begin(async (transaction) => {
+    // Clear the staff actor before setting the cleaner actor on this pooled session.
     await transaction`select set_config('lakeandpine.current_customer_id', '', true)`;
     await transaction`select set_config('lakeandpine.current_cleaner_id', ${cleanerId}, true)`;
     return transaction<TimeOffRow[]>`
@@ -175,6 +176,8 @@ export async function requestTimeOff(input: {
   devOnly: boolean;
 }) {
   await sql.begin(async (transaction) => {
+    // Clear the staff actor before setting the cleaner actor so a pooled
+    // session can never evaluate RLS under a mixed identity.
     await transaction`select set_config('lakeandpine.current_customer_id', '', true)`;
     await transaction`select set_config('lakeandpine.current_cleaner_id', ${input.cleanerId}, true)`;
     const memberships = await transaction<{
@@ -191,7 +194,9 @@ export async function requestTimeOff(input: {
         and membership.role in ('cleaner','shift_lead')
         and membership.status = 'active'
         and cleaner.status in ('onboarding','active')
-        and (${input.devOnly} = false or (membership.is_dev_seed and cleaner.is_dev_seed))
+        and (${input.devOnly} = false or (
+          membership.is_dev_seed and cleaner.is_dev_seed and team.is_dev_seed
+        ))
       limit 1`;
     if (!memberships[0]) {
       throw new Error("Choose an active team before requesting time off");

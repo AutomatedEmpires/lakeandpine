@@ -414,8 +414,8 @@ export type ConsoleSuggestion = AssignmentSuggestion & {
 export async function getScheduleSuggestions(
   scheduleId: string,
   devOnly: boolean,
-  eligibleCleanerIds?: readonly string[],
-  query: QueryClient = sql,
+  eligibleCleanerIds: readonly string[] | undefined,
+  query: QueryClient,
 ): Promise<ConsoleSuggestion[]> {
   const restrictCleanerIds = eligibleCleanerIds !== undefined;
   const scopedCleanerIds = [...(eligibleCleanerIds ?? [])];

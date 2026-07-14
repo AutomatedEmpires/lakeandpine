@@ -139,13 +139,27 @@ export default async function CrewPage() {
         </div>
 
         <div className="crew-operations-stack">
+          {teamOperations.restocks.length > 0 && (
+            <article className="card operator-panel">
+              <span className="eyebrow">Restock tracking</span>
+              <h2>Your supply requests</h2>
+              <div className="availability-list">
+                {teamOperations.restocks.map((request) => (
+                  <div key={request.id}>
+                    <strong>{request.product_name} · {request.status.replaceAll("_", " ")}</strong>
+                    <span>{request.quantity_requested} requested for {request.location_name}</span>
+                  </div>
+                ))}
+              </div>
+            </article>
+          )}
           <article className="card operator-panel">
             <span className="eyebrow">Accountable time</span>
             <h2>Clock only against assigned team work</h2>
             <div className="crew-assignment-list">
               {teamOperations.assignments.map((assignment) => <article key={assignment.allocation_id}>
                 <div><strong>{assignment.service_vertical}</strong><span>{assignment.territory_name}</span></div>
-                <p>{formatDateTime(assignment.start_at, cleaner.home_territory_timezone ?? "America/Los_Angeles")}</p>
+                <p>{formatDateTime(assignment.start_at, assignment.territory_timezone)}</p>
                 {assignment.open_time_entry_id ? <form action={stopTimeEntryAction} className="assignment-actions"><input type="hidden" name="entryId" value={assignment.open_time_entry_id} /><label>Break minutes<input name="breakMinutes" type="number" min="0" max="720" defaultValue="0" /></label><button className="btn btn-primary" disabled={identity.devOnly}>Stop + submit time</button></form> : <form action={startTimeEntryAction}><input type="hidden" name="allocationId" value={assignment.allocation_id} /><button className="btn btn-primary" disabled={identity.devOnly}>Start assigned work clock</button></form>}
               </article>)}
               {teamOperations.assignments.length === 0 && <p className="copy">No team-allocated accepted work is ready for time tracking.</p>}

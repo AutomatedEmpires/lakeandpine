@@ -196,6 +196,7 @@ export type ScheduleOption = {
   start_at: string;
   labor_minutes: number;
   territory_name: string;
+  territory_timezone: string;
 };
 
 export type TeamTerritoryCoverageRow = {
@@ -714,7 +715,8 @@ export async function getOperationsDashboard(input: {
               select schedule.id, allocation.id as allocation_id,
                 schedule.service_vertical, schedule.start_at::text,
                 schedule.end_at::text, schedule.labor_minutes,
-                territory.name as territory_name, schedule.status,
+                territory.name as territory_name,
+                territory.timezone as territory_timezone, schedule.status,
                 schedule.required_crew_size,
                 coalesce(array_agg(cleaner.full_name order by cleaner.full_name)
                   filter (where assignment.status in ('proposed','accepted','confirmed')), '{}')
@@ -727,7 +729,7 @@ export async function getOperationsDashboard(input: {
               left join cleaners cleaner on cleaner.id = assignment.cleaner_id
               where allocation.organization_id = ${organizationId}
                 and allocation.team_id = ${selectedTeamId}
-              group by schedule.id, allocation.id, territory.name
+              group by schedule.id, allocation.id, territory.name, territory.timezone
               order by schedule.start_at desc
               limit 100`,
           ])
@@ -772,7 +774,8 @@ export async function getOperationsDashboard(input: {
     const unallocatedSchedules = canAllocateSelectedTeam
       ? await transaction<ScheduleOption[]>`
             select schedule.id, schedule.service_vertical, schedule.start_at::text,
-              schedule.labor_minutes, territory.name as territory_name
+              schedule.labor_minutes, territory.name as territory_name,
+              territory.timezone as territory_timezone
             from job_schedules schedule
             join service_territories territory on territory.id = schedule.territory_id
             join team_service_territories coverage
@@ -1648,6 +1651,9 @@ export async function createWorkforceEvent(input: {
     const actorRole = effectiveRoleForTeam(access.memberships, organizationId, input.teamId);
     const operationalEvent = ["callout", "late", "no_show", "safety", "recognition", "other"]
       .includes(input.eventType);
+    if (actorRole === "shift_lead" && !operationalEvent) {
+      throw new Error("Shift leads may record operational observations only");
+    }
     const rows = await transaction<{ id: string }[]>`
       insert into workforce_events
         (organization_id, team_id, subject_membership_id, event_type, severity,
@@ -1713,7 +1719,8 @@ export async function getCrewTeamOperations(
       transaction<Array<ScheduleOption & { allocation_id: string; open_time_entry_id: string | null }>>`
         select schedule.id, allocation.id as allocation_id, schedule.service_vertical,
           schedule.start_at::text, schedule.labor_minutes,
-          territory.name as territory_name, open_entry.id as open_time_entry_id
+          territory.name as territory_name, territory.timezone as territory_timezone,
+          open_entry.id as open_time_entry_id
         from team_job_allocations allocation
         join job_schedules schedule on schedule.id = allocation.job_schedule_id
         join service_territories territory on territory.id = schedule.territory_id

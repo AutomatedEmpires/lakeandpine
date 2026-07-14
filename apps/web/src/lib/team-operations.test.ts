@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   accessibleTeamIds,
   actualMinutes,
+  effectiveRoleForTeam,
   hasCapability,
   laborVariance,
   suggestedReorderQuantity,
@@ -49,6 +50,28 @@ test("organization-wide roles expand to all organization teams", () => {
     accessibleTeamIds(memberships, "org-b", ["team-b1", "team-b2"]),
     ["team-b1"],
   );
+});
+
+test("effective team role uses the highest in-scope organization or team membership", () => {
+  const overlapping: WorkforceMembership[] = [
+    { id: "cleaner-a", organizationId: "org-a", teamId: "team-a1", role: "cleaner" },
+    { id: "lead-a", organizationId: "org-a", teamId: "team-a1", role: "shift_lead" },
+    { id: "manager-other", organizationId: "org-a", teamId: "team-a2", role: "manager" },
+    { id: "gm-a", organizationId: "org-a", teamId: null, role: "gm" },
+    { id: "owner-other", organizationId: "org-b", teamId: null, role: "owner" },
+  ];
+
+  assert.equal(effectiveRoleForTeam(overlapping, "org-a", "team-a1"), "gm");
+  assert.equal(
+    effectiveRoleForTeam(
+      overlapping.filter((membership) => membership.id !== "gm-a"),
+      "org-a",
+      "team-a1",
+    ),
+    "shift_lead",
+  );
+  assert.equal(effectiveRoleForTeam(overlapping, "org-a", "team-missing"), "gm");
+  assert.equal(effectiveRoleForTeam(overlapping, "org-c", "team-a1"), null);
 });
 
 test("reorder drafts are recommended only at or below the threshold", () => {

@@ -42,6 +42,7 @@ export function OperatorTeamNav({
           <div>
             {dashboard.teams.map((team) => (
               <Link
+                aria-current={team.id === dashboard.selectedTeamId ? "page" : undefined}
                 className={team.id === dashboard.selectedTeamId ? "active" : ""}
                 href={`/operator/${current}?team=${team.id}`}
                 key={team.id}

@@ -2,7 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 
-import { resolveOperatorIdentity } from "@/lib/auth";
+import { formUuid as uuid, formValue as value } from "@/lib/form-values";
+import { requireOperatorActionIdentity as requireOperator } from "@/lib/operator-action-auth";
 import {
   cancelScopedServiceCaseBooking,
   createScopedRecoveryAction,
@@ -24,30 +25,6 @@ import {
   type ServiceCaseStatus,
 } from "@/lib/operations-workflows";
 
-async function requireOperator() {
-  const identity = await resolveOperatorIdentity();
-  if (identity.state !== "authed" && identity.state !== "preview") {
-    throw new Error("Operator access required");
-  }
-  return identity;
-}
-
-function value(formData: FormData, key: string) {
-  return String(formData.get(key) ?? "").trim();
-}
-
-function uuid(formData: FormData, key: string) {
-  const result = value(formData, key);
-  if (
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-      result,
-    )
-  ) {
-    throw new Error(`Invalid ${key}`);
-  }
-  return result;
-}
-
 function refreshRecovery() {
   revalidatePath("/operator/recovery");
   revalidatePath("/operator/network");
@@ -67,6 +44,9 @@ export async function serviceCaseStatusAction(formData: FormData) {
     throw new Error("Invalid service-case transition");
   }
   const resolutionSummary = value(formData, "resolutionSummary").slice(0, 2000);
+  if (["resolved", "closed"].includes(to) && !resolutionSummary) {
+    throw new Error("A resolution summary is required before resolving or closing a case");
+  }
   await transitionScopedServiceCase({
     customerId: identity.operator.id,
     devOnly: identity.devOnly,

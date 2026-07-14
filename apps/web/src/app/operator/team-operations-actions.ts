@@ -2,7 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 
-import { resolveOperatorIdentity } from "@/lib/auth";
+import {
+  boundedDecimalValue as numberValue,
+  formUuid as uuid,
+  formValue as value,
+} from "@/lib/form-values";
+import { requireOperatorActionIdentity as requireOperator } from "@/lib/operator-action-auth";
 import {
   addWorkforceMembership,
   addGeneralManagerMembership,
@@ -31,44 +36,6 @@ import {
   type ScheduleStatus,
 } from "@/lib/operations-workflows";
 import { isValidIanaTimeZone } from "@/lib/zoned-datetime";
-
-async function requireOperator() {
-  const identity = await resolveOperatorIdentity();
-  if (identity.state !== "authed" && identity.state !== "preview") {
-    throw new Error("Operator access required");
-  }
-  return identity;
-}
-
-function value(formData: FormData, key: string) {
-  return String(formData.get(key) ?? "").trim();
-}
-
-function uuid(formData: FormData, key: string) {
-  const result = value(formData, key);
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(result)) {
-    throw new Error(`Invalid ${key}`);
-  }
-  return result;
-}
-
-function numberValue(
-  formData: FormData,
-  key: string,
-  options: { min: number; max: number; decimals?: number },
-) {
-  const result = Number(value(formData, key));
-  const scale = 10 ** (options.decimals ?? 0);
-  if (
-    !Number.isFinite(result) ||
-    result < options.min ||
-    result > options.max ||
-    Math.round(result * scale) !== result * scale
-  ) {
-    throw new Error(`Invalid ${key}`);
-  }
-  return result;
-}
 
 function optionalHttpsUrl(formData: FormData, key: string) {
   const result = value(formData, key);
