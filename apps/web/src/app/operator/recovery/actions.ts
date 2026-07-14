@@ -2,7 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 
-import { formUuid as uuid, formValue as value } from "@/lib/form-values";
+import {
+  boundedCurrencyCents,
+  formUuid as uuid,
+  formValue as value,
+} from "@/lib/form-values";
 import { requireOperatorActionIdentity as requireOperator } from "@/lib/operator-action-auth";
 import {
   cancelScopedServiceCaseBooking,
@@ -142,17 +146,15 @@ export async function recoveryStatusAction(formData: FormData) {
 
 export async function requestRefundReviewAction(formData: FormData) {
   const identity = await requireOperator();
-  const amountCents = Math.round(Number(value(formData, "amountDollars")) * 100);
+  const amountCents = boundedCurrencyCents(formData, "amountDollars", {
+    minCents: 1,
+    maxCents: 1_000_000,
+  });
   const reasonCode = value(formData, "reasonCode")
     .toLowerCase()
     .replace(/[^a-z0-9_-]/g, "")
     .slice(0, 80);
-  if (
-    !Number.isInteger(amountCents) ||
-    amountCents <= 0 ||
-    amountCents > 1_000_000 ||
-    !reasonCode
-  ) {
+  if (!reasonCode) {
     throw new Error("Refund review amount or reason is invalid");
   }
   await createScopedRefundReview({

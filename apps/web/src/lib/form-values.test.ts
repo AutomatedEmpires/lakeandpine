@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { boundedDecimalValue, formUuid, formValue } from "./form-values.ts";
+import {
+  boundedCurrencyCents,
+  boundedDecimalValue,
+  formUuid,
+  formValue,
+} from "./form-values.ts";
 
 function data(key: string, value: string) {
   const formData = new FormData();
@@ -43,4 +48,31 @@ test("validates decimal precision from text instead of binary floats", () => {
       decimals: 2,
     }),
   );
+});
+
+test("parses refund dollars into exact, bounded cents", () => {
+  for (const [raw, cents] of [
+    ["0.01", 1],
+    [".5", 50],
+    ["10.05", 1_005],
+    ["19.99", 1_999],
+    ["10000.00", 1_000_000],
+  ] as const) {
+    assert.equal(
+      boundedCurrencyCents(data("amount", raw), "amount", {
+        minCents: 1,
+        maxCents: 1_000_000,
+      }),
+      cents,
+    );
+  }
+
+  for (const raw of ["0", "-1", "0.001", "1e2", "10000.01"]) {
+    assert.throws(() =>
+      boundedCurrencyCents(data("amount", raw), "amount", {
+        minCents: 1,
+        maxCents: 1_000_000,
+      }),
+    );
+  }
 });

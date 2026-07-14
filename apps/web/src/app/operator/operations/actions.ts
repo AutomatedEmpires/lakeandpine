@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { resolveOperatorIdentity } from "@/lib/auth";
+import { boundedCurrencyCents } from "@/lib/form-values";
 import { retryOutboxNotification } from "@/lib/notification-outbox";
 import {
   addCleanerAvailability,
@@ -492,19 +493,15 @@ export async function recoveryStatusAction(formData: FormData) {
 
 export async function requestRefundReviewAction(formData: FormData) {
   const operator = await requireOperator();
-  const amountCents = Math.round(
-    Number(value(formData, "amountDollars")) * 100,
-  );
+  const amountCents = boundedCurrencyCents(formData, "amountDollars", {
+    minCents: 1,
+    maxCents: 1_000_000,
+  });
   const reasonCode = value(formData, "reasonCode")
     .toLowerCase()
     .replace(/[^a-z0-9_-]/g, "")
     .slice(0, 80);
-  if (
-    !Number.isInteger(amountCents) ||
-    amountCents <= 0 ||
-    amountCents > 1_000_000 ||
-    !reasonCode
-  )
+  if (!reasonCode)
     throw new Error("Refund review amount or reason is invalid");
   await createRefundReview({
     customerId: operator.operator.id,
