@@ -10,6 +10,16 @@ type WallClock = {
   second: number;
 };
 
+export function isValidIanaTimeZone(timeZone: string): boolean {
+  if (!timeZone || timeZone.length > 80) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function parseWallClock(value: string): WallClock {
   const match = LOCAL_DATE_TIME.exec(value);
   if (!match) throw new Error("Use a complete local date and time");

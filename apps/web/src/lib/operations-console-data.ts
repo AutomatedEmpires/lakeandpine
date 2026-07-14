@@ -402,7 +402,11 @@ type SpanRow = {
   minutes_week?: number;
 };
 
-function combinations<T>(items: T[], size: number, limit = 50_000): T[][] {
+const MAX_SCHEDULING_POOL = 18;
+const MAX_CREW_COMBINATIONS = 2_000;
+const MAX_SCHEDULE_SUGGESTIONS = 25;
+
+function combinations<T>(items: T[], size: number, limit = MAX_CREW_COMBINATIONS): T[][] {
   const result: T[][] = [];
   function visit(start: number, selected: T[]) {
     if (result.length >= limit) return;
@@ -555,12 +559,20 @@ export async function getScheduleSuggestions(
   const acceptedCleanerIds = new Set(
     acceptedAssignments.map((assignment) => assignment.cleaner_id),
   );
-  const crewGroups = combinations(capacity, schedule.required_crew_size).filter(
-    (group) =>
-      [...acceptedCleanerIds].every((acceptedId) =>
-        group.some((cleaner) => cleaner.id === acceptedId),
-      ),
+  const acceptedCapacity = capacity.filter((cleaner) =>
+    acceptedCleanerIds.has(cleaner.id),
   );
+  if (acceptedCapacity.length !== acceptedCleanerIds.size) return [];
+  const remainingCrewSlots = schedule.required_crew_size - acceptedCapacity.length;
+  if (remainingCrewSlots < 0) return [];
+  const poolLimit = Math.max(MAX_SCHEDULING_POOL, schedule.required_crew_size);
+  const availableCapacity = capacity
+    .filter((cleaner) => !acceptedCleanerIds.has(cleaner.id))
+    .slice(0, Math.max(0, poolLimit - acceptedCapacity.length));
+  const crewGroups = combinations(
+    availableCapacity,
+    remainingCrewSlots,
+  ).map((group) => [...acceptedCapacity, ...group]);
   const candidates: AssignmentCandidate[] = crewGroups.map((group) => ({
     id: group
       .map((cleaner) => cleaner.id)
@@ -593,7 +605,9 @@ export async function getScheduleSuggestions(
       requirements.finishRestrictionsAcknowledged === true,
     urgency: requirements.deadlineCritical === true ? "deadline" : "standard",
   };
-  return rankAssignmentSuggestions(job, candidates).map((suggestion) => {
+  return rankAssignmentSuggestions(job, candidates)
+    .slice(0, MAX_SCHEDULE_SUGGESTIONS)
+    .map((suggestion) => {
     const cleanerIds = suggestion.candidateId.split("+");
     return {
       ...suggestion,
@@ -602,7 +616,7 @@ export async function getScheduleSuggestions(
         (id) => nameById.get(id) ?? "Unknown cleaner",
       ),
     };
-  });
+    });
 }
 
 export async function getStaffScheduleSuggestions(

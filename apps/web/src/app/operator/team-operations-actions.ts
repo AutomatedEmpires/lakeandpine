@@ -30,6 +30,7 @@ import {
   SCHEDULE_STATUSES,
   type ScheduleStatus,
 } from "@/lib/operations-workflows";
+import { isValidIanaTimeZone } from "@/lib/zoned-datetime";
 
 async function requireOperator() {
   const identity = await resolveOperatorIdentity();
@@ -104,7 +105,7 @@ export async function createTeamAction(formData: FormData) {
   const name = value(formData, "name").slice(0, 120);
   const timezone = value(formData, "timezone").slice(0, 80);
   const regionLabel = value(formData, "regionLabel").slice(0, 120) || null;
-  if (code.length < 2 || name.length < 2 || !/^[A-Za-z_]+\/[A-Za-z_]+$/.test(timezone)) {
+  if (code.length < 2 || name.length < 2 || !isValidIanaTimeZone(timezone)) {
     throw new Error("Team code, name, and IANA timezone are required");
   }
   await createOperatingTeam({

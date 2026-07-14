@@ -135,6 +135,7 @@ export async function getCleanerAvailability(cleanerId: string) {
 
 export async function getCleanerTimeOff(cleanerId: string) {
   return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_customer_id', '', true)`;
     await transaction`select set_config('lakeandpine.current_cleaner_id', ${cleanerId}, true)`;
     return transaction<TimeOffRow[]>`
       select id, start_at::text, end_at::text, status, reason_category
@@ -174,6 +175,7 @@ export async function requestTimeOff(input: {
   devOnly: boolean;
 }) {
   await sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_customer_id', '', true)`;
     await transaction`select set_config('lakeandpine.current_cleaner_id', ${input.cleanerId}, true)`;
     const memberships = await transaction<{
       organization_id: string;
