@@ -1,7 +1,7 @@
 # Production migration release — 2026-07-13
 
-This release reconciles the repository migration versions with the Lake & Pine Supabase
-project before adding the premium operations schema.
+This release record reconciles the repository migration versions with the Lake & Pine
+Supabase project after adding and hardening the premium operations schema.
 
 ## Current production history
 
@@ -11,6 +11,7 @@ release:
 - `20260707042452 core`
 - `20260707042519 content_seed`
 - `20260713233006 service_planning_foundation`
+- `20260713235942 production_schema_hardening`
 
 The repository uses those same versioned filenames. Do not use a checkout that still
 contains `0001_core.sql` or `0002_content_seed.sql`; those retired names create false
@@ -35,30 +36,41 @@ The post-apply audit proved the restricted `lakeandpine_app` role, application C
 RLS coverage, zero public table grants, zero app-owned public objects, and the complete
 planning table set.
 
-## Forward hardening change
+## Applied hardening change
 
-Apply exactly `20260713234000_production_schema_hardening.sql` after its release commit
-passes the fresh PostgreSQL 17 verifier. It sets an explicit function search path,
+The authenticated migration API applied
+`20260713235942_production_schema_hardening.sql` after its release commit passed the
+fresh PostgreSQL 17 verifier. It sets an explicit function search path,
 removes redundant private-table policies, narrows public catalog policies to Supabase's
 `anon` and `authenticated` client roles plus the server-only `lakeandpine_app` role,
-and adds covering indexes for every foreign key
-reported by the production performance advisor. Its canonical LF-normalized SHA-256 is
+and adds covering indexes for every foreign key reported by the production performance
+advisor. Its canonical LF-normalized SHA-256 is
 `ca69a8e182853cea91aedb289d83a054b1148aacf5a37beda98081f53ceb0b65`.
 
-Before applying the forward hardening migration:
+The exact preflight found the three expected earlier history rows, zero conflicting index
+names, 14 legacy policies to replace, and six catalog policies. The migration then applied
+once and the post-apply audit proved:
 
-1. confirm the three history rows above and confirm the new migration is absent;
-2. compare the exact SHA-256 reported by `pnpm quality:verify-migrations` with the release
-   record in the PR;
-3. run a production backup/readiness check;
-4. keep `REQUEST_INTAKE_ENABLED`, `CLEANER_APPLICATIONS_ENABLED`, and `PAYMENTS_ENABLED`
-   false;
-5. apply only the new version through the authenticated Supabase migration API;
-6. record the provider-assigned migration version, align the repository filename in a
-   no-content-change follow-up, and confirm the migration history contains the new
-   version once;
-7. rerun the security and performance advisors plus the `/api/health` role/schema proof.
+- zero security-advisor findings;
+- zero duplicate application-role policy actions and zero legacy `app_all_*` policies;
+- all 20 hardening indexes and zero uncovered foreign keys;
+- all six catalog policies target `anon`, `authenticated`, and `lakeandpine_app`;
+- restricted-role catalog visibility of 6 services, 5 add-ons, 4 plans, 7 service areas,
+  6 FAQs, and 0 published reviews;
+- a non-superuser, non-BYPASSRLS, NOINHERIT `lakeandpine_app` with no public-object
+  ownership or public table grants; and
+- public `/api/health` ready as `lakeandpine_app`, with the ten critical public routes at
+  HTTP 200.
+
+The remaining performance-advisor notices are informational: newly created indexes have
+not yet accumulated production usage, and Auth currently uses a fixed connection limit.
+Do not remove fresh operational indexes until real traffic and query telemetry justify it.
+Keep `REQUEST_INTAKE_ENABLED`, `CLEANER_APPLICATIONS_ENABLED`, and `PAYMENTS_ENABLED`
+false until their documented founder-owned gates are satisfied.
+
+## Future migrations
 
 Stop on any history mismatch. Do not replay the core/content migrations, paste the whole
 migration folder into SQL Editor, or mark a migration applied without executing its exact
-reviewed source.
+reviewed source. Apply future changes forward-only, record the provider-assigned version,
+and align the repository filename without changing applied SQL bytes.
