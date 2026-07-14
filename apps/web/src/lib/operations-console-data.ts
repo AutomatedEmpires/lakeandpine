@@ -4,6 +4,7 @@ import type postgres from "postgres";
 
 import { sql } from "./db";
 import {
+  buildBoundedCrewGroups,
   rankAssignmentSuggestions,
   requiredElapsedMinutes,
   type AssignmentCandidate,
@@ -402,29 +403,8 @@ type SpanRow = {
   minutes_week?: number;
 };
 
-const MAX_SCHEDULING_POOL = 18;
 const MAX_CREW_COMBINATIONS = 2_000;
 const MAX_SCHEDULE_SUGGESTIONS = 25;
-
-function combinations<T>(items: T[], size: number, limit = MAX_CREW_COMBINATIONS): T[][] {
-  const result: T[][] = [];
-  function visit(start: number, selected: T[]) {
-    if (result.length >= limit) return;
-    if (selected.length === size) {
-      result.push(selected);
-      return;
-    }
-    for (
-      let index = start;
-      index <= items.length - (size - selected.length);
-      index += 1
-    ) {
-      visit(index + 1, [...selected, items[index]]);
-    }
-  }
-  visit(0, []);
-  return result;
-}
 
 export type ConsoleSuggestion = AssignmentSuggestion & {
   cleanerIds: string[];
@@ -458,21 +438,51 @@ export async function getScheduleSuggestions(
   if (!schedule || !["tentative", "held"].includes(schedule.status))
     return [];
 
-  const [capacity, availability, timeOff, assignments, loads, acceptedAssignments] =
-    await Promise.all([
-      query<(CapacityRow & { full_name: string })[]>`
+  const acceptedAssignments = await query<{ cleaner_id: string }[]>`
+    select cleaner_id
+    from job_assignments
+    where job_schedule_id = ${scheduleId}
+      and status in ('accepted', 'confirmed')`;
+  const acceptedCleanerIds = [
+    ...new Set(acceptedAssignments.map((assignment) => assignment.cleaner_id)),
+  ];
+  const scopedCleanerIdSet = new Set(scopedCleanerIds);
+  if (
+    restrictCleanerIds &&
+    acceptedCleanerIds.some((cleanerId) => !scopedCleanerIdSet.has(cleanerId))
+  ) {
+    return [];
+  }
+
+  const [acceptedCapacity, unassignedCapacity] = await Promise.all([
+    query<(CapacityRow & { full_name: string })[]>`
       select id, full_name, skills, vertical_experience, max_daily_minutes,
              max_weekly_minutes, max_daily_jobs, home_territory_id
       from cleaners where status = 'active' and screening_status = 'verified'
         and home_territory_id = ${schedule.territory_id}
+        and id = any(${acceptedCleanerIds}::uuid[])
+        and (${devOnly} = false or is_dev_seed)
+        and (${restrictCleanerIds} = false or id = any(${scopedCleanerIds}::uuid[]))`,
+    query<(CapacityRow & { full_name: string })[]>`
+      select id, full_name, skills, vertical_experience, max_daily_minutes,
+             max_weekly_minutes, max_daily_jobs, home_territory_id
+      from cleaners where status = 'active' and screening_status = 'verified'
+        and home_territory_id = ${schedule.territory_id}
+        and not (id = any(${acceptedCleanerIds}::uuid[]))
         and (${devOnly} = false or is_dev_seed)
         and (${restrictCleanerIds} = false or id = any(${scopedCleanerIds}::uuid[]))
       order by
         (vertical_experience @> array[${schedule.service_vertical}]::text[]) desc,
         (skills @> ${schedule.required_skills}::text[]) desc,
-        full_name
-      limit 60`,
-      query<SpanRow[]>`
+        full_name`,
+  ]);
+  if (acceptedCapacity.length !== acceptedCleanerIds.length) return [];
+  const capacity = [...acceptedCapacity, ...unassignedCapacity];
+  const capacityIds = capacity.map((cleaner) => cleaner.id);
+  if (capacityIds.length === 0) return [];
+
+  const [availability, timeOff, assignments, loads] = await Promise.all([
+    query<SpanRow[]>`
       select a.cleaner_id,
         (((s.start_at at time zone t.timezone)::date + a.start_time) at time zone t.timezone)::text as start_at,
         (((s.start_at at time zone t.timezone)::date + a.end_time) at time zone t.timezone)::text as end_at
@@ -484,23 +494,26 @@ export async function getScheduleSuggestions(
         and a.effective_from <= (s.start_at at time zone t.timezone)::date
         and (a.effective_to is null or a.effective_to >= (s.start_at at time zone t.timezone)::date)
       where s.id = ${scheduleId}
+        and a.cleaner_id = any(${capacityIds}::uuid[])
         and (${restrictCleanerIds} = false or a.cleaner_id = any(${scopedCleanerIds}::uuid[]))`,
-      query<SpanRow[]>`
+    query<SpanRow[]>`
       select o.cleaner_id, o.start_at::text, o.end_at::text
       from cleaner_time_off o where o.status = 'approved'
         and o.start_at < ${schedule.end_at}::timestamptz and o.end_at > ${schedule.start_at}::timestamptz
+        and o.cleaner_id = any(${capacityIds}::uuid[])
         and (${restrictCleanerIds} = false or o.cleaner_id = any(${scopedCleanerIds}::uuid[]))`,
-      query<SpanRow[]>`
+    query<SpanRow[]>`
       select a.cleaner_id, s.start_at::text, s.end_at::text
       from job_assignments a join job_schedules s on s.id = a.job_schedule_id
       where a.status in ('accepted', 'confirmed') and s.id <> ${scheduleId}
         and s.status not in ('completed', 'canceled')
         and s.start_at < ${schedule.end_at}::timestamptz + interval '3 hours'
         and s.end_at > ${schedule.start_at}::timestamptz - interval '3 hours'
+        and a.cleaner_id = any(${capacityIds}::uuid[])
         and (${restrictCleanerIds} = false or a.cleaner_id = any(${scopedCleanerIds}::uuid[]))`,
-      query<
-        { cleaner_id: string; jobs_today: number; minutes_today: number; minutes_week: number }[]
-      >`
+    query<
+      { cleaner_id: string; jobs_today: number; minutes_today: number; minutes_week: number }[]
+    >`
       select c.id as cleaner_id,
         count(distinct s.id)
           filter (where (s.start_at at time zone ${schedule.territory_timezone})::date =
@@ -516,37 +529,39 @@ export async function getScheduleSuggestions(
         and s.id <> ${scheduleId}
         and s.status not in ('completed', 'canceled')
       where c.status = 'active' and c.home_territory_id = ${schedule.territory_id}
+        and c.id = any(${capacityIds}::uuid[])
         and (${devOnly} = false or c.is_dev_seed)
         and (${restrictCleanerIds} = false or c.id = any(${scopedCleanerIds}::uuid[]))
       group by c.id`,
-      query<{ cleaner_id: string }[]>`
-      select cleaner_id
-      from job_assignments
-      where job_schedule_id = ${scheduleId}
-        and status in ('accepted', 'confirmed')
-        and (${restrictCleanerIds} = false or cleaner_id = any(${scopedCleanerIds}::uuid[]))`,
-    ]);
+  ]);
 
   const nameById = new Map(
     capacity.map((cleaner) => [cleaner.id, cleaner.full_name]),
   );
+  const indexSpans = (rows: SpanRow[]) => {
+    const result = new Map<string, { start: string; end: string }[]>();
+    for (const row of rows) {
+      const spans = result.get(row.cleaner_id) ?? [];
+      spans.push({ start: row.start_at, end: row.end_at });
+      result.set(row.cleaner_id, spans);
+    }
+    return result;
+  };
+  const availabilityByCleaner = indexSpans(availability);
+  const timeOffByCleaner = indexSpans(timeOff);
+  const assignmentsByCleaner = indexSpans(assignments);
+  const loadsByCleaner = new Map(loads.map((load) => [load.cleaner_id, load]));
   const capacityById = new Map<string, CleanerCapacity>();
   for (const cleaner of capacity) {
-    const load = loads.find((row) => row.cleaner_id === cleaner.id);
+    const load = loadsByCleaner.get(cleaner.id);
     capacityById.set(cleaner.id, {
       id: cleaner.id,
       active: true,
       skills: cleaner.skills,
       verticalExperience: cleaner.vertical_experience,
-      availability: availability
-        .filter((row) => row.cleaner_id === cleaner.id)
-        .map((row) => ({ start: row.start_at, end: row.end_at })),
-      timeOff: timeOff
-        .filter((row) => row.cleaner_id === cleaner.id)
-        .map((row) => ({ start: row.start_at, end: row.end_at })),
-      assignments: assignments
-        .filter((row) => row.cleaner_id === cleaner.id)
-        .map((row) => ({ start: row.start_at, end: row.end_at })),
+      availability: availabilityByCleaner.get(cleaner.id) ?? [],
+      timeOff: timeOffByCleaner.get(cleaner.id) ?? [],
+      assignments: assignmentsByCleaner.get(cleaner.id) ?? [],
       assignedJobsToday: load?.jobs_today ?? 0,
       assignedMinutesToday: load?.minutes_today ?? 0,
       assignedMinutesThisWeek: load?.minutes_week ?? 0,
@@ -556,33 +571,6 @@ export async function getScheduleSuggestions(
     });
   }
 
-  const acceptedCleanerIds = new Set(
-    acceptedAssignments.map((assignment) => assignment.cleaner_id),
-  );
-  const acceptedCapacity = capacity.filter((cleaner) =>
-    acceptedCleanerIds.has(cleaner.id),
-  );
-  if (acceptedCapacity.length !== acceptedCleanerIds.size) return [];
-  const remainingCrewSlots = schedule.required_crew_size - acceptedCapacity.length;
-  if (remainingCrewSlots < 0) return [];
-  const poolLimit = Math.max(MAX_SCHEDULING_POOL, schedule.required_crew_size);
-  const availableCapacity = capacity
-    .filter((cleaner) => !acceptedCleanerIds.has(cleaner.id))
-    .slice(0, Math.max(0, poolLimit - acceptedCapacity.length));
-  const crewGroups = combinations(
-    availableCapacity,
-    remainingCrewSlots,
-  ).map((group) => [...acceptedCapacity, ...group]);
-  const candidates: AssignmentCandidate[] = crewGroups.map((group) => ({
-    id: group
-      .map((cleaner) => cleaner.id)
-      .sort()
-      .join("+"),
-    territoryIds: [schedule.territory_id],
-    cleaners: group.map((cleaner) => capacityById.get(cleaner.id)!),
-    estimatedTravelMinutes: schedule.travel_buffer_minutes,
-    travelBufferMinutes: schedule.travel_buffer_minutes,
-  }));
   const requirements = schedule.qualification_requirements ?? {};
   const job: SchedulingJob = {
     id: schedule.id,
@@ -605,6 +593,29 @@ export async function getScheduleSuggestions(
       requirements.finishRestrictionsAcknowledged === true,
     urgency: requirements.deadlineCritical === true ? "deadline" : "standard",
   };
+  const acceptedCleanerCapacity = acceptedCleanerIds.map(
+    (id) => capacityById.get(id)!,
+  );
+  const availableCleanerCapacity = unassignedCapacity.map(
+    (cleaner) => capacityById.get(cleaner.id)!,
+  );
+  const crewGroups = buildBoundedCrewGroups({
+    job,
+    acceptedCleaners: acceptedCleanerCapacity,
+    availableCleaners: availableCleanerCapacity,
+    travelBufferMinutes: schedule.travel_buffer_minutes,
+    limit: MAX_CREW_COMBINATIONS,
+  });
+  const candidates: AssignmentCandidate[] = crewGroups.map((group) => ({
+    id: group
+      .map((cleaner) => cleaner.id)
+      .sort()
+      .join("+"),
+    territoryIds: [schedule.territory_id],
+    cleaners: group,
+    estimatedTravelMinutes: schedule.travel_buffer_minutes,
+    travelBufferMinutes: schedule.travel_buffer_minutes,
+  }));
   return rankAssignmentSuggestions(job, candidates)
     .slice(0, MAX_SCHEDULE_SUGGESTIONS)
     .map((suggestion) => {
