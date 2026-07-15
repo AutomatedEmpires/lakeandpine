@@ -4,8 +4,10 @@ import Link from "next/link";
 import { resolveOperatorIdentity } from "@/lib/auth";
 import {
   getOperationsConsole,
-  getScheduleSuggestions,
+  getStaffScheduleSuggestions,
 } from "@/lib/operations-console-data";
+import { hasCapability } from "@/lib/team-operations";
+import { getOperationsAccess } from "@/lib/team-operations-data";
 
 import {
   applicationStatusAction,
@@ -152,7 +154,34 @@ export default async function OperationsPage({
     );
   }
 
-  const data = await getOperationsConsole(identity.devOnly);
+  const operationsAccess = await getOperationsAccess(
+    identity.operator.id,
+    identity.devOnly,
+  );
+  if (
+    !operationsAccess.organizationId ||
+    !hasCapability(
+      operationsAccess.memberships,
+      "view_network",
+      operationsAccess.organizationId,
+      null,
+    )
+  ) {
+    return (
+      <div className="route-page">
+        <section className="container page-hero">
+          <div className="page-panel operator-locked">
+            <span className="eyebrow">Scoped team operations</span>
+            <h1>Unallocated operations require owner or GM access.</h1>
+            <p className="lead">Use the team control plane for inventory, workforce, time, pay, and allocated work without exposing another team.</p>
+            <Link className="btn btn-primary" href="/operator/network">Open team operations</Link>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  const data = await getOperationsConsole(identity.operator.id, identity.devOnly);
   const params = await searchParams;
   const selectedSchedule =
     data.schedules.find((item) => item.id === params.schedule) ??
@@ -161,7 +190,11 @@ export default async function OperationsPage({
     ) ??
     null;
   const suggestions = selectedSchedule
-    ? await getScheduleSuggestions(selectedSchedule.id, identity.devOnly)
+    ? await getStaffScheduleSuggestions(
+        identity.operator.id,
+        selectedSchedule.id,
+        identity.devOnly,
+      )
     : [];
   const selectedAssignments = selectedSchedule
     ? data.assignments.filter(
@@ -209,6 +242,7 @@ export default async function OperationsPage({
         </div>
         <nav className="operations-tabs" aria-label="Operator workspaces">
           <Link href="/operator">Job workbench</Link>
+          <Link href="/operator/network">National network</Link>
           <a href="#territories">Territories</a>
           <a href="#people">People</a>
           <a href="#schedule">Scheduling</a>
@@ -1195,13 +1229,6 @@ export default async function OperationsPage({
                       <option value="crew_coaching">Crew coaching</option>
                       <option value="documentation">Documentation</option>
                     </select>
-                    <input
-                      name="ownerLabel"
-                      required
-                      maxLength={120}
-                      placeholder="Owner"
-                      aria-label={`Recovery owner for service case ${serviceCase.public_reference}`}
-                    />
                     <input
                       name="scheduledAt"
                       type="datetime-local"

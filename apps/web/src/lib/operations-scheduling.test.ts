@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildBoundedCrewGroups,
+  cleanerMeetsIndividualSchedulingConstraints,
   estimateJobDuration,
   evaluateAssignment,
   rankAssignmentSuggestions,
   requiredElapsedMinutes,
   type AssignmentCandidate,
+  type CleanerCapacity,
   type SchedulingJob,
 } from "./operations-scheduling.ts";
 
@@ -47,6 +50,19 @@ function candidate(overrides: Partial<AssignmentCandidate> = {}): AssignmentCand
       maxDailyMinutes: 540,
       maxWeeklyMinutes: 2_400,
     })),
+    ...overrides,
+  };
+}
+
+function cleaner(
+  id: string,
+  overrides: Partial<CleanerCapacity> = {},
+): CleanerCapacity {
+  return {
+    ...candidate().cleaners[0],
+    id,
+    skills: [],
+    assignedMinutesThisWeek: 0,
     ...overrides,
   };
 }
@@ -143,4 +159,169 @@ test("rejects a cleaner who has reached the daily job-count cap", () => {
   assert.ok(
     result.blockers.includes("Cleaner cleaner-a would exceed daily job capacity"),
   );
+});
+
+test("filters hard-blocked cleaners before bounding the crew search", () => {
+  const singleCleanerJob = {
+    ...job,
+    requiredCrewSize: 1,
+    requiredSkills: ["estate_detail"],
+  };
+  const blocked = Array.from({ length: 18 }, (_, index) =>
+    cleaner(`blocked-${index + 1}`, {
+      skills: ["estate_detail"],
+      availability: [],
+    }),
+  );
+  const eligible = cleaner("eligible-19", { skills: ["estate_detail"] });
+
+  assert.equal(
+    cleanerMeetsIndividualSchedulingConstraints(singleCleanerJob, blocked[0], 30),
+    false,
+  );
+  const groups = buildBoundedCrewGroups({
+    job: singleCleanerJob,
+    acceptedCleaners: [],
+    availableCleaners: [...blocked, eligible],
+    travelBufferMinutes: 30,
+  });
+
+  assert.equal(groups[0][0].id, "eligible-19");
+});
+
+test("keeps accepted cleaners fixed independently of the candidate pool", () => {
+  const accepted = cleaner("accepted-outside-general-cap", {
+    skills: ["delicate_finishes"],
+  });
+  const available = cleaner("available-partner", {
+    skills: ["estate_detail"],
+  });
+  const groups = buildBoundedCrewGroups({
+    job,
+    acceptedCleaners: [accepted],
+    availableCleaners: [available],
+    travelBufferMinutes: 30,
+  });
+
+  assert.deepEqual(
+    groups[0].map((member) => member.id),
+    ["accepted-outside-general-cap", "available-partner"],
+  );
+});
+
+test("rejects accepted cleaners who now violate a hard scheduling constraint", () => {
+  const accepted = cleaner("accepted-on-pto", {
+    skills: ["delicate_finishes"],
+    timeOff: [{
+      start: "2026-07-20T10:00:00-07:00",
+      end: "2026-07-20T12:00:00-07:00",
+    }],
+  });
+  const groups = buildBoundedCrewGroups({
+    job,
+    acceptedCleaners: [accepted],
+    availableCleaners: [cleaner("available-partner", { skills: ["estate_detail"] })],
+    travelBufferMinutes: 30,
+  });
+
+  assert.deepEqual(groups, []);
+});
+
+test("bounded pruning preserves requested continuity within equal skill coverage", () => {
+  const oneCleanerJob: SchedulingJob = {
+    ...job,
+    requiredCrewSize: 1,
+    requiredSkills: ["estate_detail"],
+    recurringCleanerIds: ["recurring-request"],
+    preferredCleanerIds: [],
+  };
+  const recurring = cleaner("recurring-request", {
+    skills: ["estate_detail"],
+    verticalExperience: [],
+    assignedMinutesThisWeek: 2_000,
+  });
+  const otherwiseHigher = cleaner("otherwise-higher", {
+    skills: ["estate_detail"],
+    verticalExperience: ["estate"],
+    assignedMinutesThisWeek: 0,
+  });
+  const recurringGroups = buildBoundedCrewGroups({
+    job: oneCleanerJob,
+    acceptedCleaners: [],
+    availableCleaners: [otherwiseHigher, recurring],
+    travelBufferMinutes: 30,
+  });
+  assert.equal(recurringGroups[0][0].id, "recurring-request");
+
+  const preferredGroups = buildBoundedCrewGroups({
+    job: {
+      ...oneCleanerJob,
+      recurringCleanerIds: [],
+      preferredCleanerIds: ["preferred-request"],
+    },
+    acceptedCleaners: [],
+    availableCleaners: [
+      otherwiseHigher,
+      { ...recurring, id: "preferred-request" },
+    ],
+    travelBufferMinutes: 30,
+  });
+  assert.equal(preferredGroups[0][0].id, "preferred-request");
+});
+
+test("finds complementary skills beyond the first 2,000 lexical combinations", () => {
+  const requiredSkills = ["skill-a", "skill-b", "skill-c", "skill-d"];
+  const largeCrewJob = {
+    ...job,
+    requiredCrewSize: 4,
+    requiredSkills,
+  };
+  const generalists = Array.from({ length: 14 }, (_, index) =>
+    cleaner(`cleaner-${String(index + 1).padStart(2, "0")}`),
+  );
+  const specialists = requiredSkills.map((skill, index) =>
+    cleaner(`cleaner-${index + 15}`, { skills: [skill] }),
+  );
+  const groups = buildBoundedCrewGroups({
+    job: largeCrewJob,
+    acceptedCleaners: [],
+    availableCleaners: [...generalists, ...specialists],
+    travelBufferMinutes: 30,
+    limit: 2_000,
+  });
+  const covered = new Set(groups[0].flatMap((member) => member.skills));
+
+  assert.ok(requiredSkills.every((skill) => covered.has(skill)));
+  assert.deepEqual(
+    groups[0].map((member) => member.id).sort(),
+    specialists.map((member) => member.id).sort(),
+  );
+});
+
+test("bounds a ten-person, ten-skill search without losing specialists", () => {
+  const requiredSkills = Array.from({ length: 10 }, (_, index) =>
+    `specialty-${index + 1}`,
+  );
+  const largeCrewJob = {
+    ...job,
+    requiredCrewSize: 10,
+    requiredSkills,
+  };
+  const cleaners = [
+    ...Array.from({ length: 15 }, (_, index) => cleaner(`general-${index + 1}`)),
+    ...requiredSkills.map((skill, index) =>
+      cleaner(`specialist-${index + 1}`, { skills: [skill] }),
+    ),
+  ];
+
+  const groups = buildBoundedCrewGroups({
+    job: largeCrewJob,
+    acceptedCleaners: [],
+    availableCleaners: cleaners,
+    travelBufferMinutes: 30,
+  });
+  const covered = new Set(groups[0].flatMap((member) => member.skills));
+
+  assert.ok(requiredSkills.every((skill) => covered.has(skill)));
+  assert.equal(groups[0].length, 10);
 });

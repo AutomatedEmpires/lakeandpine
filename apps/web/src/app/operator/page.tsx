@@ -12,6 +12,8 @@ import {
 import { formatDollars } from "@/lib/pricing";
 import { formatLongDate } from "@/lib/scheduling";
 import { COMMUNICATION_PLAN, type JobStatus } from "@/lib/service-planning";
+import { hasCapability } from "@/lib/team-operations";
+import { getOperationsAccess } from "@/lib/team-operations-data";
 
 import {
   addInternalNoteAction,
@@ -73,6 +75,33 @@ export default async function OperatorPage({ searchParams }: { searchParams: Pro
     );
   }
 
+  const operationsAccess = await getOperationsAccess(
+    identity.operator.id,
+    identity.devOnly,
+  );
+  if (
+    !operationsAccess.organizationId ||
+    !hasCapability(
+      operationsAccess.memberships,
+      "view_network",
+      operationsAccess.organizationId,
+      null,
+    )
+  ) {
+    return (
+      <div className="route-page">
+        <section className="container page-hero">
+          <div className="page-panel operator-locked">
+            <span className="eyebrow">Scoped team operations</span>
+            <h1>Use your assigned team workspace.</h1>
+            <p className="lead">The national service desk contains unallocated requests and is limited to owners and GMs. Managers and leads stay inside their explicit team scope.</p>
+            <Link className="btn btn-primary" href="/operator/network">Open team operations</Link>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   const bookings = await getOperatorBookings(identity.devOnly);
   const params = await searchParams;
   const selected =
@@ -97,7 +126,10 @@ export default async function OperatorPage({ searchParams }: { searchParams: Pro
             <span className="eyebrow">{identity.state === "preview" ? "Demo operations · seeded records only" : "Private operations"}</span>
             <h1>Service desk</h1>
             <p className="lead">Review scope, move work through the pipeline, run the checklist, and stage human follow-up without sending messages automatically.</p>
-            <Link className="btn btn-soft" href="/operator/operations">Open operations control</Link>
+            <div className="hero-actions">
+              <Link className="btn btn-primary" href="/operator/network">Open national network</Link>
+              <Link className="btn btn-soft" href="/operator/operations">Open service operations</Link>
+            </div>
           </div>
           <div className="operator-summary card">
             <span>Open work</span><strong>{bookings.length}</strong>
