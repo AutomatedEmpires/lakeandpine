@@ -2,7 +2,16 @@
 // tomorrow through +35 days, Monday–Saturday, in one of four arrival windows.
 // These values do not represent live capacity or confirm an appointment.
 
-export const ARRIVAL_WINDOWS = ["8:00 AM", "10:00 AM", "12:00 PM", "2:00 PM"] as const;
+import { STANDARD_ARRIVAL_WINDOWS } from "./field-operations";
+
+export const ARRIVAL_WINDOWS = STANDARD_ARRIVAL_WINDOWS.map(
+  (window) => window.label,
+) as [string, string, string, string];
+export const MULTI_DAY_WINDOW_PREFERENCE = "Operator-planned multi-day scope";
+export const REQUEST_WINDOW_PREFERENCES = [
+  ...ARRIVAL_WINDOWS,
+  MULTI_DAY_WINDOW_PREFERENCE,
+] as [string, string, string, string, string];
 
 export const MIN_LEAD_DAYS = 1;
 export const MAX_HORIZON_DAYS = 35;
@@ -17,7 +26,7 @@ export function isBookableDate(isoDate: string, today = new Date()): boolean {
 }
 
 export function isBookableWindow(window: string): boolean {
-  return (ARRIVAL_WINDOWS as readonly string[]).includes(window);
+  return (REQUEST_WINDOW_PREFERENCES as readonly string[]).includes(window);
 }
 
 export function toIsoDate(date: Date): string {

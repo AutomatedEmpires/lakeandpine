@@ -24,6 +24,33 @@ test("request keys are stable, scoped, and contain no raw address", () => {
   assert.equal(bookingKey.includes("203.0.113.9"), false);
 });
 
+test("request keys cannot be reset by rotating user agents", () => {
+  const first = new Headers({
+    "x-vercel-forwarded-for": "203.0.113.10",
+    "user-agent": "browser-a",
+  });
+  const second = new Headers({
+    "x-vercel-forwarded-for": "203.0.113.10",
+    "user-agent": "browser-b",
+  });
+  assert.equal(
+    buildPrivateRequestKey(first, "booking", secret),
+    buildPrivateRequestKey(second, "booking", secret),
+  );
+});
+
+test("Vercel's protected forwarding header wins over proxy headers", () => {
+  const trusted = new Headers({
+    "x-vercel-forwarded-for": "203.0.113.11",
+    "x-forwarded-for": "198.51.100.22",
+  });
+  const direct = new Headers({ "x-forwarded-for": "203.0.113.11" });
+  assert.equal(
+    buildPrivateRequestKey(trusted, "booking", secret),
+    buildPrivateRequestKey(direct, "booking", secret),
+  );
+});
+
 test("request keys reject weak secrets", () => {
   assert.throws(
     () => buildPrivateRequestKey(new Headers(), "booking", "short"),

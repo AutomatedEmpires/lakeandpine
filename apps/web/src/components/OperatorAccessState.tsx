@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import type { OperatorIdentity } from "@/lib/auth";
+import { ownerBootstrapEnabled } from "@/lib/env";
 import type { OperationsDashboard } from "@/lib/team-operations-data";
 
 import { bootstrapOwnerAction } from "@/app/operator/team-operations-actions";
@@ -27,14 +28,17 @@ export function OwnerBootstrap({ dashboard }: { dashboard: OperationsDashboard }
           <span className="eyebrow">One-time national control setup</span>
           <h1>Establish the Lake & Pine owner role.</h1>
           <p className="lead">
-            This staff identity is authenticated but has no workforce role yet. The first verified staff operator can claim the national owner role; subsequent access is assigned by that owner.
+            This staff identity is authenticated but has no workforce role yet. National owner setup is available only to the private, pre-authorized founder identity; subsequent access is delegated by that owner.
           </p>
           <form action={bootstrapOwnerAction}>
-            <button className="btn btn-primary" disabled={dashboard.access.devOnly}>
+            <button className="btn btn-primary" disabled={dashboard.access.devOnly || !ownerBootstrapEnabled}>
               Establish national owner control
             </button>
           </form>
           {dashboard.access.devOnly && <p className="copy">Owner bootstrap is disabled in preview mode.</p>}
+          {!dashboard.access.devOnly && !ownerBootstrapEnabled && (
+            <p className="copy">Owner bootstrap is closed. An administrator must pre-authorize the founder identity and open the one-time gate.</p>
+          )}
         </div>
       </section>
     </div>

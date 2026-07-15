@@ -23,6 +23,12 @@ export const OPERATIONS_CAPABILITIES = [
   "manage_workforce_events",
   "manage_service_recovery",
   "manage_refunds",
+  "manage_field_operations",
+  "manage_schedule_approvals",
+  "manage_route_exceptions",
+  "approve_mileage",
+  "manage_duty_roster",
+  "communicate_with_customers",
 ] as const;
 
 export type OperationsCapability = (typeof OPERATIONS_CAPABILITIES)[number];
@@ -44,12 +50,19 @@ const ROLE_CAPABILITIES: Record<WorkforceRole, readonly OperationsCapability[]> 
     "manage_workforce_events",
     "manage_service_recovery",
     "manage_refunds",
+    "manage_field_operations",
+    "manage_schedule_approvals",
+    "manage_route_exceptions",
+    "approve_mileage",
+    "manage_duty_roster",
+    "communicate_with_customers",
   ],
   shift_lead: [
     "allocate_jobs",
     "manage_inventory",
     "use_inventory",
     "manage_workforce_events",
+    "communicate_with_customers",
   ],
   cleaner: ["use_inventory"],
 };
@@ -90,12 +103,36 @@ export function hasCapability(
   organizationId: string,
   teamId?: string | null,
 ) {
-  return memberships.some(
-    (membership) =>
-      membership.organizationId === organizationId &&
-      (membership.teamId === null || membership.teamId === teamId) &&
-      ROLE_CAPABILITIES[membership.role].includes(capability),
-  );
+  return membershipForCapability(
+    memberships,
+    capability,
+    organizationId,
+    teamId,
+  ) !== null;
+}
+
+export function membershipForCapability(
+  memberships: readonly WorkforceMembership[],
+  capability: OperationsCapability,
+  organizationId: string,
+  teamId?: string | null,
+) {
+  return memberships
+    .filter(
+      (membership) =>
+        membership.organizationId === organizationId &&
+        (membership.teamId === null || membership.teamId === teamId) &&
+        ROLE_CAPABILITIES[membership.role].includes(capability),
+    )
+    .sort((left, right) => {
+      const leftScope = left.teamId === teamId ? 0 : 1;
+      const rightScope = right.teamId === teamId ? 0 : 1;
+      return leftScope - rightScope
+        // Attribute the action to the narrowest, least-privileged membership
+        // that actually grants it; higher authority remains available only
+        // when the requested capability requires that authority.
+        || WORKFORCE_ROLE_RANK[right.role] - WORKFORCE_ROLE_RANK[left.role];
+    })[0] ?? null;
 }
 
 export function accessibleTeamIds(

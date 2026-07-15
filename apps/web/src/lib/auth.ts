@@ -10,11 +10,11 @@ import {
   getCleanerByExternalAuthId,
   linkCleanerExternalAuthIdByVerifiedEmail,
 } from "./crew-data";
-import { authEnabled, optionalEnv } from "./env";
+import { authEnabled, crewPortalEnabled, optionalEnv } from "./env";
 
 export type DashboardIdentity =
-  | { state: "authed"; customer: Customer }
-  | { state: "preview"; customer: Customer }
+  | { state: "authed"; customer: Customer; devOnly: false }
+  | { state: "preview"; customer: Customer; devOnly: true }
   | { state: "signed_out" };
 
 export type OperatorIdentity =
@@ -49,13 +49,13 @@ export async function resolveDashboardIdentity(): Promise<DashboardIdentity> {
         phone: user?.primaryPhoneNumber?.phoneNumber ?? null,
       });
     }
-    return { state: "authed", customer };
+    return { state: "authed", customer, devOnly: false };
   }
 
   const previewEmail = optionalEnv("DEV_PREVIEW_CUSTOMER_EMAIL");
   if (previewEmail && process.env.NODE_ENV !== "production") {
     const customer = await getCustomerByEmail(previewEmail);
-    if (customer) return { state: "preview", customer };
+    if (customer) return { state: "preview", customer, devOnly: true };
   }
   return { state: "signed_out" };
 }
@@ -78,6 +78,7 @@ export async function resolveOperatorIdentity(): Promise<OperatorIdentity> {
 }
 
 export async function resolveCleanerIdentity(): Promise<CleanerIdentity> {
+  if (!crewPortalEnabled) return { state: "signed_out" };
   if (authEnabled) {
     const { userId } = await auth();
     if (!userId) return { state: "signed_out" };

@@ -20,6 +20,8 @@
     "ops:seed-dev": "pnpm --dir apps/web ops:seed-dev",
     "ops:purge-dev-seed": "pnpm --dir apps/web ops:purge-dev-seed",
     "ops:smoke-runtime": "pnpm --dir apps/web ops:smoke-runtime",
-    "quality:verify-migrations": "pnpm --dir apps/web quality:verify-migrations"
+    "quality:verify-migrations": "pnpm --dir apps/web quality:verify-migrations",
+    "quality:verify-field-rollout": "pnpm --dir apps/web quality:verify-field-rollout",
+    "quality:verify-stripe-webhook": "pnpm --dir apps/web quality:verify-stripe-webhook"
   }
 }

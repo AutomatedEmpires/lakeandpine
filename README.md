@@ -12,7 +12,8 @@ The Next.js app in `apps/web` includes:
   damage, and refund review;
 - cleaner recruiting and a private crew workspace;
 - a private operations command center for territories, qualification, capacity-aware
-  crew suggestions, scheduling, recovery actions, refunds, and notification retries;
+  crew suggestions, customer-approved scheduling, route exceptions, field messaging,
+  mileage, issue escalation, recovery actions, refunds, and notification retries;
 - PostgreSQL-enforced RLS, idempotency, lifecycle audit trails, assignment conflicts,
   time off, travel buffers, skill coverage, and qualification gates.
 
@@ -51,8 +52,12 @@ pnpm audit --prod
 For a disposable end-to-end write proof, start the app and run:
 
 ```bash
-RUNTIME_SMOKE_TOKEN='<same-random-32+-character-value>' pnpm dev
-RUNTIME_SMOKE_TOKEN='<same-random-32+-character-value>' \
+LAKEANDPINE_ALLOW_RUNTIME_SMOKE=1 \
+  RUNTIME_SMOKE_DATABASE='<exact-disposable-database-name>' \
+  RUNTIME_SMOKE_TOKEN='<same-random-32+-character-value>' pnpm dev
+LAKEANDPINE_ALLOW_RUNTIME_SMOKE=1 \
+  RUNTIME_SMOKE_DATABASE='<exact-disposable-database-name>' \
+  RUNTIME_SMOKE_TOKEN='<same-random-32+-character-value>' \
   RUNTIME_SMOKE_BASE_URL=http://127.0.0.1:3010 pnpm ops:smoke-runtime
 ```
 
@@ -66,6 +71,9 @@ Keep these false until the named dependencies are verified:
 
 ```text
 REQUEST_INTAKE_ENABLED=false
+CUSTOMER_PORTAL_WRITES_ENABLED=false
+CREW_PORTAL_ENABLED=false
+OWNER_BOOTSTRAP_ENABLED=false
 CLEANER_APPLICATIONS_ENABLED=false
 PAYMENTS_ENABLED=false
 ```
@@ -82,7 +90,9 @@ business phone/email are external launch dependencies.
 
 - `docs/product/premium-market-operating-model.md`
 - `docs/product/premium-operations-domain.md`
+- `docs/product/intelligent-field-operations.md`
 - `docs/ops/database-migration-verification.md`
+- `docs/ops/intelligent-field-operations-release.md`
 - `AGENTS.md`
 
 Historical recovered prototype files remain under `prototypes/recovered/` for provenance;

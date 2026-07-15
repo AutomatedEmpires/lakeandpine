@@ -8,6 +8,7 @@ import {
   formValue as value,
 } from "@/lib/form-values";
 import { requireOperatorActionIdentity as requireOperator } from "@/lib/operator-action-auth";
+import { sendStaffJobMessage } from "@/lib/field-operations-data";
 import {
   addWorkforceMembership,
   addGeneralManagerMembership,
@@ -58,11 +59,31 @@ function refreshTeamOperations() {
   revalidatePath("/operator/time");
   revalidatePath("/operator/compensation");
   revalidatePath("/crew");
+  revalidatePath("/dashboard");
+  revalidatePath("/operator/field");
+}
+
+export async function staffJobMessageAction(formData: FormData) {
+  const identity = await requireOperator();
+  const body = value(formData, "body").slice(0, 2000);
+  if (body.length < 2) throw new Error("Add a customer update");
+  await sendStaffJobMessage({
+    customerId: identity.operator.id,
+    devOnly: identity.devOnly,
+    teamId: uuid(formData, "teamId"),
+    allocationId: uuid(formData, "allocationId"),
+    body,
+  });
+  refreshTeamOperations();
 }
 
 export async function bootstrapOwnerAction() {
   const identity = await requireOperator();
-  await bootstrapNationalOwner(identity.operator.id, identity.devOnly);
+  await bootstrapNationalOwner(
+    identity.operator.id,
+    identity.operator.email,
+    identity.devOnly,
+  );
   refreshTeamOperations();
 }
 
@@ -304,6 +325,8 @@ export async function reviewTeamTimeOffAction(formData: FormData) {
     teamId: uuid(formData, "teamId"),
     timeOffId: uuid(formData, "timeOffId"),
     to,
+    version: numberValue(formData, "version", { min: 1, max: 1_000_000 }),
+    reason: value(formData, "reason").slice(0, 1000) || null,
   });
   refreshTeamOperations();
 }
@@ -383,21 +406,18 @@ export async function createQualityReviewAction(formData: FormData) {
   const [allocationId, cleanerId] = value(formData, "candidateKey").split("|");
   if (!allocationId || !cleanerId) throw new Error("Choose completed team work");
   const source = value(formData, "source");
-  if (!(["verified_customer", "quality_inspection", "manager_review"] as const)
-    .includes(source as "verified_customer")) {
+  if (!(["quality_inspection", "manager_review"] as const)
+    .includes(source as "quality_inspection")) {
     throw new Error("Choose a supported review source");
   }
   const evidenceReference = value(formData, "evidenceReference").slice(0, 500) || null;
-  if (source === "verified_customer" && (!evidenceReference || evidenceReference.length < 4)) {
-    throw new Error("Verified customer feedback needs an evidence reference");
-  }
   await createQualityReview({
     customerId: identity.operator.id,
     devOnly: identity.devOnly,
     teamId: uuid(formData, "teamId"),
     allocationId,
     cleanerId,
-    source: source as "verified_customer" | "quality_inspection" | "manager_review",
+    source: source as "quality_inspection" | "manager_review",
     rating: numberValue(formData, "rating", { min: 1, max: 5 }),
     evidenceReference,
     privateNote: value(formData, "privateNote").slice(0, 2000) || null,

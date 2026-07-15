@@ -5,6 +5,7 @@ import { createEmailService, type EmailMessage } from "./email-service.ts";
 
 function createHarness() {
   const messages: EmailMessage[] = [];
+  const idempotencyKeys: Array<string | undefined> = [];
   const logs: string[] = [];
   let transportCreations = 0;
   const service = createEmailService({
@@ -18,14 +19,21 @@ function createHarness() {
     createTransport: () => {
       transportCreations += 1;
       return {
-        async send(message) {
+        async send(message, options) {
           messages.push(message);
+          idempotencyKeys.push(options?.idempotencyKey);
         },
       };
     },
     log: (message) => logs.push(message),
   });
-  return { service, messages, logs, transportCreations: () => transportCreations };
+  return {
+    service,
+    messages,
+    idempotencyKeys,
+    logs,
+    transportCreations: () => transportCreations,
+  };
 }
 
 const booking = {
@@ -73,4 +81,16 @@ test("ordinary credentialed delivery still uses the configured transport", async
   assert.equal(harness.messages[0].to, booking.to);
   assert.equal(harness.messages[1].to, "ops@example.invalid");
   assert.ok(harness.messages.every((message) => message.replyTo === "hello@example.invalid"));
+});
+
+test("provider idempotency keys cross the email transport boundary", async () => {
+  const harness = createHarness();
+  await harness.service.sendBookingConfirmation(booking, {
+    suppress: false,
+    idempotencyKey: "booking:00000000-0000-0000-0000-000000000000:customer_confirmation",
+  });
+
+  assert.deepEqual(harness.idempotencyKeys, [
+    "booking:00000000-0000-0000-0000-000000000000:customer_confirmation",
+  ]);
 });

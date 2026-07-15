@@ -27,26 +27,96 @@ const PLAN_PRICE_ENV: Record<string, string> = {
   onetime: "STRIPE_PRICE_ONE_TIME",
 };
 
+export class ActiveStripeSubscriptionError extends Error {}
+
 export function planPriceId(planId: string): string {
   const envName = PLAN_PRICE_ENV[planId];
   if (!envName) throw new Error(`Unknown plan: ${planId}`);
   return requireEnv(envName);
 }
 
+export async function getOrCreateStripeCustomer(input: {
+  customerId: string;
+  customerEmail: string;
+  existingStripeCustomerId: string | null;
+}) {
+  if (input.existingStripeCustomerId) return input.existingStripeCustomerId;
+  const customer = await getStripe().customers.create(
+    {
+      email: input.customerEmail,
+      metadata: { lakeandpine: "v1", customerId: input.customerId },
+    },
+    { idempotencyKey: `lakeandpine:customer:${input.customerId}` },
+  );
+  return customer.id;
+}
+
 export async function createPlanCheckout(input: {
   planId: string;
-  customerEmail?: string;
+  customerId: string;
+  stripeCustomerId: string;
+  checkoutIdempotencyKey: string;
 }): Promise<{ url: string }> {
   const stripe = getStripe();
   const recurring = input.planId !== "onetime";
-  const session = await stripe.checkout.sessions.create({
-    mode: recurring ? "subscription" : "payment",
-    line_items: [{ price: planPriceId(input.planId), quantity: 1 }],
-    customer_email: input.customerEmail,
-    success_url: `${APP_URL}/dashboard?checkout=success`,
-    cancel_url: `${APP_URL}/pricing?checkout=canceled`,
-    metadata: { planId: input.planId },
+  const metadata = {
+    lakeandpine: "v1",
+    planId: input.planId,
+    customerId: input.customerId,
+  };
+  if (recurring) {
+    const subscriptions = await stripe.subscriptions.list({
+      customer: input.stripeCustomerId,
+      status: "all",
+      limit: 100,
+    });
+    if (
+      subscriptions.data.some(
+        (subscription) =>
+          subscription.status !== "canceled" &&
+          subscription.status !== "incomplete_expired",
+      )
+    ) {
+      throw new ActiveStripeSubscriptionError(
+        "An active subscription already exists for this customer",
+      );
+    }
+  }
+  const openSessions = await stripe.checkout.sessions.list({
+    customer: input.stripeCustomerId,
+    status: "open",
+    limit: 100,
   });
+  const existingSession = openSessions.data.find(
+    (session) =>
+      session.metadata?.lakeandpine === "v1" &&
+      session.metadata.customerId === input.customerId &&
+      session.metadata.planId === input.planId &&
+      session.url,
+  );
+  if (existingSession?.url) return { url: existingSession.url };
+  const session = await stripe.checkout.sessions.create(
+    {
+      mode: recurring ? "subscription" : "payment",
+      payment_method_types: ["card"],
+      line_items: [{ price: planPriceId(input.planId), quantity: 1 }],
+      customer: input.stripeCustomerId,
+      client_reference_id: input.customerId,
+      success_url: `${APP_URL}/dashboard?checkout=success`,
+      cancel_url: `${APP_URL}/pricing?checkout=canceled`,
+      metadata,
+      ...(recurring
+        ? {
+            subscription_data: {
+              metadata,
+            },
+          }
+        : {}),
+    },
+    {
+      idempotencyKey: `lakeandpine:checkout:${input.checkoutIdempotencyKey}`,
+    },
+  );
   if (!session.url) throw new Error("Stripe did not return a checkout URL");
   return { url: session.url };
 }

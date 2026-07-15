@@ -1,13 +1,23 @@
 // Removes every synthetic row created by ops:seed-dev in foreign-key-safe order.
-import { connect } from "./_db.mjs";
+import { assertDevSeedSafety, connect } from "./_db.mjs";
 
 const sql = connect();
 const counts = {};
+
+await assertDevSeedSafety(sql, "ops:purge-dev-seed");
 
 try {
   await sql`select set_config('lakeandpine.dev_seed_purge', '1', false)`;
   try {
 
+counts.job_communications = (await sql`delete from job_communications where is_dev_seed returning id`).length;
+counts.customer_cleaner_preferences = (await sql`delete from customer_cleaner_preferences where is_dev_seed returning id`).length;
+counts.tip_intents = (await sql`delete from tip_intents where is_dev_seed returning id`).length;
+counts.job_issue_reports = (await sql`delete from job_issue_reports where is_dev_seed returning id`).length;
+counts.mileage_entries = (await sql`delete from mileage_entries where is_dev_seed returning id`).length;
+counts.team_duty_assignments = (await sql`delete from team_duty_assignments where is_dev_seed returning id`).length;
+counts.schedule_proposals = (await sql`delete from schedule_proposals where is_dev_seed returning id`).length;
+counts.service_location_assessments = (await sql`delete from service_location_assessments where is_dev_seed returning id`).length;
 counts.bonus_awards = (await sql`delete from bonus_awards where is_dev_seed returning id`).length;
 counts.quality_reviews = (await sql`delete from quality_reviews where is_dev_seed returning id`).length;
 counts.review_bonus_tiers = (await sql`delete from review_bonus_tiers where is_dev_seed returning id`).length;
@@ -23,6 +33,8 @@ counts.inventory_products = (await sql`delete from inventory_products where is_d
 counts.inventory_locations = (await sql`
   delete from inventory_locations location using cleaning_teams team
   where location.team_id = team.id and team.is_dev_seed returning location.id`).length;
+counts.checklist_items = (await sql`
+  delete from checklist_items where is_dev_seed returning id`).length;
 counts.team_job_allocations = (await sql`
   delete from team_job_allocations where is_dev_seed returning id`).length;
 counts.team_service_territories = (await sql`
@@ -32,6 +44,12 @@ await sql`update service_cases set assigned_team_id = null
 counts.workforce_memberships = (await sql`
   delete from workforce_memberships where is_dev_seed returning id`).length;
 
+await sql`update job_schedules set status = 'in_progress'
+  where is_dev_seed and status = 'quality_review'`;
+await sql`update job_schedules set status = 'confirmed'
+  where is_dev_seed and status in ('in_progress', 'en_route')`;
+await sql`update job_schedules set status = 'canceled'
+  where is_dev_seed and status in ('tentative', 'held', 'confirmed')`;
 counts.operations_state_events = (await sql`delete from operations_state_events where is_dev_seed returning id`).length;
 counts.service_case_events = (await sql`delete from service_case_events where is_dev_seed returning id`).length;
 counts.refund_records = (await sql`delete from refund_records where is_dev_seed returning id`).length;

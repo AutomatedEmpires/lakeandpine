@@ -5,6 +5,12 @@ import { revalidatePath } from "next/cache";
 import { resolveCleanerIdentity } from "@/lib/auth";
 import { requestTimeOff, respondToAssignment } from "@/lib/crew-data";
 import {
+  recordCleanerMileage,
+  reportCleanerIssue,
+  sendCleanerJobMessage,
+  updateCleanerChecklistItem,
+} from "@/lib/field-operations-data";
+import {
   boundedDecimalValue,
   formUuid as uuid,
   formValue as value,
@@ -148,4 +154,101 @@ export async function cleanerCalloutAction(formData: FormData) {
   });
   revalidatePath("/crew");
   revalidatePath("/operator/workforce");
+}
+
+export async function cleanerJobMessageAction(formData: FormData) {
+  const identity = await requireCleaner();
+  const template = value(formData, "template");
+  if (!["running_15_late", "running_30_late", "custom"].includes(template)) {
+    throw new Error("Choose a supported customer update");
+  }
+  const body = value(formData, "body").slice(0, 2000) || null;
+  if (template === "custom" && (!body || body.length < 2)) {
+    throw new Error("Add the customer update");
+  }
+  await sendCleanerJobMessage({
+    cleanerId: identity.cleaner.id,
+    devOnly: identity.devOnly,
+    allocationId: uuid(formData, "allocationId"),
+    template: template as "running_15_late" | "running_30_late" | "custom",
+    body,
+  });
+  revalidatePath("/crew");
+  revalidatePath("/dashboard");
+  revalidatePath("/operator/field");
+}
+
+export async function cleanerMileageAction(formData: FormData) {
+  const identity = await requireCleaner();
+  const purpose = value(formData, "purpose");
+  const purposes = ["to_job", "between_jobs", "supply_run", "training", "other"];
+  if (!purposes.includes(purpose)) throw new Error("Choose a mileage purpose");
+  const serviceDate = value(formData, "serviceDate");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(serviceDate)) throw new Error("Choose a service date");
+  const allocationId = value(formData, "allocationId");
+  await recordCleanerMileage({
+    cleanerId: identity.cleaner.id,
+    devOnly: identity.devOnly,
+    membershipId: uuid(formData, "membershipId"),
+    allocationId: allocationId ? uuid(formData, "allocationId") : null,
+    serviceDate,
+    miles: boundedDecimalValue(formData, "miles", { min: 0.01, max: 1000, decimals: 2 }),
+    purpose,
+    vehicleLabel: value(formData, "vehicleLabel").slice(0, 120) || null,
+    note: value(formData, "note").slice(0, 1000) || null,
+  });
+  revalidatePath("/crew");
+  revalidatePath("/operator/field");
+}
+
+export async function cleanerIssueAction(formData: FormData) {
+  const identity = await requireCleaner();
+  const issueType = value(formData, "issueType");
+  const severity = value(formData, "severity");
+  const issueTypes = [
+    "schedule_conflict", "access", "safety", "vehicle", "customer_note",
+    "scope", "inventory", "quality", "other",
+  ];
+  if (!issueTypes.includes(issueType) || !["low", "medium", "high", "critical"].includes(severity)) {
+    throw new Error("Choose a supported issue and severity");
+  }
+  const summary = value(formData, "summary").slice(0, 1000);
+  if (summary.length < 2) throw new Error("Explain the issue and immediate impact");
+  const allocationId = value(formData, "allocationId");
+  await reportCleanerIssue({
+    cleanerId: identity.cleaner.id,
+    devOnly: identity.devOnly,
+    membershipId: uuid(formData, "membershipId"),
+    allocationId: allocationId ? uuid(formData, "allocationId") : null,
+    issueType,
+    severity,
+    summary,
+    privateDetails: value(formData, "privateDetails").slice(0, 4000) || null,
+  });
+  revalidatePath("/crew");
+  revalidatePath("/dashboard");
+  revalidatePath("/operator/field");
+}
+
+export async function cleanerChecklistAction(formData: FormData) {
+  const identity = await requireCleaner();
+  const state = value(formData, "state");
+  if (!(["pending", "completed", "skipped"] as const).includes(state as "pending")) {
+    throw new Error("Choose a supported checklist state");
+  }
+  const note = value(formData, "note").slice(0, 1000) || null;
+  if (state === "skipped" && (!note || note.length < 2)) {
+    throw new Error("Explain why this checklist step was skipped");
+  }
+  await updateCleanerChecklistItem({
+    cleanerId: identity.cleaner.id,
+    devOnly: identity.devOnly,
+    allocationId: uuid(formData, "allocationId"),
+    itemId: uuid(formData, "itemId"),
+    state: state as "pending" | "completed" | "skipped",
+    note,
+    version: boundedDecimalValue(formData, "version", { min: 1, max: 1_000_000 }),
+  });
+  revalidatePath("/crew");
+  revalidatePath("/operator");
 }

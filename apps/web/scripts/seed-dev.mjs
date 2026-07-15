@@ -1,7 +1,7 @@
 // Seeds a DEV-ONLY demo customer with bookings, billing history, home notes,
 // and a support thread so the dashboard is verifiable end-to-end before Clerk
 // keys exist. Everything is marked is_dev_seed=true; ops:purge-dev-seed removes it.
-import { connect } from "./_db.mjs";
+import { assertDevSeedSafety, connect } from "./_db.mjs";
 
 const sql = connect();
 const EMAIL = "dev-preview@lakeandpinecleaning.com";
@@ -9,9 +9,38 @@ const OPERATOR_EMAIL = "operator-preview@lakeandpinecleaning.com";
 const MANAGER_EMAIL = "manager-preview@lakeandpinecleaning.com";
 const CLEANER_EMAIL = "cleaner-preview@lakeandpinecleaning.com";
 
+await assertDevSeedSafety(sql, "ops:seed-dev");
+const collisions = await sql`
+  select 'customer:' || email as key from customers
+  where not is_dev_seed and lower(email) = any(${[
+    EMAIL,
+    OPERATOR_EMAIL,
+    MANAGER_EMAIL,
+  ]})
+  union all
+  select 'cleaner:' || email from cleaners
+  where not is_dev_seed and lower(email) = lower(${CLEANER_EMAIL})
+  union all
+  select 'territory:' || code from service_territories
+  where not is_dev_seed and code = 'dev_cda_core'
+  union all
+  select 'team:' || code from cleaning_teams
+  where not is_dev_seed and code = 'dev_cda_ops'
+  union all
+  select 'application:' || public_reference from cleaner_applications
+  where not is_dev_seed and public_reference = 'TEAM-DEMO-001'
+  union all
+  select 'case:' || public_reference from service_cases
+  where not is_dev_seed and public_reference in ('LP-CASE-DEMO-001', 'LP-REFUND-DEMO-001')`;
+if (collisions.length > 0) {
+  throw new Error(
+    `Dev seed natural-key collision with non-seed data: ${collisions.map((row) => row.key).join(", ")}`,
+  );
+}
+
 // customers has no BEFORE INSERT triggers, but keep the sibling-venture rule
 // anyway: select-then-insert instead of relying on ON CONFLICT.
-let [customer] = await sql`select id from customers where email = ${EMAIL}`;
+let [customer] = await sql`select id from customers where email = ${EMAIL} and is_dev_seed`;
 if (!customer) {
   [customer] = await sql`
     insert into customers (email, full_name, phone, referral_credit_cents, is_dev_seed)
@@ -19,7 +48,7 @@ if (!customer) {
     returning id`;
 }
 
-let [operator] = await sql`select id from customers where email = ${OPERATOR_EMAIL}`;
+let [operator] = await sql`select id from customers where email = ${OPERATOR_EMAIL} and is_dev_seed`;
 if (!operator) {
   [operator] = await sql`
     insert into customers (email, full_name, role, is_dev_seed)
@@ -27,7 +56,7 @@ if (!operator) {
     returning id`;
 }
 
-let [home] = await sql`select id from homes where customer_id = ${customer.id}`;
+let [home] = await sql`select id from homes where customer_id = ${customer.id} and is_dev_seed`;
 if (!home) {
   [home] = await sql`
     insert into homes
@@ -132,24 +161,6 @@ for (const booking of demoBookings) {
       planning_direction = 'Standard plan · 4 rooms · focus: Kitchen, Bathrooms, Living room',
       planning_score = 38
     where id = ${booking.id}`;
-
-  const existingChecklist = await sql`select 1 from checklist_items where booking_id = ${booking.id}`;
-  if (existingChecklist.length === 0) {
-    const tasks = [
-      [null, "Confirm agreed scope before starting"],
-      ["Kitchen", "Clean counters, backsplash, sink, and appliance exteriors"],
-      ["Kitchen", "Finish floors and review cabinet-front note"],
-      ["Bathrooms", "Clean sinks, mirrors, toilets, tubs, and showers"],
-      ["Living room", "Dust reachable surfaces and open shelving"],
-      ["Primary bedroom", "Dust surfaces and finish floors"],
-      [null, "Complete final walkthrough and reset waste bins"],
-    ];
-    for (const [sort, task] of tasks.entries()) {
-      await sql`
-        insert into checklist_items (booking_id, room_label, label, sort, is_dev_seed)
-        values (${booking.id}, ${task[0]}, ${task[1]}, ${sort}, true)`;
-    }
-  }
 }
 
 let [intakeRequest] = await sql`
@@ -196,7 +207,7 @@ if (!intakeRequest) {
 // Premium operations demo: one capacity-backed territory, one verified cleaner,
 // one qualification-approved estate request, a tentative job, an application,
 // and an open service case/refund review. No provider action is performed.
-let [territory] = await sql`select id from service_territories where code = 'dev_cda_core'`;
+let [territory] = await sql`select id from service_territories where code = 'dev_cda_core' and is_dev_seed`;
 if (!territory) {
   [territory] = await sql`insert into service_territories
     (code, name, status, travel_buffer_minutes, is_dev_seed)
@@ -205,7 +216,7 @@ if (!territory) {
     values (${territory.id}, '83814', 'active', 'Synthetic preview coverage only')`;
 }
 
-let [cleaner] = await sql`select id from cleaners where email = ${CLEANER_EMAIL}`;
+let [cleaner] = await sql`select id from cleaners where email = ${CLEANER_EMAIL} and is_dev_seed`;
 if (!cleaner) {
   [cleaner] = await sql`insert into cleaners
     (full_name, email, status, screening_status, screening_verified_at,
@@ -213,14 +224,23 @@ if (!cleaner) {
     values ('Cedar Crew Preview', ${CLEANER_EMAIL}, 'active', 'verified', now(),
       ${territory.id}, ${["estate-care", "finish-awareness", "quality-review"]},
       ${["estate"]}, true) returning id`;
-  const scheduleDay = await sql`select extract(dow from current_date + 5)::int as day`;
-  await sql`insert into cleaner_availability_rules
-    (cleaner_id, territory_id, day_of_week, start_time, end_time, status)
-    values (${cleaner.id}, ${territory.id}, ${scheduleDay[0].day}, '08:00', '17:30', 'active')`;
+}
+let [premiumAvailability] = await sql`
+  select id from cleaner_availability_rules
+  where cleaner_id = ${cleaner.id} and territory_id = ${territory.id}
+  order by created_at limit 1`;
+if (!premiumAvailability) {
+  [premiumAvailability] = await sql`
+    insert into cleaner_availability_rules
+      (cleaner_id, territory_id, day_of_week, start_time, end_time,
+       effective_from, status)
+    values (${cleaner.id}, ${territory.id}, extract(dow from current_date + 5)::int,
+      '08:00', '17:30', current_date - 30, 'active')
+    returning id`;
 }
 await sql`update service_territories set status = 'active' where id = ${territory.id}`;
 
-if ((await sql`select 1 from cleaner_applications where public_reference = 'TEAM-DEMO-001'`).length === 0) {
+if ((await sql`select 1 from cleaner_applications where public_reference = 'TEAM-DEMO-001' and is_dev_seed`).length === 0) {
   await sql`insert into cleaner_applications
     (public_reference, full_name, email, home_base, transportation_confirmed,
      service_interests, territory_interests, availability_summary, experience_summary,
@@ -231,8 +251,13 @@ if ((await sql`select 1 from cleaner_applications where public_reference = 'TEAM
       'reviewing', ${sql.json({ privacy: true, version: "dev-seed" })}, now(), true)`;
 }
 
-let [premiumBooking] = await sql`select id from bookings
-  where customer_id = ${customer.id} and service_vertical = 'estate' and is_dev_seed`;
+const premiumBookings = await sql`select id from bookings
+  where customer_id = ${customer.id} and service_vertical = 'estate'
+    and is_dev_seed and contact ->> 'name' = 'Devon Preview'`;
+if (premiumBookings.length > 1) {
+  throw new Error('Dev seed invariant failed: multiple Devon Preview bookings exist');
+}
+let [premiumBooking] = premiumBookings;
 if (!premiumBooking) {
   [premiumBooking] = await sql`insert into bookings
     (customer_id, home_id, service_id, service_vertical, frequency, scheduled_date,
@@ -263,16 +288,40 @@ if (!premiumBooking) {
 
 let [demoSchedule] = await sql`select id from job_schedules where booking_id = ${premiumBooking.id}`;
 if (!demoSchedule) {
-  [demoSchedule] = await sql`insert into job_schedules
-    (booking_id, territory_id, service_vertical, start_at, end_at, status,
-     required_crew_size, required_skills, labor_minutes, travel_buffer_minutes, is_dev_seed)
-    values (${premiumBooking.id}, ${territory.id}, 'estate',
-      ((current_date + 5) + time '09:00') at time zone 'America/Los_Angeles',
-      ((current_date + 5) + time '15:00') at time zone 'America/Los_Angeles',
-      'tentative', 1, ${["estate-care", "finish-awareness"]}, 360, 30, true) returning id`;
+  [demoSchedule] = await sql.begin(async (tx) => {
+    await tx`select set_config('lakeandpine.current_customer_id', ${operator.id}, true)`;
+    const [organization] = await tx`select id from organizations where slug = 'lake-and-pine'`;
+    if (!organization) throw new Error('Lake & Pine organization is missing; apply migrations first');
+    if ((await tx`
+      select 1 from workforce_memberships
+      where organization_id = ${organization.id} and customer_id = ${operator.id}
+        and team_id is null and role = 'owner' and status = 'active'
+    `).length === 0) {
+      await tx`select private.bootstrap_lakeandpine_owner(${operator.id})`;
+    }
+    return tx`insert into job_schedules
+      (booking_id, territory_id, service_vertical, start_at, end_at, status,
+       required_crew_size, required_skills, labor_minutes, travel_buffer_minutes, is_dev_seed)
+      values (${premiumBooking.id}, ${territory.id}, 'estate',
+        ((current_date + 5) + time '09:00') at time zone 'America/Los_Angeles',
+        ((current_date + 5) + time '15:00') at time zone 'America/Los_Angeles',
+        'tentative', 1, ${["estate-care", "finish-awareness"]}, 360, 30, true) returning id`;
+  });
+}
+[premiumAvailability] = await sql`
+  update cleaner_availability_rules availability
+  set day_of_week = extract(dow from schedule.start_at at time zone 'America/Los_Angeles')::int,
+      start_time = '08:00', end_time = '17:30',
+      effective_from = current_date - 30, effective_to = null, status = 'active'
+  from job_schedules schedule
+  where availability.id = ${premiumAvailability.id}
+    and schedule.id = ${demoSchedule.id}
+  returning availability.id`;
+if (!premiumAvailability) {
+  throw new Error('Dev seed invariant failed: premium availability was not retained');
 }
 
-let [demoCase] = await sql`select id from service_cases where public_reference = 'LP-CASE-DEMO-001'`;
+let [demoCase] = await sql`select id from service_cases where public_reference = 'LP-CASE-DEMO-001' and is_dev_seed`;
 if (!demoCase) {
   [demoCase] = await sql`insert into service_cases
     (public_reference, case_type, booking_id, customer_id, contact, details, status,
@@ -283,7 +332,7 @@ if (!demoCase) {
       'triaged', 'high', ${sql.json({ privacy: true, version: "dev-seed" })}, now(), true)
     returning id`;
 }
-let [manager] = await sql`select id from customers where email = ${MANAGER_EMAIL}`;
+let [manager] = await sql`select id from customers where email = ${MANAGER_EMAIL} and is_dev_seed`;
 if (!manager) {
   [manager] = await sql`
     insert into customers (email, full_name, role, is_dev_seed)
@@ -299,7 +348,7 @@ if ((await sql`select 1 from service_recovery_actions where service_case_id = ${
       'Synthetic recovery review for the premium finish concern.', true)`;
 }
 let [demoRefundCase] = await sql`
-  select id from service_cases where public_reference = 'LP-REFUND-DEMO-001'`;
+  select id from service_cases where public_reference = 'LP-REFUND-DEMO-001' and is_dev_seed`;
 if (!demoRefundCase) {
   [demoRefundCase] = await sql`insert into service_cases
     (public_reference, case_type, booking_id, customer_id, contact, details, status,
@@ -348,30 +397,47 @@ await sql.begin(async (tx) => {
 
   let [team] = await tx`
     select id from cleaning_teams
-    where organization_id = ${organization.id} and code = 'dev_cda_ops'`;
+    where organization_id = ${organization.id} and code = 'dev_cda_ops'
+      and is_dev_seed`;
   if (!team) {
     [team] = await tx`
       insert into cleaning_teams
-        (organization_id, code, name, timezone, region_label, status, is_dev_seed)
+        (organization_id, code, name, timezone, region_label, status,
+         origin_label, origin_latitude, origin_longitude, service_radius_miles,
+         support_email, is_dev_seed)
       values (${organization.id}, 'dev_cda_ops', 'Demo Coeur d''Alene Team',
-        'America/Los_Angeles', 'Synthetic preview only', 'active', true)
+        'America/Los_Angeles', 'Synthetic preview only', 'active',
+        'Downtown Coeur d''Alene, Idaho', 47.677700, -116.780500, 30,
+        'support@lakeandpinecleaning.com', true)
       returning id`;
   }
+  await tx`
+    update cleaning_teams set
+      origin_label = 'Downtown Coeur d''Alene, Idaho',
+      origin_latitude = 47.677700,
+      origin_longitude = -116.780500,
+      service_radius_miles = 30,
+      operating_start_time = '08:00', latest_arrival_time = '16:00',
+      hard_finish_time = '19:00', arrival_window_minutes = 120,
+      support_email = 'support@lakeandpinecleaning.com'
+    where id = ${team.id}`;
   await tx`
     insert into team_service_territories
       (organization_id, team_id, territory_id, status, priority, is_dev_seed)
     values (${organization.id}, ${team.id}, ${territory.id}, 'active', 100, true)
     on conflict (team_id, territory_id) do update set status = 'active'`;
-  if ((await tx`
-    select 1 from workforce_memberships
+  let [managerMembership] = await tx`
+    select id from workforce_memberships
     where organization_id = ${organization.id} and team_id = ${team.id}
-      and customer_id = ${manager.id} and role = 'manager' and status = 'active'`).length === 0) {
-    await tx`
+      and customer_id = ${manager.id} and role = 'manager' and status = 'active'`;
+  if (!managerMembership) {
+    [managerMembership] = await tx`
       insert into workforce_memberships
         (organization_id, team_id, customer_id, role, status, title, hired_at,
          is_dev_seed)
       values (${organization.id}, ${team.id}, ${manager.id}, 'manager', 'active',
-        'Preview team manager', current_date, true)`;
+        'Preview team manager', current_date, true)
+      returning id`;
   }
 
   let [location] = await tx`
@@ -418,6 +484,328 @@ await sql.begin(async (tx) => {
       values (${demoSchedule.id}, ${cleaner.id}, ${team.id}, 'lead', 'accepted', 100,
         ${tx.json(['Synthetic preview assignment'])}, 'Dev seed', now(), true)`;
   }
+  await tx`
+    update bookings set contact = contact || ${tx.json({
+      street: '1250 E Sherman Avenue',
+      unit: '',
+      city: "Coeur d'Alene",
+      state: 'ID',
+      zip: '83814',
+    })}
+    where id = ${premiumBooking.id}`;
+
+  const refreshedAssessments = await tx`
+    select id from service_location_assessments
+    where booking_id = ${premiumBooking.id} and is_dev_seed`;
+  if (refreshedAssessments.length === 0) {
+    if ((await tx`
+      select 1 from service_location_assessments where booking_id = ${premiumBooking.id}`
+    ).length > 0) {
+      throw new Error('Dev seed refused to replace a non-seed location assessment');
+    }
+    await tx`
+      insert into service_location_assessments
+        (booking_id, organization_id, team_id, address_fingerprint,
+         branch_origin_label, branch_origin_latitude, branch_origin_longitude,
+         property_latitude, property_longitude, distance_miles,
+         standard_radius_miles, calculation_method, assessment_status,
+        provider, provider_resolved_address, provider_match_confidence,
+        provider_coordinate_accuracy, calculated_at, is_dev_seed)
+      values (${premiumBooking.id}, ${organization.id}, ${team.id}, repeat('a', 64),
+        'Downtown Coeur d''Alene, Idaho', 47.677700, -116.780500,
+        47.690000, -116.770000, 0.98, 30, 'straight_line',
+        'inside_standard_radius', 'mapbox',
+        '1250 E Sherman Avenue, Coeur d''Alene, ID 83814', 'exact', 'rooftop',
+        now(), true)`;
+  }
+
+  const [demoTiming] = await tx`
+    with timing as (
+      select start_at,
+        start_at at time zone 'America/Los_Angeles' as local_start
+      from job_schedules where id = ${demoSchedule.id}
+    ), windowed as (
+      select start_at, local_start,
+        case
+          when local_start::time < time '10:00' then time '08:00'
+          when local_start::time < time '12:00' then time '10:00'
+          when local_start::time < time '14:00' then time '12:00'
+          else time '14:00'
+        end as window_start
+      from timing
+    )
+    select (((local_start::date + window_start)
+      at time zone 'America/Los_Angeles'))::text as arrival_window_start,
+      (((local_start::date + window_start + interval '2 hours')
+      at time zone 'America/Los_Angeles'))::text as arrival_window_end,
+      local_start::date::text as service_date
+    from windowed`;
+  if (!demoTiming) throw new Error('Dev seed schedule timing is missing');
+
+  let [scheduleProposal] = await tx`
+    select id, status from schedule_proposals
+    where job_schedule_id = ${demoSchedule.id} order by version desc limit 1`;
+  if (!scheduleProposal) {
+    [scheduleProposal] = await tx`
+      insert into schedule_proposals
+        (organization_id, team_id, team_job_allocation_id, job_schedule_id,
+         customer_id, arrival_window_start, arrival_window_end,
+         proposal_note, is_dev_seed)
+      values (${organization.id}, ${team.id}, ${allocation.id}, ${demoSchedule.id},
+        ${customer.id},
+        ${demoTiming.arrival_window_start}, ${demoTiming.arrival_window_end},
+        'Synthetic arrival window awaiting the verified customer response.', true)
+      returning id, status`;
+  }
+  if (scheduleProposal.status === 'pending_customer') {
+    await tx`select set_config('lakeandpine.current_customer_id', ${customer.id}, true)`;
+    await tx`
+      update schedule_proposals
+      set status = 'approved', customer_response_note = 'The arrival window works.'
+      where id = ${scheduleProposal.id}`;
+    await tx`
+      insert into job_communications
+        (organization_id, team_id, team_job_allocation_id, customer_id,
+         sender_kind, audience, template_key, body, is_dev_seed)
+      select ${organization.id}, ${team.id}, ${allocation.id}, ${customer.id},
+        'customer', 'team_operations', 'custom',
+        'Customer approved the proposed arrival window.', true
+      where not exists (
+        select 1 from job_communications
+        where team_job_allocation_id = ${allocation.id}
+          and sender_kind = 'customer' and is_dev_seed
+      )`;
+    await tx`select set_config('lakeandpine.current_customer_id', ${operator.id}, true)`;
+  }
+  await tx`update job_schedules set status = 'held', version = version + 1 where id = ${demoSchedule.id} and status = 'tentative'`;
+  await tx`update job_schedules set status = 'confirmed', version = version + 1 where id = ${demoSchedule.id} and status = 'held'`;
+
+  await tx`select set_config('lakeandpine.current_customer_id', '', true)`;
+  await tx`select set_config('lakeandpine.current_cleaner_id', ${cleaner.id}, true)`;
+  await tx`
+    insert into job_communications
+      (organization_id, team_id, team_job_allocation_id, customer_id,
+       sender_kind, audience, template_key, body, is_dev_seed)
+    select ${organization.id}, ${team.id}, ${allocation.id}, ${customer.id},
+      'cleaner', 'customer', 'custom',
+      'Hi Devon, your assigned Lake & Pine team is confirmed for the approved service window.',
+      true
+    where not exists (
+      select 1 from job_communications
+      where team_job_allocation_id = ${allocation.id}
+        and sender_kind = 'cleaner' and template_key = 'custom'
+        and is_dev_seed
+    )`;
+  await tx`
+    insert into job_issue_reports
+      (organization_id, team_id, team_job_allocation_id, issue_type,
+       severity, summary, private_details, is_dev_seed)
+    select ${organization.id}, ${team.id}, ${allocation.id},
+      'access', 'low',
+      'Side-gate latch is stiff; access remains available.',
+      'Synthetic issue for the audited field escalation preview.', true
+    where not exists (
+      select 1 from job_issue_reports
+      where team_job_allocation_id = ${allocation.id} and is_dev_seed
+    )`;
+  await tx`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+  await tx`select set_config('lakeandpine.current_customer_id', ${operator.id}, true)`;
+
+  await tx`
+    insert into team_duty_assignments
+      (organization_id, team_id, workforce_membership_id, starts_at, ends_at,
+       duty_kind, note, is_dev_seed)
+    select ${organization.id}, ${team.id}, ${managerMembership.id},
+      now() - interval '1 hour', now() + interval '8 hours',
+      'manager_on_duty',
+      'Synthetic manager-on-duty coverage.', true
+    where not exists (
+      select 1 from team_duty_assignments
+      where team_id = ${team.id} and status in ('scheduled','active')
+        and ends_at > now() and is_dev_seed
+    )`;
+
+  let [completedBooking] = await tx`
+    select id, scheduled_date from bookings
+    where customer_id = ${customer.id} and is_dev_seed
+      and contact ->> 'name' = 'Completed field service proof'`;
+  if (!completedBooking) {
+    [completedBooking] = await tx`
+      insert into bookings
+        (customer_id, home_id, service_id, service_vertical, frequency,
+         scheduled_date, scheduled_window, status, contact, home_details,
+         qualification_status, qualification_requirements,
+         estimated_duration_minutes, required_crew_size, required_skills,
+         request_source, consent_snapshot, consented_at, consent_version,
+         consent_notice_date, is_dev_seed)
+      values (${customer.id}, ${home.id}, 'estate', 'estate', 'onetime',
+        current_date - 5, '8:00 AM–10:00 AM', 'requested',
+        ${tx.json({
+          name: 'Completed field service proof',
+          phone: '208-555-0100',
+          email: EMAIL,
+          street: '725 E Front Avenue',
+          unit: '',
+          city: "Coeur d'Alene",
+          state: 'ID',
+          zip: '83814',
+        })},
+        ${tx.json({ requestedCadence: 'one-time', alternateDates: [] })},
+        'approved',
+        ${tx.json({
+          siteReady: true,
+          utilitiesReady: true,
+          finishRestrictionsAcknowledged: true,
+          deadlineCritical: false,
+        })},
+        180, 1, ${['estate-care']}, 'import',
+        ${tx.json({ privacy: true, requestTerms: true })}, now(), 'dev-seed',
+        current_date, true)
+      returning id, scheduled_date`;
+  }
+  let [completedSchedule] = await tx`
+    select id, status from job_schedules where booking_id = ${completedBooking.id}`;
+  if (!completedSchedule) {
+    [completedSchedule] = await tx`
+      insert into job_schedules
+        (booking_id, territory_id, service_vertical, start_at, end_at, status,
+         required_crew_size, required_skills, labor_minutes, travel_buffer_minutes,
+         is_dev_seed)
+      values (${completedBooking.id}, ${territory.id}, 'estate',
+        (${completedBooking.scheduled_date}::date + time '09:00') at time zone 'America/Los_Angeles',
+        (${completedBooking.scheduled_date}::date + time '12:00') at time zone 'America/Los_Angeles',
+        'tentative', 1, ${['estate-care']}, 180, 30, true)
+      returning id, status`;
+  }
+  let [completedAllocation] = await tx`
+    select id from team_job_allocations where job_schedule_id = ${completedSchedule.id}`;
+  if (!completedAllocation) {
+    [completedAllocation] = await tx`
+      insert into team_job_allocations
+        (organization_id, team_id, job_schedule_id, assigned_by_membership_id,
+         estimated_labor_minutes, is_dev_seed)
+      values (${organization.id}, ${team.id}, ${completedSchedule.id},
+        ${ownerMembership.id}, 180, true)
+      returning id`;
+  }
+  await tx`
+    insert into cleaner_availability_rules
+      (cleaner_id, territory_id, day_of_week, start_time, end_time,
+       effective_from, status)
+    select ${cleaner.id}, ${territory.id},
+      extract(dow from ${completedBooking.scheduled_date}::date)::int,
+      '08:00', '17:30', ${completedBooking.scheduled_date}::date, 'active'
+    where not exists (
+      select 1 from cleaner_availability_rules
+      where cleaner_id = ${cleaner.id} and territory_id = ${territory.id}
+        and day_of_week = extract(dow from ${completedBooking.scheduled_date}::date)::int
+        and effective_from <= ${completedBooking.scheduled_date}::date
+        and status = 'active'
+    )`;
+  await tx`
+    insert into job_assignments
+      (job_schedule_id, cleaner_id, team_id, assignment_role, status,
+       suggestion_score, suggestion_reasons, assigned_by_label, responded_at, is_dev_seed)
+    select ${completedSchedule.id}, ${cleaner.id}, ${team.id}, 'lead', 'accepted',
+      100, ${tx.json(['Synthetic completed assignment'])}, 'Dev seed', now(), true
+    where not exists (
+      select 1 from job_assignments
+      where job_schedule_id = ${completedSchedule.id} and cleaner_id = ${cleaner.id}
+    )`;
+  await tx`select set_config('lakeandpine.current_customer_id', '', true)`;
+  await tx`select set_config('lakeandpine.current_cleaner_id', ${cleaner.id}, true)`;
+  await tx`
+    insert into mileage_entries
+      (organization_id, team_id, cleaner_id, team_job_allocation_id,
+       service_date, miles, purpose, vehicle_label,
+       note, is_dev_seed)
+    select ${organization.id}, ${team.id}, ${cleaner.id},
+      ${completedAllocation.id}, ${completedBooking.scheduled_date}, 8.4,
+      'to_job', 'Personal vehicle',
+      'Synthetic completed-service mileage awaiting review.', true
+    where not exists (
+      select 1 from mileage_entries
+      where team_job_allocation_id = ${completedAllocation.id} and is_dev_seed
+    )`;
+  await tx`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+  await tx`select set_config('lakeandpine.current_customer_id', ${operator.id}, true)`;
+
+  if ((await tx`
+    select 1 from service_location_assessments where booking_id = ${completedBooking.id}`
+  ).length === 0) {
+    await tx`
+      insert into service_location_assessments
+        (booking_id, organization_id, team_id, address_fingerprint,
+         branch_origin_label, branch_origin_latitude, branch_origin_longitude,
+         property_latitude, property_longitude, distance_miles,
+         standard_radius_miles, calculation_method, assessment_status,
+         provider, provider_resolved_address, provider_match_confidence,
+         provider_coordinate_accuracy, calculated_at, is_dev_seed)
+      values (${completedBooking.id}, ${organization.id}, ${team.id}, repeat('b', 64),
+        'Downtown Coeur d''Alene, Idaho', 47.677700, -116.780500,
+        47.673000, -116.770000, 0.59, 30, 'straight_line',
+        'inside_standard_radius', 'mapbox',
+        '725 E Front Avenue, Coeur d''Alene, ID 83814', 'exact', 'rooftop',
+        now(), true)`;
+  }
+  let [completedProposal] = await tx`
+    select id, status from schedule_proposals
+    where job_schedule_id = ${completedSchedule.id} order by version desc limit 1`;
+  if (!completedProposal) {
+    [completedProposal] = await tx`
+      insert into schedule_proposals
+        (organization_id, team_id, team_job_allocation_id, job_schedule_id,
+         customer_id, arrival_window_start, arrival_window_end,
+         proposal_note, is_dev_seed)
+      values (${organization.id}, ${team.id}, ${completedAllocation.id},
+        ${completedSchedule.id}, ${customer.id},
+        (${completedBooking.scheduled_date}::date + time '08:00') at time zone 'America/Los_Angeles',
+        (${completedBooking.scheduled_date}::date + time '10:00') at time zone 'America/Los_Angeles',
+        'Synthetic completed-service approval proof.', true)
+      returning id, status`;
+  }
+  if (completedProposal.status === 'pending_customer') {
+    await tx`select set_config('lakeandpine.current_customer_id', ${customer.id}, true)`;
+    await tx`
+      update schedule_proposals set status = 'approved',
+        customer_response_note = 'Synthetic completed-service approval.'
+      where id = ${completedProposal.id}`;
+    await tx`select set_config('lakeandpine.current_customer_id', ${operator.id}, true)`;
+  }
+  for (const status of ['held', 'confirmed', 'en_route', 'in_progress',
+    'quality_review', 'completed']) {
+    await tx`
+      update job_schedules set status = ${status}, version = version + 1
+      where id = ${completedSchedule.id} and status <> 'completed'`;
+  }
+
+  await tx`select set_config('lakeandpine.current_customer_id', ${customer.id}, true)`;
+  await tx`
+    insert into customer_cleaner_preferences
+      (organization_id, team_id, customer_id, cleaner_id,
+       source_allocation_id, preference, note, is_dev_seed)
+    values (${organization.id}, ${team.id}, ${customer.id}, ${cleaner.id},
+      ${completedAllocation.id}, 'preferred',
+      'Synthetic continuity preference after completed service.', true)
+    on conflict (team_id, customer_id, cleaner_id) do nothing`;
+  await tx`
+    insert into quality_reviews
+      (organization_id, team_id, team_job_allocation_id, cleaner_id,
+       customer_id, rating, source, verified_at, evidence_reference,
+       private_note, is_dev_seed)
+    values (${organization.id}, ${team.id}, ${completedAllocation.id}, ${cleaner.id},
+      ${customer.id}, 5, 'verified_customer', now(),
+      ${`customer:${customer.id}:allocation:${completedAllocation.id}`},
+      'Careful work and excellent communication.', true)
+    on conflict (team_job_allocation_id, cleaner_id, source) do nothing`;
+  await tx`
+    insert into tip_intents
+      (organization_id, team_id, team_job_allocation_id, customer_id,
+       cleaner_id, amount_cents, note, is_dev_seed)
+    values (${organization.id}, ${team.id}, ${completedAllocation.id}, ${customer.id},
+      ${cleaner.id}, 2500, 'Synthetic tip intent; no payment was collected.', true)
+    on conflict (team_job_allocation_id, customer_id, cleaner_id) do nothing`;
+  await tx`select set_config('lakeandpine.current_customer_id', ${operator.id}, true)`;
   await tx`update service_cases set assigned_team_id = ${team.id}
     where id in (${demoCase.id}, ${demoRefundCase.id}) and is_dev_seed`;
 

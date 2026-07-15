@@ -7,7 +7,11 @@ export function formValue(formData: FormData, key: string): string {
 }
 
 export function formUuid(formData: FormData, key: string): string {
-  const result = formValue(formData, key);
+  return uuidValue(formValue(formData, key), key);
+}
+
+export function uuidValue(value: string, key = "value"): string {
+  const result = value.trim();
   if (!UUID_PATTERN.test(result)) throw new Error(`Invalid ${key}`);
   return result;
 }

@@ -8,6 +8,7 @@ import {
   hashBookingReference,
 } from "./booking-reference";
 import { sql } from "./db";
+import type { RouteAssessmentInput } from "./route-qualification";
 import type { JobStatus, PropertyProfile, RoomPlan } from "./service-planning";
 
 export type Service = {
@@ -126,7 +127,16 @@ export async function createBooking(input: {
   scheduledDate: string;
   scheduledWindow: string;
   customerId?: string | null;
-  contact: { name: string; phone: string; email: string; zip: string };
+  contact: {
+    name: string;
+    phone: string;
+    email: string;
+    street: string;
+    unit: string;
+    city: string;
+    state: string;
+    zip: string;
+  };
   homeDetails: Record<string, unknown>;
   accessNotes?: string | null;
   propertyProfile: Record<string, unknown>;
@@ -147,13 +157,25 @@ export async function createBooking(input: {
   consentVersion: string;
   consentNoticeDate: string;
   checklist: { roomLabel: string | null; label: string }[];
-}): Promise<{ id: string; duplicate: boolean }> {
+  routeAssessment: RouteAssessmentInput;
+}): Promise<{
+  id: string;
+  duplicate: boolean;
+  notificationOutboxIds: {
+    customer: string;
+    ops: string;
+  } | null;
+}> {
   const bookingId = randomUUID();
   const publicReferenceHash = hashBookingReference(
     deriveBookingReference(bookingId),
   );
   return sql.begin(async (tx) => {
     const txJson = (value: unknown) => tx.json(value as postgres.JSONValue);
+    await tx`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await tx`select set_config(
+      'lakeandpine.current_customer_id', ${input.customerId ?? ""}, true
+    )`;
     const rows = await tx<{ id: string }[]>`
       insert into bookings
         (id, service_id, service_vertical, frequency, scheduled_date, scheduled_window,
@@ -176,10 +198,16 @@ export async function createBooking(input: {
       on conflict (idempotency_key) do nothing
       returning id`;
     if (!rows[0]) {
-      const existing = await tx<{ id: string }[]>`
-        select id from bookings where idempotency_key = ${input.idempotencyKeyHash} limit 1`;
-      if (!existing[0]) throw new Error("Idempotent booking lookup failed");
-      return { id: existing[0].id, duplicate: true };
+      const existing = await tx<{ id: string | null }[]>`
+        select private.current_intake_booking_by_idempotency(
+          ${input.idempotencyKeyHash}::text
+        ) as id`;
+      if (!existing[0]?.id) throw new Error("Idempotent booking lookup failed");
+      return {
+        id: existing[0].id,
+        duplicate: true,
+        notificationOutboxIds: null,
+      };
     }
     const booking = rows[0];
     await tx`
@@ -204,42 +232,103 @@ export async function createBooking(input: {
     }
 
     await tx`
-      insert into notification_outbox
-        (booking_id, customer_id, notification_type, channel, recipient_kind,
-         recipient_address, template_key, template_data, deduplication_key, is_dev_seed)
-      values
-        (${booking.id}, ${input.customerId ?? null}, 'customer_confirmation', 'email',
-         'customer', ${input.contact.email}, 'booking-request-received',
-         ${txJson({ bookingId: booking.id })}, ${`booking:${booking.id}:customer_confirmation`}, ${input.isDevSeed}),
-        (${booking.id}, ${input.customerId ?? null}, 'ops_notification', 'email',
-         'ops', null, 'ops-booking-request', ${txJson({ bookingId: booking.id })},
-         ${`booking:${booking.id}:ops_notification`}, ${input.isDevSeed})`;
+      insert into service_location_assessments
+        (booking_id, organization_id, address_fingerprint,
+         branch_origin_label, branch_origin_latitude, branch_origin_longitude,
+         property_latitude, property_longitude, distance_miles,
+         standard_radius_miles, calculation_method, assessment_status,
+         provider, provider_resolved_address, provider_match_confidence,
+         provider_coordinate_accuracy, calculated_at, is_dev_seed)
+      select ${booking.id}, private.lakeandpine_intake_organization_id(),
+        ${input.routeAssessment.addressFingerprint},
+        ${input.routeAssessment.branchOriginLabel},
+        ${input.routeAssessment.branchOriginLatitude},
+        ${input.routeAssessment.branchOriginLongitude},
+        ${input.routeAssessment.propertyLatitude},
+        ${input.routeAssessment.propertyLongitude},
+        ${input.routeAssessment.distanceMiles},
+        ${input.routeAssessment.standardRadiusMiles},
+        ${input.routeAssessment.calculationMethod},
+        ${input.routeAssessment.assessmentStatus},
+        ${input.routeAssessment.provider},
+        ${input.routeAssessment.providerResolvedAddress},
+        ${input.routeAssessment.providerMatchConfidence},
+        ${input.routeAssessment.providerCoordinateAccuracy},
+        ${input.routeAssessment.calculatedAt}, ${input.isDevSeed}`;
 
-    return { id: booking.id, duplicate: false };
+    const enqueued = await tx<
+      {
+        customer_notification_id: string | null;
+        ops_notification_id: string | null;
+      }[]
+    >`
+      select * from private.enqueue_booking_intake_notifications(${booking.id})`;
+    if (
+      !enqueued[0]?.customer_notification_id ||
+      !enqueued[0].ops_notification_id
+    ) {
+      throw new Error("Booking notifications were not durably queued");
+    }
+
+    return {
+      id: booking.id,
+      duplicate: false,
+      notificationOutboxIds: {
+        customer: enqueued[0].customer_notification_id,
+        ops: enqueued[0].ops_notification_id,
+      },
+    };
   });
 }
 
+export async function getRuntimeDatabaseName() {
+  const rows = await sql<{ database_name: string }[]>`
+    select current_database() as database_name`;
+  if (!rows[0]) throw new Error("Runtime database identity is unavailable");
+  return rows[0].database_name;
+}
+
+export async function updateUnallocatedBookingRouteAssessment(
+  bookingId: string,
+  assessment: RouteAssessmentInput,
+) {
+  const rows = await sql<{ id: string }[]>`
+    select private.enrich_unallocated_service_location_assessment(
+      ${bookingId}::uuid,
+      ${assessment.addressFingerprint}::text,
+      ${assessment.branchOriginLabel}::text,
+      ${assessment.branchOriginLatitude}::double precision,
+      ${assessment.branchOriginLongitude}::double precision,
+      ${assessment.propertyLatitude}::double precision,
+      ${assessment.propertyLongitude}::double precision,
+      ${assessment.distanceMiles}::double precision,
+      ${assessment.standardRadiusMiles}::double precision,
+      ${assessment.calculationMethod}::text,
+      ${assessment.assessmentStatus}::text,
+      ${assessment.provider}::text,
+      ${assessment.providerResolvedAddress}::text,
+      ${assessment.providerMatchConfidence}::text,
+      ${assessment.providerCoordinateAccuracy}::text,
+      ${assessment.calculatedAt}::timestamptz
+    ) as id`;
+  if (!rows[0]) {
+    throw new Error("Booking route assessment is no longer safe to update");
+  }
+}
+
 export async function recordBookingNotificationDelivery(
+  outboxId: string,
   bookingId: string,
   notificationType: "customer_confirmation" | "ops_notification",
   outcome: "sent" | "suppressed" | "skipped" | "failed",
 ) {
-  const status =
-    outcome === "sent"
-      ? "sent"
-      : outcome === "suppressed"
-        ? "canceled"
-        : outcome === "failed"
-          ? "retry"
-          : "failed";
-  await sql`
-    update notification_outbox
-    set status = ${status},
-        attempt_count = attempt_count + 1,
-        sent_at = case when ${status} = 'sent' then now() else sent_at end,
-        next_attempt_at = case when ${status} = 'retry' then now() + interval '15 minutes' else next_attempt_at end,
-        last_error_code = case when ${status} = 'sent' then null else ${outcome} end
-    where booking_id = ${bookingId} and notification_type = ${notificationType}`;
+  const rows = await sql<{ finished: boolean }[]>`
+    select private.finish_initial_booking_notification_delivery(
+      ${outboxId}, ${bookingId}, ${notificationType}, ${outcome}
+    ) as finished`;
+  if (!rows[0]?.finished) {
+    throw new Error("Booking notification is no longer pending delivery");
+  }
 }
 
 // --- Customer / dashboard ----------------------------------------------------
@@ -257,18 +346,19 @@ export type Customer = {
 export async function getCustomerByClerkId(
   clerkUserId: string,
 ): Promise<Customer | null> {
+  if (!clerkUserId) return null;
   const rows = await sql<Customer[]>`
-    select id, clerk_user_id, email, full_name, phone, role, referral_credit_cents
-    from customers where clerk_user_id = ${clerkUserId}`;
+    select * from private.customer_identity_by_clerk_id(${clerkUserId}::text)`;
   return rows[0] ?? null;
 }
 
 export async function getCustomerByEmail(
   email: string,
 ): Promise<Customer | null> {
+  const verifiedEmail = email.trim().toLowerCase();
+  if (!verifiedEmail) return null;
   const rows = await sql<Customer[]>`
-    select id, clerk_user_id, email, full_name, phone, role, referral_credit_cents
-    from customers where email = ${email}`;
+    select * from private.customer_identity_by_verified_email(${verifiedEmail}::text)`;
   return rows[0] ?? null;
 }
 
@@ -278,78 +368,16 @@ export async function upsertCustomerFromClerk(input: {
   fullName: string | null;
   phone: string | null;
 }): Promise<Customer> {
-  return sql.begin(async (transaction) => {
-    const verifiedEmail = input.verifiedEmail?.trim().toLowerCase() || null;
-    const currentRows = await transaction<Customer[]>`
-      select id, clerk_user_id, email, full_name, phone, role, referral_credit_cents
-      from customers where clerk_user_id = ${input.clerkUserId}
-      limit 1 for update`;
-    const current = currentRows[0] ?? null;
-
-    const emailRows = verifiedEmail
-      ? await transaction<Customer[]>`
-          select id, clerk_user_id, email, full_name, phone, role, referral_credit_cents
-          from customers where lower(email) = ${verifiedEmail}
-          order by created_at asc limit 2 for update`
-      : [];
-    const unambiguousEmailOwner = emailRows.length === 1 ? emailRows[0] : null;
-    const claimableEmailOwner =
-      unambiguousEmailOwner &&
-      (!unambiguousEmailOwner.clerk_user_id ||
-        unambiguousEmailOwner.clerk_user_id === input.clerkUserId)
-        ? unambiguousEmailOwner
-        : null;
-    const emailIdentityIsSafe =
-      emailRows.length === 0 || Boolean(claimableEmailOwner);
-
-    let customer: Customer;
-    if (!current && claimableEmailOwner) {
-      const rows = await transaction<Customer[]>`
-        update customers set
-          clerk_user_id = ${input.clerkUserId},
-          email = ${verifiedEmail},
-          full_name = coalesce(${input.fullName}, full_name),
-          phone = coalesce(${input.phone}, phone)
-        where id = ${claimableEmailOwner.id}
-        returning id, clerk_user_id, email, full_name, phone, role, referral_credit_cents`;
-      customer = rows[0];
-    } else if (current) {
-      const canStoreVerifiedEmail =
-        verifiedEmail &&
-        emailIdentityIsSafe &&
-        (!unambiguousEmailOwner || unambiguousEmailOwner.id === current.id);
-      const rows = await transaction<Customer[]>`
-        update customers set
-          email = case when ${Boolean(canStoreVerifiedEmail)} then ${verifiedEmail} else email end,
-          full_name = coalesce(${input.fullName}, full_name),
-          phone = coalesce(${input.phone}, phone)
-        where id = ${current.id}
-        returning id, clerk_user_id, email, full_name, phone, role, referral_credit_cents`;
-      customer = rows[0];
-    } else {
-      const rows = await transaction<Customer[]>`
-        insert into customers (clerk_user_id, email, full_name, phone)
-        values (${input.clerkUserId}, ${verifiedEmail && emailRows.length === 0 ? verifiedEmail : null},
-          ${input.fullName}, ${input.phone})
-        returning id, clerk_user_id, email, full_name, phone, role, referral_credit_cents`;
-      customer = rows[0];
-    }
-
-    // A verified primary address may adopt only unowned guest bookings. Ambiguous
-    // or already-claimed email identities fail closed and never transfer data.
-    if (verifiedEmail && emailIdentityIsSafe) {
-      const priorCustomerId =
-        unambiguousEmailOwner && unambiguousEmailOwner.id !== customer.id
-          ? unambiguousEmailOwner.id
-          : null;
-      await transaction`
-        update bookings set customer_id = ${customer.id}
-        where lower(contact ->> 'email') = ${verifiedEmail}
-          and (customer_id is null or customer_id = ${priorCustomerId})`;
-    }
-
-    return customer;
-  });
+  const verifiedEmail = input.verifiedEmail?.trim().toLowerCase() || null;
+  const rows = await sql<Customer[]>`
+    select *
+    from private.upsert_customer_from_verified_clerk_identity(
+      ${input.clerkUserId}::text,
+      ${verifiedEmail}::text,
+      ${input.fullName}::text,
+      ${input.phone}::text
+    )`;
+  return rows[0];
 }
 
 export type BookingRow = {
@@ -369,29 +397,41 @@ export type BookingRow = {
 export async function getCustomerBookings(
   customerId: string,
 ): Promise<BookingRow[]> {
-  return sql<BookingRow[]>`
-    select b.id, b.service_id, s.title as service_title, b.addon_ids, b.frequency,
-           to_char(b.scheduled_date, 'YYYY-MM-DD') as scheduled_date,
-           b.scheduled_window, b.status, b.estimate_cents, b.access_notes, b.created_at::text
-    from bookings b join services s on s.id = b.service_id
-    where b.customer_id = ${customerId}
-    order by b.scheduled_date desc`;
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${customerId}, true
+    )`;
+    return transaction<BookingRow[]>`
+      select b.id, b.service_id, s.title as service_title, b.addon_ids, b.frequency,
+             to_char(b.scheduled_date, 'YYYY-MM-DD') as scheduled_date,
+             b.scheduled_window, b.status, b.estimate_cents, b.access_notes, b.created_at::text
+      from bookings b join services s on s.id = b.service_id
+      where b.customer_id = ${customerId}
+      order by b.scheduled_date desc`;
+  });
 }
 
 export async function getNextBooking(
   customerId: string,
 ): Promise<BookingRow | null> {
-  const rows = await sql<BookingRow[]>`
-    select b.id, b.service_id, s.title as service_title, b.addon_ids, b.frequency,
-           to_char(b.scheduled_date, 'YYYY-MM-DD') as scheduled_date,
-           b.scheduled_window, b.status, b.estimate_cents, b.access_notes, b.created_at::text
-    from bookings b join services s on s.id = b.service_id
-    where b.customer_id = ${customerId}
-      and b.status in ('requested', 'reviewing', 'ready', 'confirmed', 'scheduled', 'in_progress')
-      and b.scheduled_date >= current_date
-    order by b.scheduled_date asc
-    limit 1`;
-  return rows[0] ?? null;
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${customerId}, true
+    )`;
+    const rows = await transaction<BookingRow[]>`
+      select b.id, b.service_id, s.title as service_title, b.addon_ids, b.frequency,
+             to_char(b.scheduled_date, 'YYYY-MM-DD') as scheduled_date,
+             b.scheduled_window, b.status, b.estimate_cents, b.access_notes, b.created_at::text
+      from bookings b join services s on s.id = b.service_id
+      where b.customer_id = ${customerId}
+        and b.status in ('requested', 'reviewing', 'ready', 'confirmed', 'scheduled', 'in_progress')
+        and b.scheduled_date >= current_date
+      order by b.scheduled_date asc
+      limit 1`;
+    return rows[0] ?? null;
+  });
 }
 
 export type Home = {
@@ -404,11 +444,19 @@ export type Home = {
 };
 
 export async function getPrimaryHome(customerId: string): Promise<Home | null> {
-  const rows = await sql<Home[]>`
-    select id, label, city, zip, preference_tags, cleaner_notes
-    from homes where customer_id = ${customerId}
-    order by created_at asc limit 1`;
-  return rows[0] ?? null;
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${customerId}, true
+    )`;
+    const rows = await transaction<Home[]>`
+      select id, label, city, zip, preference_tags, cleaner_notes
+      from homes
+      where customer_id = ${customerId}
+      order by created_at asc
+      limit 1`;
+    return rows[0] ?? null;
+  });
 }
 
 export async function saveHomeNotes(
@@ -416,9 +464,16 @@ export async function saveHomeNotes(
   customerId: string,
   cleanerNotes: string,
 ): Promise<void> {
-  await sql`
-    update homes set cleaner_notes = ${cleanerNotes}
-    where id = ${homeId} and customer_id = ${customerId}`;
+  await sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${customerId}, true
+    )`;
+    await transaction`
+      update homes
+      set cleaner_notes = ${cleanerNotes}
+      where id = ${homeId} and customer_id = ${customerId}`;
+  });
 }
 
 export type BillingRecord = {
@@ -432,10 +487,16 @@ export type BillingRecord = {
 export async function getBillingRecords(
   customerId: string,
 ): Promise<BillingRecord[]> {
-  return sql<BillingRecord[]>`
-    select id, description, amount_cents, status, occurred_at::text
-    from billing_records where customer_id = ${customerId}
-    order by occurred_at desc`;
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${customerId}, true
+    )`;
+    return transaction<BillingRecord[]>`
+      select id, description, amount_cents, status, occurred_at::text
+      from private.current_customer_billing_history()
+      order by occurred_at desc`;
+  });
 }
 
 export type SupportMessage = {
@@ -459,22 +520,38 @@ export type CustomerServiceCase = {
 export async function getCustomerServiceCases(
   customerId: string,
 ): Promise<CustomerServiceCase[]> {
-  return sql<CustomerServiceCase[]>`
-    select id, public_reference, case_type, status, priority, details,
-           resolution_summary, created_at::text
-    from service_cases
-    where customer_id = ${customerId}
-    order by created_at desc
-    limit 30`;
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${customerId}, true
+    )`;
+    return transaction<CustomerServiceCase[]>`
+      select id, public_reference, case_type, status, priority, details,
+             resolution_summary, created_at::text
+      from service_cases
+      where customer_id = ${customerId}
+        or booking_id in (
+          select id from bookings where customer_id = ${customerId}
+        )
+      order by created_at desc
+      limit 30`;
+  });
 }
 
 export async function getSupportThread(
   customerId: string,
 ): Promise<SupportMessage[]> {
-  return sql<SupportMessage[]>`
-    select id, sender, body, created_at::text
-    from support_messages where customer_id = ${customerId}
-    order by created_at asc`;
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${customerId}, true
+    )`;
+    return transaction<SupportMessage[]>`
+      select id, sender, body, created_at::text
+      from support_messages
+      where customer_id = ${customerId}
+      order by created_at asc`;
+  });
 }
 
 export async function addSupportMessage(
@@ -482,9 +559,37 @@ export async function addSupportMessage(
   sender: "customer" | "staff" | "concierge",
   body: string,
 ): Promise<void> {
-  await sql`
-    insert into support_messages (customer_id, sender, body)
-    values (${customerId}, ${sender}, ${body})`;
+  // A customer request must never be able to choose a privileged-looking
+  // sender. Staff and automated acknowledgements need their own audited,
+  // server-authorized write path instead of sharing this customer mutation.
+  if (sender !== "customer") {
+    throw new Error("Customer support messages cannot impersonate staff");
+  }
+  await sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${customerId}, true
+    )`;
+    await transaction`
+      insert into support_messages (customer_id, sender, body)
+      values (${customerId}, 'customer', ${body})`;
+  });
+}
+
+export async function appendServiceCaseCustomerAcknowledgement(
+  customerId: string,
+  serviceCaseId: string,
+): Promise<void> {
+  await sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${customerId}, true
+    )`;
+    await transaction`
+      select private.append_service_case_customer_acknowledgement(
+        ${serviceCaseId}::uuid
+      )`;
+  });
 }
 
 // --- Operator workspace -----------------------------------------------------
@@ -530,58 +635,86 @@ export type FollowUp = {
 
 export async function getOperatorBookings(
   devOnly: boolean,
+  operatorCustomerId: string,
 ): Promise<OperatorBooking[]> {
-  return sql<OperatorBooking[]>`
-    select b.id, b.service_id, s.title as service_title, b.addon_ids, b.frequency,
-           to_char(b.scheduled_date, 'YYYY-MM-DD') as scheduled_date,
-           b.scheduled_window, b.status, b.estimate_cents, b.access_notes,
-           b.created_at::text, b.contact, b.home_details, b.property_profile,
-           b.room_plan, b.cleaning_preferences, b.pet_notes, b.special_instructions,
-            b.planning_direction, b.planning_score, b.contact_status,
-            b.service_vertical,
-            coalesce(territory.timezone, 'America/Los_Angeles') as territory_timezone,
-            b.is_dev_seed
-    from bookings b join services s on s.id = b.service_id
-    left join service_territories territory on territory.id = b.territory_id
-    where ${devOnly ? sql`b.is_dev_seed` : sql`true`}
-      and b.status <> 'canceled'
-    order by b.scheduled_date asc, b.created_at asc`;
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${operatorCustomerId}, true
+    )`;
+    return transaction<OperatorBooking[]>`
+      select b.id, b.service_id, s.title as service_title, b.addon_ids, b.frequency,
+             to_char(b.scheduled_date, 'YYYY-MM-DD') as scheduled_date,
+             b.scheduled_window, b.status, b.estimate_cents, b.access_notes,
+             b.created_at::text, b.contact, b.home_details, b.property_profile,
+             b.room_plan, b.cleaning_preferences, b.pet_notes, b.special_instructions,
+              b.planning_direction, b.planning_score, b.contact_status,
+              b.service_vertical,
+              coalesce(territory.timezone, 'America/Los_Angeles') as territory_timezone,
+              b.is_dev_seed
+      from bookings b join services s on s.id = b.service_id
+      left join service_territories territory on territory.id = b.territory_id
+      where ${devOnly ? transaction`b.is_dev_seed` : transaction`true`}
+        and b.status <> 'canceled'
+      order by b.scheduled_date asc, b.created_at asc`;
+  });
 }
 
 export async function getBookingChecklist(
   bookingId: string,
   devOnly: boolean,
+  operatorCustomerId: string,
 ): Promise<ChecklistItem[]> {
-  return sql<ChecklistItem[]>`
-    select c.id, c.room_label, c.label, c.state, c.sort
-    from checklist_items c join bookings b on b.id = c.booking_id
-    where c.booking_id = ${bookingId}
-      and ${devOnly ? sql`b.is_dev_seed` : sql`true`}
-    order by c.sort, c.created_at`;
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${operatorCustomerId}, true
+    )`;
+    return transaction<ChecklistItem[]>`
+      select c.id, c.room_label, c.label, c.state, c.sort
+      from checklist_items c join bookings b on b.id = c.booking_id
+      where c.booking_id = ${bookingId}
+        and ${devOnly ? transaction`b.is_dev_seed` : transaction`true`}
+      order by c.sort, c.created_at`;
+  });
 }
 
 export async function getBookingInternalNotes(
   bookingId: string,
   devOnly: boolean,
+  operatorCustomerId: string,
 ): Promise<InternalNote[]> {
-  return sql<InternalNote[]>`
-    select n.id, n.author_label, n.body, n.created_at::text
-    from internal_notes n join bookings b on b.id = n.booking_id
-    where n.booking_id = ${bookingId}
-      and ${devOnly ? sql`b.is_dev_seed` : sql`true`}
-    order by n.created_at desc`;
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${operatorCustomerId}, true
+    )`;
+    return transaction<InternalNote[]>`
+      select n.id, n.author_label, n.body, n.created_at::text
+      from internal_notes n join bookings b on b.id = n.booking_id
+      where n.booking_id = ${bookingId}
+        and ${devOnly ? transaction`b.is_dev_seed` : transaction`true`}
+      order by n.created_at desc`;
+  });
 }
 
 export async function getBookingFollowUps(
   bookingId: string,
   devOnly: boolean,
+  operatorCustomerId: string,
 ): Promise<FollowUp[]> {
-  return sql<FollowUp[]>`
-    select f.id, f.kind, f.channel, f.status, f.scheduled_for::text
-    from follow_ups f join bookings b on b.id = f.booking_id
-    where f.booking_id = ${bookingId}
-      and ${devOnly ? sql`b.is_dev_seed` : sql`true`}
-    order by f.scheduled_for nulls last, f.created_at`;
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${operatorCustomerId}, true
+    )`;
+    return transaction<FollowUp[]>`
+      select f.id, f.kind, f.channel, f.status, f.scheduled_for::text
+      from follow_ups f join bookings b on b.id = f.booking_id
+      where f.booking_id = ${bookingId}
+        and ${devOnly ? transaction`b.is_dev_seed` : transaction`true`}
+      order by f.scheduled_for nulls last, f.created_at`;
+  });
 }
 
 export async function updateBookingStatus(
@@ -589,8 +722,13 @@ export async function updateBookingStatus(
   fromStatus: JobStatus,
   toStatus: JobStatus,
   devOnly: boolean,
+  operatorCustomerId: string,
 ): Promise<boolean> {
   return sql.begin(async (tx) => {
+    await tx`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await tx`select set_config(
+      'lakeandpine.current_customer_id', ${operatorCustomerId}, true
+    )`;
     // Premium work is schedule-authoritative. Its booking status is synchronized
     // by database trigger after crew-capacity validation, never from this legacy
     // planning workspace.
@@ -602,14 +740,10 @@ export async function updateBookingStatus(
       returning id`;
     if (!rows[0]) return false;
 
-    await tx`
-      insert into booking_events (booking_id, type, data)
-      values (${bookingId}, 'status_changed', ${tx.json({ fromStatus, toStatus, via: "operator" } as postgres.JSONValue)})`;
-
     if (toStatus === "completed") {
       await tx`
-        insert into follow_ups (booking_id, kind, scheduled_for, is_dev_seed)
-        select ${bookingId}, task.kind, task.scheduled_for, b.is_dev_seed
+        insert into follow_ups (booking_id, kind, scheduled_for)
+        select ${bookingId}, task.kind, task.scheduled_for
         from bookings b
         cross join (values
           ('service_check_in'::text, now() + interval '2 hours'),
@@ -627,42 +761,67 @@ export async function setChecklistItemState(
   itemId: string,
   state: ChecklistItem["state"],
   devOnly: boolean,
+  operatorCustomerId: string,
 ): Promise<boolean> {
-  const rows = await sql<{ id: string }[]>`
-    update checklist_items c
-    set state = ${state}, completed_at = case when ${state} = 'completed' then now() else null end
-    from bookings b
-    where c.id = ${itemId} and c.booking_id = ${bookingId} and b.id = c.booking_id
-      and ${devOnly ? sql`b.is_dev_seed` : sql`true`}
-    returning c.id`;
-  return Boolean(rows[0]);
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${operatorCustomerId}, true
+    )`;
+    const rows = await transaction<{ id: string }[]>`
+      update checklist_items c
+      set state = ${state},
+          completed_at = case when ${state} = 'completed' then now() else null end
+      from bookings b
+      where c.id = ${itemId} and c.booking_id = ${bookingId}
+        and b.id = c.booking_id
+        and ${devOnly ? transaction`b.is_dev_seed` : transaction`true`}
+      returning c.id`;
+    return Boolean(rows[0]);
+  });
 }
 
 export async function addInternalNote(
   bookingId: string,
   body: string,
   devOnly: boolean,
+  operatorCustomerId: string,
 ): Promise<boolean> {
-  const rows = await sql<{ id: string }[]>`
-    select id from bookings
-    where id = ${bookingId} and ${devOnly ? sql`is_dev_seed` : sql`true`}`;
-  if (!rows[0]) return false;
-  await sql`
-    insert into internal_notes (booking_id, body, is_dev_seed)
-    values (${bookingId}, ${body}, ${devOnly})`;
-  return true;
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${operatorCustomerId}, true
+    )`;
+    const rows = await transaction<{ id: string }[]>`
+      select id from bookings
+      where id = ${bookingId}
+        and ${devOnly ? transaction`is_dev_seed` : transaction`true`}`;
+    if (!rows[0]) return false;
+    await transaction`
+      insert into internal_notes (booking_id, body)
+      values (${bookingId}, ${body})`;
+    return true;
+  });
 }
 
 export async function completeFollowUp(
   bookingId: string,
   followUpId: string,
   devOnly: boolean,
+  operatorCustomerId: string,
 ): Promise<boolean> {
-  const rows = await sql<{ id: string }[]>`
-    update follow_ups f set status = 'completed', completed_at = now()
-    from bookings b
-    where f.id = ${followUpId} and f.booking_id = ${bookingId} and b.id = f.booking_id
-      and ${devOnly ? sql`b.is_dev_seed` : sql`true`}
-    returning f.id`;
-  return Boolean(rows[0]);
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${operatorCustomerId}, true
+    )`;
+    const rows = await transaction<{ id: string }[]>`
+      update follow_ups f set status = 'completed'
+      from bookings b
+      where f.id = ${followUpId} and f.booking_id = ${bookingId}
+        and b.id = f.booking_id
+        and ${devOnly ? transaction`b.is_dev_seed` : transaction`true`}
+      returning f.id`;
+    return Boolean(rows[0]);
+  });
 }

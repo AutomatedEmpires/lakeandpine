@@ -4,16 +4,24 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { FormEvent, useMemo, useState } from "react";
 
+import {
+  feasibleArrivalWindows,
+  STANDARD_ARRIVAL_WINDOWS,
+} from "@/lib/field-operations";
 import { MARKET_PROGRAMS } from "@/lib/market-content";
+import {
+  getPlanningDateBounds,
+  isPlanningDateAllowed,
+} from "@/lib/planning-date";
 import {
   deriveRequestPlanning,
   PREMIUM_PROGRAMS,
   type PremiumProgram,
   type RequestPlanningInput,
 } from "@/lib/premium-request";
+import { MULTI_DAY_WINDOW_PREFERENCE } from "@/lib/scheduling";
 
 const STEPS = ["Program", "Property brief", "Timing", "Review"] as const;
-const WINDOWS = ["Morning", "Midday", "Afternoon", "After-hours review"] as const;
 
 const CONTEXT_OPTIONS: Record<PremiumProgram, [string, string][]> = {
   estate: [
@@ -68,11 +76,22 @@ export function PremiumRequestFlow({ intakeEnabled }: { intakeEnabled: boolean }
   const [preferredDate, setPreferredDate] = useState("");
   const [alternateDate, setAlternateDate] = useState("");
   const [secondAlternateDate, setSecondAlternateDate] = useState("");
-  const [windowPreference, setWindowPreference] = useState<string>(WINDOWS[0]);
+  const [windowPreference, setWindowPreference] = useState<string>(
+    STANDARD_ARRIVAL_WINDOWS[0].label,
+  );
   const [deadlineCritical, setDeadlineCritical] = useState(false);
   const [accessComplex, setAccessComplex] = useState(false);
   const [siteReady, setSiteReady] = useState(false);
-  const [contact, setContact] = useState({ name: "", email: "", phone: "", zip: "" });
+  const [contact, setContact] = useState({
+    name: "",
+    email: "",
+    phone: "",
+    street: "",
+    unit: "",
+    city: "Coeur d'Alene",
+    state: "ID",
+    zip: "",
+  });
   const [privacyConsent, setPrivacyConsent] = useState(false);
   const [termsConsent, setTermsConsent] = useState(false);
   const [photoPermission, setPhotoPermission] = useState(false);
@@ -81,6 +100,7 @@ export function PremiumRequestFlow({ intakeEnabled }: { intakeEnabled: boolean }
   const [error, setError] = useState("");
   const [result, setResult] = useState<{ reference: string; persisted: boolean } | null>(null);
   const idempotencyKey = useMemo(() => crypto.randomUUID(), []);
+  const planningDateBounds = useMemo(() => getPlanningDateBounds(), []);
 
   const selectedProgram = MARKET_PROGRAMS.find((item) => item.slug === program)!;
   const planning = deriveRequestPlanning({
@@ -92,6 +112,18 @@ export function PremiumRequestFlow({ intakeEnabled }: { intakeEnabled: boolean }
     finishSensitive: Boolean(finishNotes.trim()),
     accessComplex,
   });
+  const elapsedMinutes =
+    Math.ceil(planning.estimatedMinutes / planning.estimatedCrewSize / 30) * 30;
+  const arrivalWindows = feasibleArrivalWindows(elapsedMinutes);
+  const hasEligibleArrivalWindow = arrivalWindows.some(
+    (window) => window.eligible,
+  );
+  const effectiveWindowPreference = arrivalWindows.some(
+    (window) => window.label === windowPreference && window.eligible,
+  )
+    ? windowPreference
+    : arrivalWindows.find((window) => window.eligible)?.label ??
+      MULTI_DAY_WINDOW_PREFERENCE;
 
   function chooseProgram(value: PremiumProgram) {
     setProgram(value);
@@ -102,10 +134,31 @@ export function PremiumRequestFlow({ intakeEnabled }: { intakeEnabled: boolean }
     if (step === 1 && priorities.trim().length < 10) {
       return "Add a short description of the result or priorities for this property.";
     }
-    if (step === 2 && !preferredDate) return "Choose a preferred date.";
-    if (step === 2 && !alternateDate) return "Choose at least one alternate date.";
-    if (step === 3 && (!contact.name || !contact.email || !contact.phone || !contact.zip)) {
-      return "Complete the contact fields so an operator can review the request.";
+    if (step >= 2) {
+      if (!preferredDate) return "Choose a preferred date.";
+      if (!alternateDate) return "Choose at least one alternate date.";
+      const currentPlanningDateBounds = getPlanningDateBounds();
+      if (
+        ![preferredDate, alternateDate, secondAlternateDate]
+          .filter(Boolean)
+          .every((value) =>
+            isPlanningDateAllowed(value, currentPlanningDateBounds),
+          )
+      ) {
+        return "Choose real calendar dates from today through the next 18 months.";
+      }
+    }
+    if (
+      step === 3 &&
+      (!contact.name ||
+        !contact.email ||
+        !contact.phone ||
+        !contact.street ||
+        !contact.city ||
+        !contact.state ||
+        !contact.zip)
+    ) {
+      return "Complete the contact and service-address fields so the route can be reviewed.";
     }
     if (step === 3 && (!privacyConsent || !termsConsent || !siteReady)) {
       return "Confirm the privacy, request, and site-readiness acknowledgements.";
@@ -149,7 +202,7 @@ export function PremiumRequestFlow({ intakeEnabled }: { intakeEnabled: boolean }
         scheduling: {
           preferredDate,
           alternateDates: [alternateDate, secondAlternateDate].filter(Boolean),
-          windowPreference,
+          windowPreference: effectiveWindowPreference,
           deadlineCritical,
           accessComplex,
         },
@@ -260,10 +313,10 @@ export function PremiumRequestFlow({ intakeEnabled }: { intakeEnabled: boolean }
           <h2>Share preferences, not a pretend instant appointment.</h2>
           <div className="notice-card"><strong>How confirmation works</strong><p>The scheduler first checks territory, qualified crew, travel, duration, availability, access, and any handoff or arrival deadline. An operator confirms the feasible window.</p></div>
           <div className="form-grid planning-form">
-            <div className="field"><label htmlFor="preferred-date">Preferred date</label><input id="preferred-date" type="date" value={preferredDate} onChange={(event) => setPreferredDate(event.target.value)} /></div>
-            <div className="field"><label htmlFor="alternate-date">First alternate</label><input id="alternate-date" type="date" value={alternateDate} onChange={(event) => setAlternateDate(event.target.value)} /></div>
-            <div className="field"><label htmlFor="second-alternate-date">Second alternate, optional</label><input id="second-alternate-date" type="date" value={secondAlternateDate} onChange={(event) => setSecondAlternateDate(event.target.value)} /></div>
-            <div className="field"><label htmlFor="window-preference">Preferred operating window</label><select id="window-preference" value={windowPreference} onChange={(event) => setWindowPreference(event.target.value)}>{WINDOWS.map((window) => <option key={window}>{window}</option>)}</select></div>
+            <div className="field"><label htmlFor="preferred-date">Preferred date</label><input id="preferred-date" type="date" min={planningDateBounds.min} max={planningDateBounds.max} value={preferredDate} onChange={(event) => setPreferredDate(event.target.value)} /></div>
+            <div className="field"><label htmlFor="alternate-date">First alternate</label><input id="alternate-date" type="date" min={planningDateBounds.min} max={planningDateBounds.max} value={alternateDate} onChange={(event) => setAlternateDate(event.target.value)} /></div>
+            <div className="field"><label htmlFor="second-alternate-date">Second alternate, optional</label><input id="second-alternate-date" type="date" min={planningDateBounds.min} max={planningDateBounds.max} value={secondAlternateDate} onChange={(event) => setSecondAlternateDate(event.target.value)} /></div>
+            <div className="field"><label htmlFor="window-preference">Preferred arrival window</label>{hasEligibleArrivalWindow ? <select id="window-preference" value={effectiveWindowPreference} onChange={(event) => setWindowPreference(event.target.value)}>{arrivalWindows.map((window) => <option key={window.id} value={window.label} disabled={!window.eligible}>{window.label}{window.eligible ? "" : " · does not fit estimated duration"}</option>)}</select> : <><input id="window-preference" value={MULTI_DAY_WINDOW_PREFERENCE} readOnly /><div className="notice-card"><strong>Single-day booking blocked</strong><p>This scope exceeds the branch&apos;s safe operating day even with the suggested crew. It can still be submitted for a walkthrough and an operator-planned multi-day scope; no single-day appointment will be offered.</p></div></>}<small>Estimated on-site time: {elapsedMinutes / 60} hours. Arrival is never planned after 4:00 PM; work is hard-capped at 7:00 PM.</small></div>
           </div>
           <label className="consent-row"><input type="checkbox" checked={deadlineCritical} onChange={(event) => setDeadlineCritical(event.target.checked)} /><span>This request is tied to an owner arrival, walkthrough, opening, event, or other real deadline.</span></label>
           <label className="consent-row"><input type="checkbox" checked={accessComplex} onChange={(event) => setAccessComplex(event.target.checked)} /><span>Access, parking, marina/storage entry, alarm/keyholder coordination, or operating-hour restrictions need operator planning.</span></label>
@@ -282,7 +335,12 @@ export function PremiumRequestFlow({ intakeEnabled }: { intakeEnabled: boolean }
             <div className="field"><label htmlFor="contact-name">Name</label><input id="contact-name" value={contact.name} onChange={(event) => setContact((value) => ({ ...value, name: event.target.value }))} autoComplete="name" maxLength={160} /></div>
             <div className="field"><label htmlFor="contact-email">Email</label><input id="contact-email" type="email" value={contact.email} onChange={(event) => setContact((value) => ({ ...value, email: event.target.value }))} autoComplete="email" /></div>
             <div className="field"><label htmlFor="contact-phone">Phone</label><input id="contact-phone" type="tel" value={contact.phone} onChange={(event) => setContact((value) => ({ ...value, phone: event.target.value }))} autoComplete="tel" maxLength={30} /></div>
+            <div className="field"><label htmlFor="contact-street">Service street address</label><input id="contact-street" value={contact.street} onChange={(event) => setContact((value) => ({ ...value, street: event.target.value }))} autoComplete="street-address" maxLength={200} /></div>
+            <div className="field"><label htmlFor="contact-unit">Unit, suite, marina, or site detail (optional)</label><input id="contact-unit" value={contact.unit} onChange={(event) => setContact((value) => ({ ...value, unit: event.target.value }))} autoComplete="address-line2" maxLength={120} /></div>
+            <div className="field"><label htmlFor="contact-city">Service city</label><input id="contact-city" value={contact.city} onChange={(event) => setContact((value) => ({ ...value, city: event.target.value }))} autoComplete="address-level2" maxLength={120} /></div>
+            <div className="field"><label htmlFor="contact-state">State</label><input id="contact-state" value={contact.state} onChange={(event) => setContact((value) => ({ ...value, state: event.target.value.toUpperCase() }))} autoComplete="address-level1" maxLength={2} /></div>
             <div className="field"><label htmlFor="contact-zip">Property ZIP / postal code</label><input id="contact-zip" value={contact.zip} onChange={(event) => setContact((value) => ({ ...value, zip: event.target.value }))} autoComplete="postal-code" maxLength={12} /></div>
+            <div className="notice-card full"><strong>Route review</strong><p>Requests outside the Coeur d&apos;Alene branch&apos;s standard 30-mile radius are welcome. The system flags them for manager review instead of rejecting them or making the crew absorb an unplanned drive.</p></div>
           </div>
           <label className="consent-row"><input type="checkbox" checked={siteReady} onChange={(event) => setSiteReady(event.target.checked)} /><span>To the best of my knowledge, the requested interior does not involve biohazard, active mold/remediation, unsafe debris, unavailable utilities required for the work, or an undisclosed regulated environment.</span></label>
           <label className="consent-row"><input type="checkbox" checked={privacyConsent} onChange={(event) => setPrivacyConsent(event.target.checked)} /><span>I agree to the request-data handling described in the <Link href="/privacy">privacy notice</Link> and have left access codes and payment details out.</span></label>

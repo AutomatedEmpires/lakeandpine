@@ -3,8 +3,8 @@ import "server-only";
 import type postgres from "postgres";
 
 import { sql } from "./db";
+import { stageCustomerRescheduleProposal } from "./field-reschedule";
 import { getScheduleSuggestions } from "./operations-console-data";
-import { requiredElapsedMinutes } from "./operations-scheduling";
 import {
   canTransitionRecovery,
   canTransitionRefund,
@@ -19,12 +19,14 @@ import {
   accessibleTeamIds,
   effectiveRoleForTeam,
   hasCapability,
+  membershipForCapability,
   teamAttentionLevel,
   type OperationsCapability,
   type WorkforceMembership,
   type WorkforceRole,
 } from "./team-operations";
-import { localDateTimeToUtc, validateUtcInterval } from "./zoned-datetime";
+import { localDateTimeToUtc } from "./zoned-datetime";
+import { ownerBootstrapEmail, ownerBootstrapEnabled } from "./env";
 
 type Transaction = postgres.TransactionSql;
 
@@ -139,6 +141,7 @@ export type TeamTimeOffRow = {
   end_at: string;
   reason_category: string;
   status: string;
+  version: number;
 };
 
 export type CompensationRow = {
@@ -210,10 +213,14 @@ export type TeamTerritoryCoverageRow = {
 
 export type TeamScheduleRow = ScheduleOption & {
   allocation_id: string;
+  customer_linked: boolean;
   end_at: string;
   status: string;
   required_crew_size: number;
   assigned_cleaners: string[];
+  checklist_item_count: number;
+  checklist_pending_count: number;
+  checklist_skipped_without_note_count: number;
 };
 
 export type TeamServiceCaseRow = {
@@ -303,7 +310,11 @@ export type CrewTeamOperations = {
   }>;
   inventory: InventoryRow[];
   restocks: RestockRow[];
-  assignments: Array<ScheduleOption & { allocation_id: string; open_time_entry_id: string | null }>;
+  assignments: Array<ScheduleOption & {
+    allocation_id: string;
+    open_time_entry_id: string | null;
+    clock_in_available: boolean;
+  }>;
   timeEntries: TimeEntryRow[];
   bonuses: BonusRow[];
 };
@@ -395,23 +406,23 @@ function requireCapability(
   return organizationId;
 }
 
-function actorMembershipId(access: OperationsAccess, teamId: string | null) {
-  const membershipId = (
-    access.memberships.find(
-      (membership) =>
-        membership.organizationId === access.organizationId &&
-        membership.teamId === teamId,
-    ) ??
-    access.memberships.find(
-      (membership) =>
-        membership.organizationId === access.organizationId &&
-        membership.teamId === null,
-    )
-  )?.id;
-  if (!membershipId) {
+function actorMembershipId(
+  access: OperationsAccess,
+  teamId: string | null,
+  capability: OperationsCapability,
+) {
+  const membership = access.organizationId
+    ? membershipForCapability(
+        access.memberships,
+        capability,
+        access.organizationId,
+        teamId,
+      )
+    : null;
+  if (!membership) {
     throw new Error("An active workforce membership is required for this operation");
   }
-  return membershipId;
+  return membership.id;
 }
 
 export async function getOperationsAccess(
@@ -425,9 +436,17 @@ export async function getOperationsAccess(
 
 export async function bootstrapNationalOwner(
   customerId: string,
+  customerEmail: string | null,
   devOnly: boolean,
 ) {
   if (devOnly) throw new Error("Owner bootstrap is disabled in preview mode");
+  if (
+    !ownerBootstrapEnabled ||
+    !ownerBootstrapEmail ||
+    customerEmail?.trim().toLowerCase() !== ownerBootstrapEmail
+  ) {
+    throw new Error("Owner bootstrap is not authorized for this identity");
+  }
   return withActorContext({ customerId }, async (transaction) => {
     const rows = await transaction<{ membership_id: string }[]>`
       select private.bootstrap_lakeandpine_owner(${customerId}) as membership_id`;
@@ -637,7 +656,7 @@ export async function getOperationsDashboard(input: {
             transaction<TeamTimeOffRow[]>`
               select time_off.id, cleaner.full_name as cleaner_name,
                 time_off.start_at::text, time_off.end_at::text,
-                time_off.reason_category, time_off.status
+                time_off.reason_category, time_off.status, time_off.version
               from cleaner_time_off time_off
               join cleaners cleaner on cleaner.id = time_off.cleaner_id
               where time_off.organization_id = ${organizationId}
@@ -713,23 +732,36 @@ export async function getOperationsDashboard(input: {
               order by schedule.start_at desc, cleaner.full_name`,
             transaction<TeamScheduleRow[]>`
               select schedule.id, allocation.id as allocation_id,
+                (booking.customer_id is not null) as customer_linked,
                 schedule.service_vertical, schedule.start_at::text,
                 schedule.end_at::text, schedule.labor_minutes,
                 territory.name as territory_name,
                 territory.timezone as territory_timezone, schedule.status,
                 schedule.required_crew_size,
-                coalesce(array_agg(cleaner.full_name order by cleaner.full_name)
+                count(distinct checklist.id)::int as checklist_item_count,
+                count(distinct checklist.id)
+                  filter (where checklist.state = 'pending')::int
+                  as checklist_pending_count,
+                count(distinct checklist.id)
+                  filter (where checklist.state = 'skipped'
+                    and nullif(btrim(checklist.completion_note), '') is null)::int
+                  as checklist_skipped_without_note_count,
+                coalesce(array_agg(distinct cleaner.full_name order by cleaner.full_name)
                   filter (where assignment.status in ('proposed','accepted','confirmed')), '{}')
                   as assigned_cleaners
               from team_job_allocations allocation
               join job_schedules schedule on schedule.id = allocation.job_schedule_id
+              join bookings booking on booking.id = schedule.booking_id
               join service_territories territory on territory.id = schedule.territory_id
               left join job_assignments assignment on assignment.job_schedule_id = schedule.id
                 and assignment.team_id = allocation.team_id
               left join cleaners cleaner on cleaner.id = assignment.cleaner_id
+              left join checklist_items checklist
+                on checklist.team_job_allocation_id = allocation.id
               where allocation.organization_id = ${organizationId}
                 and allocation.team_id = ${selectedTeamId}
-              group by schedule.id, allocation.id, territory.name, territory.timezone
+              group by schedule.id, allocation.id, booking.customer_id,
+                territory.name, territory.timezone
               order by schedule.start_at desc
               limit 100`,
           ])
@@ -1011,6 +1043,12 @@ export async function transitionScopedTeamSchedule(input: {
   }
   return withStaffMutation(input, async (transaction, access) => {
     const organizationId = requireCapability(access, "allocate_jobs", input.teamId);
+    if (input.to === "confirmed" || (input.from === "confirmed" && input.to === "held")) {
+      requireCapability(access, "manage_schedule_approvals", input.teamId);
+    }
+    if (input.to === "canceled") {
+      requireCapability(access, "manage_service_recovery", input.teamId);
+    }
     const allocations = await transaction<{ id: string }[]>`
       select allocation.id
       from team_job_allocations allocation
@@ -1205,14 +1243,11 @@ export async function updateWorkforceMembershipStatus(input: {
       throw new Error("General managers are organization-scoped");
     }
     if (subject.role === "manager") requireCapability(access, "manage_teams", null);
-    const actorId = actorMembershipId(access, input.teamId);
     const rows = await transaction<{ id: string }[]>`
       update workforce_memberships
       set status = ${input.to},
         ended_at = case when ${input.to} = 'ended' then current_date else null end,
-        status_reason = ${input.reason},
-        status_changed_by_membership_id = ${actorId},
-        status_changed_at = now()
+        status_reason = ${input.reason}
       where id = ${input.membershipId} and status = ${input.from}
       returning id`;
     if (!rows[0]) throw new Error("Membership changed; refresh and retry");
@@ -1234,12 +1269,11 @@ export async function updateWorkforceMembershipStatus(input: {
       await transaction`
         insert into workforce_events
           (organization_id, team_id, subject_membership_id, event_type, severity,
-           status, summary, created_by_membership_id, is_dev_seed)
+           summary, private_details)
         values (${organizationId}, ${input.teamId}, ${input.membershipId},
           ${input.to === "ended" ? "termination" : input.to === "active" ? "reactivation" : "suspension"},
           ${input.to === "ended" ? "high" : input.to === "active" ? "info" : "medium"},
-          ${input.to === "active" ? "resolved" : "open"}, ${input.reason},
-          ${actorId}, ${subject.is_dev_seed})`;
+          ${input.reason}, null)`;
     }
   });
 }
@@ -1262,7 +1296,6 @@ export async function createInventoryProduct(input: {
 }) {
   return withStaffMutation(input, async (transaction, access) => {
     const organizationId = requireCapability(access, "manage_inventory", input.teamId);
-    const actorId = actorMembershipId(access, input.teamId);
     const locations = await transaction<{ id: string }[]>`
       select id from inventory_locations
       where organization_id = ${organizationId} and team_id = ${input.teamId}
@@ -1272,12 +1305,10 @@ export async function createInventoryProduct(input: {
     const products = await transaction<{ id: string }[]>`
       insert into inventory_products
         (organization_id, team_id, sku, name, category, unit_label,
-         unit_cost_cents, preferred_vendor, purchase_url, image_url,
-         created_by_membership_id, is_dev_seed)
+         unit_cost_cents, preferred_vendor, purchase_url, image_url)
       values (${organizationId}, ${input.teamId}, ${input.sku}, ${input.name},
         ${input.category}, ${input.unitLabel}, ${input.unitCostCents},
-        ${input.preferredVendor}, ${input.purchaseUrl}, ${input.imageUrl},
-        ${actorId}, ${input.devOnly})
+        ${input.preferredVendor}, ${input.purchaseUrl}, ${input.imageUrl})
       returning id`;
     const productId = products[0].id;
     await transaction`
@@ -1290,11 +1321,9 @@ export async function createInventoryProduct(input: {
       await transaction`
         insert into inventory_transactions
           (organization_id, team_id, location_id, product_id, transaction_type,
-           quantity_delta, balance_after, actor_membership_id, unit_cost_cents,
-           note, is_dev_seed)
+           quantity_delta, note)
         values (${organizationId}, ${input.teamId}, ${locations[0].id}, ${productId},
-          'receipt', ${input.initialCount}, 0, ${actorId}, ${input.unitCostCents},
-          'Opening team stock count', ${input.devOnly})`;
+          'receipt', ${input.initialCount}, 'Opening team stock count')`;
     }
     await transaction`
       update inventory_stock set reorder_point = ${input.reorderPoint},
@@ -1318,10 +1347,9 @@ export async function recordTeamInventoryUsage(input: {
     const rows = await transaction<{ id: string }[]>`
       insert into inventory_transactions
         (organization_id, team_id, location_id, product_id, transaction_type,
-         quantity_delta, balance_after, actor_membership_id, note, is_dev_seed)
+         quantity_delta, note)
       values (${organizationId}, ${input.teamId}, ${input.locationId}, ${input.productId},
-        'usage', ${-input.quantity}, 0, ${actorMembershipId(access, input.teamId)},
-        ${input.note}, ${input.devOnly})
+        'usage', ${-input.quantity}, ${input.note})
       returning id`;
     return rows[0]?.id;
   });
@@ -1366,12 +1394,7 @@ export async function reviewRestockRequest(input: {
     if (!requests[0]) throw new Error("Restock request changed or is outside your team");
     const changed = await transaction<{ id: string }[]>`
       update restock_requests
-      set status = ${input.to}, version = version + 1,
-        decision_by_membership_id = ${actorMembershipId(access, input.teamId)},
-        decision_note = ${input.decisionNote},
-        decided_at = case when ${input.to} in ('approved','declined','canceled') then now() else decided_at end,
-        ordered_at = case when ${input.to} = 'ordered' then now() else ordered_at end,
-        received_at = case when ${input.to} = 'received' then now() else received_at end
+      set status = ${input.to}, decision_note = ${input.decisionNote}
       where id = ${input.restockId} and organization_id = ${organizationId}
         and team_id = ${input.teamId} and status = ${input.from}
         and version = ${input.version}
@@ -1397,10 +1420,14 @@ export async function allocateScheduleToTeam(input: {
         and coverage.team_id = ${input.teamId}
         and coverage.status = 'active'
       where schedule.id = ${input.scheduleId}
-        and schedule.status in ('tentative','held','confirmed')
+        and schedule.status in ('tentative','held')
         and (${input.devOnly} = false or schedule.is_dev_seed)
       for update of schedule`;
-    if (!schedules[0]) throw new Error("Schedule is no longer available for allocation");
+    if (!schedules[0]) {
+      throw new Error(
+        "Only tentative or held work can be allocated; confirmed work must already have an approved team scope",
+      );
+    }
     const coverage = await transaction<{ covered: boolean }[]>`
       select private.lock_active_team_territory_coverage(
         ${organizationId}, ${input.teamId}, ${schedules[0].territory_id}
@@ -1410,11 +1437,8 @@ export async function allocateScheduleToTeam(input: {
     }
     await transaction`
       insert into team_job_allocations
-        (organization_id, team_id, job_schedule_id, assigned_by_membership_id,
-         estimated_labor_minutes, is_dev_seed)
-      values (${organizationId}, ${input.teamId}, ${input.scheduleId},
-        ${actorMembershipId(access, input.teamId)}, ${schedules[0].labor_minutes},
-        ${input.devOnly})`;
+        (organization_id, team_id, job_schedule_id)
+      values (${organizationId}, ${input.teamId}, ${input.scheduleId})`;
   });
 }
 
@@ -1431,10 +1455,7 @@ export async function reviewTimeEntry(input: {
     const organizationId = requireCapability(access, "review_time", input.teamId);
     const rows = await transaction<{ id: string }[]>`
       update job_time_entries
-      set status = ${input.to}, version = version + 1,
-        approved_by_membership_id = ${actorMembershipId(access, input.teamId)},
-        approved_at = case when ${input.to} = 'approved' then now() else null end,
-        adjustment_reason = ${input.reason}
+      set status = ${input.to}, review_reason = ${input.reason}
       where id = ${input.entryId} and organization_id = ${organizationId}
         and team_id = ${input.teamId} and status = 'submitted'
         and version = ${input.version}
@@ -1449,17 +1470,18 @@ export async function reviewTeamTimeOff(input: {
   teamId: string;
   timeOffId: string;
   to: "approved" | "declined";
+  version: number;
+  reason: string | null;
 }) {
   return withStaffMutation(input, async (transaction, access) => {
     const organizationId = requireCapability(access, "review_time", input.teamId);
-    const actorId = actorMembershipId(access, input.teamId);
     const rows = await transaction<{ id: string }[]>`
       update cleaner_time_off
-      set status = ${input.to}, reviewed_by_label = 'Scoped team manager',
-        reviewed_by_membership_id = ${actorId}, reviewed_at = now()
+      set status = ${input.to}, review_reason = ${input.reason}
       where id = ${input.timeOffId}
         and organization_id = ${organizationId} and team_id = ${input.teamId}
         and status = 'requested'
+        and version = ${input.version}
       returning id`;
     if (!rows[0]) throw new Error("Time-off request changed or is outside your team");
   });
@@ -1495,11 +1517,10 @@ export async function setCompensationRate(input: {
     await transaction`
       insert into compensation_rates
         (organization_id, team_id, workforce_membership_id, pay_basis,
-         amount_cents, effective_from, status, created_by_membership_id,
-         reason, is_dev_seed)
+         amount_cents, effective_from, reason)
       values (${organizationId}, ${input.teamId}, ${input.membershipId},
-        ${input.payBasis}, ${input.amountCents}, ${input.effectiveFrom}, 'active',
-        ${actorMembershipId(access, input.teamId)}, ${input.reason}, ${input.devOnly})`;
+        ${input.payBasis}, ${input.amountCents}, ${input.effectiveFrom},
+        ${input.reason})`;
   });
 }
 
@@ -1517,9 +1538,9 @@ export async function createBonusAward(input: {
     const rows = await transaction<{ id: string }[]>`
       insert into bonus_awards
         (organization_id, team_id, workforce_membership_id, amount_cents,
-         reason, status, is_dev_seed)
+         reason)
       select ${organizationId}, ${input.teamId}, membership.id, ${input.amountCents},
-        ${input.reason}, 'proposed', ${input.devOnly}
+        ${input.reason}
       from workforce_memberships membership
       where membership.id = ${input.membershipId}
         and membership.organization_id = ${organizationId}
@@ -1554,7 +1575,7 @@ export async function createQualityReview(input: {
   teamId: string;
   allocationId: string;
   cleanerId: string;
-  source: "verified_customer" | "quality_inspection" | "manager_review";
+  source: "quality_inspection" | "manager_review";
   rating: number;
   evidenceReference: string | null;
   privateNote: string | null;
@@ -1581,15 +1602,11 @@ export async function createQualityReview(input: {
     await transaction`
       insert into quality_reviews
         (organization_id, team_id, team_job_allocation_id, cleaner_id,
-         customer_id, rating, source, verified_at, evidence_reference,
-         private_note, created_by_membership_id, is_dev_seed)
+         customer_id, rating, source, evidence_reference,
+         private_note, is_dev_seed)
       values (${organizationId}, ${input.teamId}, ${input.allocationId},
-        ${input.cleanerId},
-        ${input.source === "verified_customer" ? candidates[0].customer_id : null},
-        ${input.rating}, ${input.source},
-        ${input.source === "verified_customer" ? new Date().toISOString() : null},
-        ${input.evidenceReference}, ${input.privateNote},
-        ${actorMembershipId(access, input.teamId)}, ${input.devOnly})`;
+        ${input.cleanerId}, null, ${input.rating}, ${input.source},
+        ${input.evidenceReference}, ${input.privateNote}, ${input.devOnly})`;
   });
 }
 
@@ -1613,18 +1630,9 @@ export async function transitionBonusAward(input: {
   }
   return withStaffMutation(input, async (transaction, access) => {
     const organizationId = requireCapability(access, "award_bonus", input.teamId);
-    const actorId = actorMembershipId(access, input.teamId);
     const rows = await transaction<{ id: string }[]>`
       update bonus_awards
-      set status = ${input.to}, version = version + 1,
-        approved_by_membership_id = case
-          when ${input.to} in ('approved','exported','recorded_paid')
-            then coalesce(approved_by_membership_id, ${actorId})
-          else approved_by_membership_id end,
-        approved_at = case
-          when ${input.to} in ('approved','exported','recorded_paid')
-            then coalesce(approved_at, now())
-          else approved_at end,
+      set status = ${input.to},
         external_reference = case
           when ${input.to} in ('exported','recorded_paid') then ${input.externalReference}
           else external_reference end
@@ -1657,10 +1665,9 @@ export async function createWorkforceEvent(input: {
     const rows = await transaction<{ id: string }[]>`
       insert into workforce_events
         (organization_id, team_id, subject_membership_id, event_type, severity,
-         summary, private_details, created_by_membership_id, is_dev_seed)
+         summary, private_details)
       select ${organizationId}, ${input.teamId}, membership.id, ${input.eventType},
-        ${input.severity}, ${input.summary}, ${input.privateDetails},
-        ${actorMembershipId(access, input.teamId)}, ${input.devOnly}
+        ${input.severity}, ${input.summary}, ${input.privateDetails}
       from workforce_memberships membership
       where membership.id = ${input.membershipId}
         and membership.organization_id = ${organizationId}
@@ -1716,11 +1723,14 @@ export async function getCrewTeamOperations(
         join workforce_memberships membership on membership.id = request.requested_by_membership_id
         where membership.cleaner_id = ${cleanerId}
         order by request.created_at desc limit 30`,
-      transaction<Array<ScheduleOption & { allocation_id: string; open_time_entry_id: string | null }>>`
+      transaction<CrewTeamOperations["assignments"]>`
         select schedule.id, allocation.id as allocation_id, schedule.service_vertical,
           schedule.start_at::text, schedule.labor_minutes,
           territory.name as territory_name, territory.timezone as territory_timezone,
-          open_entry.id as open_time_entry_id
+          open_entry.id as open_time_entry_id,
+          (now() >= coalesce(approved_proposal.arrival_window_start, schedule.start_at)
+              - make_interval(mins => schedule.travel_buffer_minutes)
+            and now() <= schedule.end_at + interval '12 hours') as clock_in_available
         from team_job_allocations allocation
         join job_schedules schedule on schedule.id = allocation.job_schedule_id
         join service_territories territory on territory.id = schedule.territory_id
@@ -1729,6 +1739,16 @@ export async function getCrewTeamOperations(
           and assignment.status in ('accepted','confirmed')
         left join job_time_entries open_entry on open_entry.team_job_allocation_id = allocation.id
           and open_entry.cleaner_id = ${cleanerId} and open_entry.status = 'open'
+        left join lateral (
+          select proposal.arrival_window_start
+          from schedule_proposals proposal
+          where proposal.job_schedule_id = schedule.id
+            and proposal.status = 'approved'
+            and schedule.start_at >= proposal.arrival_window_start
+            and schedule.start_at <= proposal.arrival_window_end
+          order by proposal.version desc, proposal.created_at desc
+          limit 1
+        ) approved_proposal on true
         where allocation.team_id = any(${teamIds}::uuid[])
           and schedule.status in ('confirmed','en_route','in_progress','quality_review')
         order by schedule.start_at`,
@@ -1791,10 +1811,10 @@ export async function recordCleanerInventoryUsage(input: {
     await transaction`
       insert into inventory_transactions
         (organization_id, team_id, location_id, product_id, transaction_type,
-         quantity_delta, balance_after, actor_membership_id, cleaner_id, note)
+         quantity_delta, note)
       values (${memberships[0].organization_id}, ${memberships[0].team_id},
-        ${input.locationId}, ${input.productId}, 'usage', ${-input.quantity}, 0,
-        ${input.membershipId}, ${input.cleanerId}, ${input.note})`;
+        ${input.locationId}, ${input.productId}, 'usage', ${-input.quantity},
+        ${input.note})`;
   });
 }
 
@@ -1814,21 +1834,17 @@ export async function requestCleanerRestock(input: {
       where id = ${input.membershipId} and cleaner_id = ${input.cleanerId}
         and role in ('cleaner','shift_lead') and status = 'active'`;
     if (!memberships[0]) throw new Error("Choose one of your active teams");
-    const rows = await transaction<
-      { unit_cost_cents: number | null; purchase_url: string | null }[]
-    >`
-      select unit_cost_cents, purchase_url from inventory_products
+    const rows = await transaction<{ id: string }[]>`
+      select id from inventory_products
       where id = ${input.productId} and organization_id = ${memberships[0].organization_id}
         and team_id = ${memberships[0].team_id} and active`;
     if (!rows[0]) throw new Error("Choose an active product from your team");
     await transaction`
       insert into restock_requests
         (organization_id, team_id, location_id, product_id,
-         requested_by_membership_id, request_source, quantity_requested,
-         estimated_unit_cost_cents, purchase_url_snapshot)
+         request_source, quantity_requested)
       values (${memberships[0].organization_id}, ${memberships[0].team_id},
-        ${input.locationId}, ${input.productId}, ${input.membershipId}, 'cleaner',
-        ${input.quantity}, ${rows[0].unit_cost_cents}, ${rows[0].purchase_url})`;
+        ${input.locationId}, ${input.productId}, 'cleaner', ${input.quantity})`;
   });
 }
 
@@ -1851,12 +1867,29 @@ export async function startCrewTimeEntry(input: {
         and membership.organization_id = allocation.organization_id
         and membership.cleaner_id = ${input.cleanerId}
         and membership.role in ('cleaner','shift_lead') and membership.status = 'active'
+      left join lateral (
+        select proposal.arrival_window_start
+        from schedule_proposals proposal
+        where proposal.job_schedule_id = schedule.id
+          and proposal.status = 'approved'
+          and schedule.start_at >= proposal.arrival_window_start
+          and schedule.start_at <= proposal.arrival_window_end
+        order by proposal.version desc, proposal.created_at desc
+        limit 1
+      ) approved_proposal on true
       where allocation.id = ${input.allocationId}
         and assignment.cleaner_id = ${input.cleanerId}
         and assignment.status in ('accepted','confirmed')
         and schedule.status in ('confirmed','en_route','in_progress')
+        and now() >= coalesce(approved_proposal.arrival_window_start, schedule.start_at)
+          - make_interval(mins => schedule.travel_buffer_minutes)
+        and now() <= schedule.end_at + interval '12 hours'
       for update of allocation, schedule`;
-    if (!rows[0]) throw new Error("This assignment is not ready for your time clock");
+    if (!rows[0]) {
+      throw new Error(
+        "This assignment is outside its approved clock-in window or is no longer ready for your time clock",
+      );
+    }
     await transaction`
       insert into job_time_entries
         (organization_id, team_id, team_job_allocation_id, cleaner_id,
@@ -1876,7 +1909,7 @@ export async function stopCrewTimeEntry(input: {
     const rows = await transaction<{ id: string }[]>`
       update job_time_entries
       set clock_out_at = now(), break_minutes = ${input.breakMinutes},
-        status = 'submitted', version = version + 1
+        status = 'submitted'
       where id = ${input.entryId} and cleaner_id = ${input.cleanerId}
         and status = 'open' and clock_in_at < now()
       returning id`;
@@ -1901,26 +1934,10 @@ export async function createCleanerCallout(input: {
     await transaction`
       insert into workforce_events
         (organization_id, team_id, subject_membership_id, event_type,
-         severity, summary, created_by_membership_id)
+         severity, summary)
       values (${memberships[0].organization_id}, ${memberships[0].team_id},
-        ${input.membershipId}, 'callout', 'high', ${input.summary},
-        ${input.membershipId})`;
+        ${input.membershipId}, 'callout', 'high', ${input.summary})`;
   });
-}
-
-async function staffActorLabel(
-  transaction: Transaction,
-  membershipId: string,
-) {
-  const rows = await transaction<{ label: string }[]>`
-    select coalesce(cleaner.full_name, customer.full_name, customer.email,
-      'Authorized team operator') as label
-    from workforce_memberships membership
-    left join cleaners cleaner on cleaner.id = membership.cleaner_id
-    left join customers customer on customer.id = membership.customer_id
-    where membership.id = ${membershipId}
-    limit 1`;
-  return rows[0]?.label ?? "Authorized team operator";
 }
 
 export async function getTeamRecoveryDashboard(input: {
@@ -2123,20 +2140,20 @@ export async function rescheduleScopedServiceCase(input: {
       "manage_service_recovery",
       input.teamId,
     );
+    const operatorMembershipId = actorMembershipId(
+      access,
+      input.teamId,
+      "manage_service_recovery",
+    );
     const rows = await transaction<Array<{
       schedule_id: string;
-      labor_minutes: number;
-      required_crew_size: number;
-      territory_timezone: string;
     }>>`
-      select schedule.id as schedule_id, schedule.labor_minutes,
-        schedule.required_crew_size, territory.timezone as territory_timezone
+      select schedule.id as schedule_id
       from team_job_allocations allocation
       join job_schedules schedule on schedule.id = allocation.job_schedule_id
       join bookings booking on booking.id = schedule.booking_id
       join service_cases service_case on service_case.booking_id = booking.id
         and service_case.assigned_team_id = allocation.team_id
-      join service_territories territory on territory.id = schedule.territory_id
       where allocation.organization_id = ${organizationId}
         and allocation.team_id = ${input.teamId}
         and service_case.id = ${input.caseId}
@@ -2148,33 +2165,22 @@ export async function rescheduleScopedServiceCase(input: {
           allocation.is_dev_seed and schedule.is_dev_seed
           and booking.is_dev_seed and service_case.is_dev_seed
         ))
-      for update of service_case, booking, schedule`;
+      order by schedule.start_at desc
+      limit 1`;
     if (!rows[0]) {
       throw new Error("Reschedule case changed or is outside your team");
     }
-    const startAt = localDateTimeToUtc(input.startLocal, rows[0].territory_timezone);
-    const endAt = localDateTimeToUtc(input.endLocal, rows[0].territory_timezone);
-    validateUtcInterval(startAt, endAt, { maxMinutes: 24 * 60 });
-    const elapsedMinutes = Math.round((Date.parse(endAt) - Date.parse(startAt)) / 60_000);
-    const minimumMinutes = requiredElapsedMinutes(
-      rows[0].labor_minutes,
-      rows[0].required_crew_size,
-    );
-    if (!Number.isFinite(elapsedMinutes) || elapsedMinutes < minimumMinutes) {
-      throw new Error(
-        `Reschedule needs at least ${minimumMinutes} elapsed minutes for the existing labor plan`,
-      );
-    }
-    await transaction`
-      update job_schedules
-      set start_at = ${startAt}, end_at = ${endAt}, version = version + 1
-      where id = ${rows[0].schedule_id}`;
-    await transaction`
-      update service_cases
-      set status = 'resolved', resolution_type = 'rescheduled',
-        resolution_summary = 'Schedule updated by an authorized team operator after capacity validation.',
-        resolved_at = now()
-      where id = ${input.caseId} and status = 'action_planned'`;
+    return stageCustomerRescheduleProposal(transaction, {
+      organizationId,
+      teamId: input.teamId,
+      serviceCaseId: input.caseId,
+      scheduleId: rows[0].schedule_id,
+      actorMembershipId: operatorMembershipId,
+      startLocal: input.startLocal,
+      endLocal: input.endLocal,
+      proposalNote: "Reschedule requested through branch service recovery.",
+      devOnly: input.devOnly,
+    });
   });
 }
 
@@ -2228,10 +2234,6 @@ export async function cancelScopedServiceCaseBooking(input: {
       where id = ${rows[0].booking_id} and status = 'canceled'`;
     if (!canceled[0]) throw new Error("Booking cancellation did not complete");
     await transaction`
-      insert into booking_events (booking_id, type, data)
-      values (${rows[0].booking_id}, 'canceled_from_service_case',
-        ${transaction.json({ serviceCaseId: input.caseId } as postgres.JSONValue)})`;
-    await transaction`
       update service_cases
       set status = 'resolved', resolution_type = 'canceled',
         resolution_summary = 'Booking and active schedule canceled by an authorized team operator.',
@@ -2278,15 +2280,10 @@ export async function createScopedRecoveryAction(input: {
     if (Date.parse(scheduledAt) < Date.now() - 5 * 60_000) {
       throw new Error("Recovery target time must be in the future");
     }
-    const actorId = actorMembershipId(access, input.teamId);
-    const actor = await staffActorLabel(transaction, actorId);
     const rows = await transaction<{ id: string }[]>`
       insert into service_recovery_actions
-        (service_case_id, booking_id, action_type, owner_label, scheduled_at,
-         notes, status, is_dev_seed)
-      values (${input.caseId}, ${cases[0].booking_id}, ${input.actionType},
-        ${actor}, ${scheduledAt}, ${input.notes}, 'planned',
-        ${input.devOnly})
+        (service_case_id, action_type, scheduled_at, notes)
+      values (${input.caseId}, ${input.actionType}, ${scheduledAt}, ${input.notes})
       returning id`;
     return rows[0];
   });
@@ -2326,16 +2323,9 @@ export async function transitionScopedRecoveryAction(input: {
         ))
       for update of recovery`;
     if (!scoped[0]) throw new Error("Recovery changed or is outside your team");
-    const actorId = actorMembershipId(access, input.teamId);
-    const actor = await staffActorLabel(transaction, actorId);
     const rows = await transaction<{ id: string }[]>`
       update service_recovery_actions
-      set status = ${input.to},
-        approved_by_label = case
-          when ${input.to} in ('approved','scheduled','completed')
-            then coalesce(approved_by_label, ${actor})
-          else approved_by_label end,
-        completed_at = case when ${input.to} = 'completed' then now() else null end
+      set status = ${input.to}
       where id = ${input.recoveryId} and status = ${input.from}
       returning id`;
     if (!rows[0]) throw new Error("Recovery changed; refresh and retry");
@@ -2390,15 +2380,11 @@ export async function createScopedRefundReview(input: {
         "Refund review requires an eligible team case and enough remaining paid balance",
       );
     }
-    const actorId = actorMembershipId(access, input.teamId);
-    const actor = await staffActorLabel(transaction, actorId);
     await transaction`
       insert into refund_records
-        (service_case_id, booking_id, billing_record_id, amount_cents,
-         reason_code, status, provider, requested_by_label, is_dev_seed)
+        (service_case_id, booking_id, billing_record_id, amount_cents, reason_code)
       values (${input.caseId}, ${rows[0].booking_id}, ${rows[0].billing_record_id},
-        ${input.amountCents}, ${input.reasonCode}, 'requested', 'manual',
-        ${actor}, ${input.devOnly})`;
+        ${input.amountCents}, ${input.reasonCode})`;
   });
 }
 
@@ -2438,20 +2424,9 @@ export async function transitionScopedRefund(input: {
         ))
       for update of refund`;
     if (!scoped[0]) throw new Error("Refund changed or is outside your team");
-    const actorId = actorMembershipId(access, input.teamId);
-    const actor = await staffActorLabel(transaction, actorId);
     const rows = await transaction<{ id: string }[]>`
       update refund_records
       set status = ${input.to},
-        approved_by_label = case
-          when ${input.to} = 'approved' then ${actor}
-          else approved_by_label end,
-        approved_at = case
-          when ${input.to} = 'approved' then now()
-          else approved_at end,
-        processed_at = case
-          when ${input.to} = 'processed' then now()
-          else processed_at end,
         provider_refund_id = case
           when ${input.to} = 'processed' then ${input.externalReference}
           else provider_refund_id end

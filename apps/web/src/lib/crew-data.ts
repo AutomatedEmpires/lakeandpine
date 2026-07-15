@@ -51,25 +51,19 @@ export type TimeOffRow = {
   reason_category: string;
 };
 
-async function cleanerSelect(where: ReturnType<typeof sql>) {
+export async function getCleanerByExternalAuthId(externalAuthId: string) {
+  if (!externalAuthId) return null;
   const rows = await sql<Cleaner[]>`
-    select c.id, c.external_auth_id, c.full_name, c.email, c.phone, c.status,
-           c.skills, c.vertical_experience, t.name as home_territory_name,
-           t.timezone as home_territory_timezone,
-           c.max_daily_minutes, c.max_weekly_minutes, c.is_dev_seed
-    from cleaners c
-    left join service_territories t on t.id = c.home_territory_id
-    where ${where}
-    limit 1`;
+    select * from private.cleaner_identity_by_external_auth_id(${externalAuthId}::text)`;
   return rows[0] ?? null;
 }
 
-export async function getCleanerByExternalAuthId(externalAuthId: string) {
-  return cleanerSelect(sql`c.external_auth_id = ${externalAuthId}`);
-}
-
 export async function getCleanerByEmail(email: string) {
-  return cleanerSelect(sql`lower(c.email) = lower(${email})`);
+  const verifiedEmail = email.trim().toLowerCase();
+  if (!verifiedEmail) return null;
+  const rows = await sql<Cleaner[]>`
+    select * from private.cleaner_identity_by_verified_email(${verifiedEmail}::text)`;
+  return rows[0] ?? null;
 }
 
 export async function linkCleanerExternalAuthIdByVerifiedEmail(
@@ -78,59 +72,35 @@ export async function linkCleanerExternalAuthIdByVerifiedEmail(
 ) {
   const normalizedEmail = verifiedEmail.trim().toLowerCase();
   if (!externalAuthId || !normalizedEmail) return false;
-
-  return sql.begin(async (transaction) => {
-    const alreadyLinked = await transaction<{ id: string }[]>`
-      select id from cleaners
-      where external_auth_id = ${externalAuthId}
-      limit 1 for update`;
-    if (alreadyLinked[0]) return true;
-
-    const candidates = await transaction<
-      { id: string; external_auth_id: string | null }[]
-    >`
-      select id, external_auth_id from cleaners
-      where lower(email) = ${normalizedEmail}
-        and status in ('onboarding', 'active')
-      order by created_at asc
-      limit 2 for update`;
-    if (candidates.length !== 1 || candidates[0].external_auth_id) return false;
-
-    const linked = await transaction<{ id: string }[]>`
-      update cleaners set external_auth_id = ${externalAuthId}
-      where id = ${candidates[0].id} and external_auth_id is null
-      returning id`;
-    return Boolean(linked[0]);
-  });
+  const rows = await sql<Cleaner[]>`
+    select * from private.claim_cleaner_external_auth_id(
+      ${externalAuthId}::text, ${normalizedEmail}::text
+    )`;
+  return Boolean(rows[0]);
 }
 
 export async function getCrewAssignments(cleanerId: string, devOnly: boolean) {
-  return sql<CrewAssignment[]>`
-    select a.id, s.id as schedule_id, s.service_vertical, s.start_at::text,
-           s.end_at::text, s.status as schedule_status, a.status as assignment_status,
-           a.assignment_role, t.name as territory_name, t.timezone as territory_timezone,
-           s.required_skills,
-           b.planning_direction
-    from job_assignments a
-    join job_schedules s on s.id = a.job_schedule_id
-    join bookings b on b.id = s.booking_id
-    join service_territories t on t.id = s.territory_id
-    where a.cleaner_id = ${cleanerId}
-      and (${devOnly} = false or (a.is_dev_seed and s.is_dev_seed and b.is_dev_seed))
-      and s.start_at >= now() - interval '1 day'
-    order by s.start_at asc
-    limit 30`;
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_customer_id', '', true)`;
+    await transaction`select set_config('lakeandpine.current_cleaner_id', ${cleanerId}, true)`;
+    return transaction<CrewAssignment[]>`
+      select * from private.current_cleaner_assignments(${devOnly})`;
+  });
 }
 
 export async function getCleanerAvailability(cleanerId: string) {
-  return sql<AvailabilityRule[]>`
-    select a.id, a.day_of_week, a.start_time::text, a.end_time::text,
-           t.name as territory_name, a.status
-    from cleaner_availability_rules a
-    left join service_territories t on t.id = a.territory_id
-    where a.cleaner_id = ${cleanerId}
-      and (a.effective_to is null or a.effective_to >= current_date)
-    order by a.day_of_week, a.start_time`;
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_customer_id', '', true)`;
+    await transaction`select set_config('lakeandpine.current_cleaner_id', ${cleanerId}, true)`;
+    return transaction<AvailabilityRule[]>`
+      select a.id, a.day_of_week, a.start_time::text, a.end_time::text,
+             t.name as territory_name, a.status
+      from cleaner_availability_rules a
+      left join service_territories t on t.id = a.territory_id
+      where a.cleaner_id = ${cleanerId}
+        and (a.effective_to is null or a.effective_to >= current_date)
+      order by a.day_of_week, a.start_time`;
+  });
 }
 
 export async function getCleanerTimeOff(cleanerId: string) {
@@ -154,17 +124,20 @@ export async function respondToAssignment(
   response: "accepted" | "declined",
   devOnly: boolean,
 ) {
-  const rows = await sql<{ id: string }[]>`
-    update job_assignments a
-    set status = ${response}, responded_at = now()
-    from job_schedules s
-    where a.id = ${assignmentId}
-      and a.cleaner_id = ${cleanerId}
-      and a.job_schedule_id = s.id
-      and a.status = 'proposed'
-      and (${devOnly} = false or (a.is_dev_seed and s.is_dev_seed))
-    returning a.id`;
-  return Boolean(rows[0]);
+  return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_customer_id', '', true)`;
+    await transaction`select set_config('lakeandpine.current_cleaner_id', ${cleanerId}, true)`;
+    const rows = await transaction<{ id: string }[]>`
+      update job_assignments
+      set status = ${response}, responded_at = now()
+      where id = ${assignmentId}
+        and cleaner_id = ${cleanerId}
+        and status = 'proposed'
+        and team_id is not null
+        and (${devOnly} = false or is_dev_seed)
+      returning id`;
+    return Boolean(rows[0]);
+  });
 }
 
 export async function requestTimeOff(input: {
@@ -207,9 +180,8 @@ export async function requestTimeOff(input: {
     await transaction`
       insert into cleaner_time_off
         (organization_id, team_id, cleaner_id, start_at, end_at,
-         reason_category, status, is_dev_seed)
+         reason_category)
       values (${memberships[0].organization_id}, ${memberships[0].team_id},
-        ${input.cleanerId}, ${startAt}, ${endAt}, ${input.reasonCategory},
-        'requested', ${input.devOnly})`;
+        ${input.cleanerId}, ${startAt}, ${endAt}, ${input.reasonCategory})`;
   });
 }

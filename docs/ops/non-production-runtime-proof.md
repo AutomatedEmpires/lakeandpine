@@ -15,7 +15,8 @@ export MIGRATION_DATABASE_URL=postgresql://supabase_admin:<password>@127.0.0.1:5
 pnpm quality:verify-migrations
 export DATABASE_URL=postgresql://postgres:lakeandpine-verifier-postgres@127.0.0.1:5442/lakeandpine_proof
 pnpm ops:seed-content
-pnpm ops:seed-dev
+LAKEANDPINE_ALLOW_DEV_SEED=1 \
+  LAKEANDPINE_DEV_SEED_DATABASE=lakeandpine_proof pnpm ops:seed-dev
 ```
 
 For the public runtime proof, start the web app with the same database plus private,
@@ -23,16 +24,25 @@ random 32-or-more-character values for `RUNTIME_SMOKE_TOKEN`,
 `REQUEST_FINGERPRINT_SECRET`, and `BOOKING_REFERENCE_SECRET`. Then run in a second
 shell:
 
+The app-server shell must also set
+`LAKEANDPINE_ALLOW_RUNTIME_SMOKE=1` and
+`RUNTIME_SMOKE_DATABASE=lakeandpine_proof`; the server rejects the smoke header
+unless its live connection proves the same safe database identity.
+
 ```bash
 export DATABASE_URL=postgresql://postgres:lakeandpine-verifier-postgres@127.0.0.1:5442/lakeandpine_proof
 export RUNTIME_SMOKE_BASE_URL=http://127.0.0.1:3010
 export RUNTIME_SMOKE_TOKEN='<same value configured on the server>'
+export LAKEANDPINE_ALLOW_RUNTIME_SMOKE=1
+export RUNTIME_SMOKE_DATABASE='<exact disposable database name>'
 pnpm ops:smoke-runtime
 ```
 
 The runtime smoke marks every generated row as development data and deletes the request,
 events, checklist, and notification-outbox rows in a `finally` block. Use
-`pnpm ops:purge-dev-seed` to remove the broader private-workspace fixture.
+`LAKEANDPINE_ALLOW_DEV_SEED=1 LAKEANDPINE_DEV_SEED_DATABASE=lakeandpine_proof pnpm ops:purge-dev-seed`
+to remove the broader
+private-workspace fixture.
 
 ## Captured evidence
 

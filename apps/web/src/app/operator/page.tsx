@@ -102,7 +102,10 @@ export default async function OperatorPage({ searchParams }: { searchParams: Pro
     );
   }
 
-  const bookings = await getOperatorBookings(identity.devOnly);
+  const bookings = await getOperatorBookings(
+    identity.devOnly,
+    identity.operator.id,
+  );
   const params = await searchParams;
   const selected =
     bookings.find((booking) => booking.id === params.job) ??
@@ -111,9 +114,9 @@ export default async function OperatorPage({ searchParams }: { searchParams: Pro
     null;
   const [checklist, notes, followUps] = selected
     ? await Promise.all([
-        getBookingChecklist(selected.id, identity.devOnly),
-        getBookingInternalNotes(selected.id, identity.devOnly),
-        getBookingFollowUps(selected.id, identity.devOnly),
+        getBookingChecklist(selected.id, identity.devOnly, identity.operator.id),
+        getBookingInternalNotes(selected.id, identity.devOnly, identity.operator.id),
+        getBookingFollowUps(selected.id, identity.devOnly, identity.operator.id),
       ])
     : [[], [], []];
   const completedChecklist = checklist.filter((item) => item.state === "completed").length;

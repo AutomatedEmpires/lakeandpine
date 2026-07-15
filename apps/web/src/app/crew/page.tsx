@@ -3,12 +3,17 @@ import Link from "next/link";
 
 import { resolveCleanerIdentity } from "@/lib/auth";
 import { getCleanerAvailability, getCleanerTimeOff, getCrewAssignments } from "@/lib/crew-data";
+import { getCrewFieldDashboard } from "@/lib/field-operations-data";
 import { getCrewTeamOperations } from "@/lib/team-operations-data";
 
 import {
   assignmentResponseAction,
   cleanerCalloutAction,
+  cleanerChecklistAction,
   cleanerInventoryUsageAction,
+  cleanerIssueAction,
+  cleanerJobMessageAction,
+  cleanerMileageAction,
   cleanerRestockRequestAction,
   startTimeEntryAction,
   stopTimeEntryAction,
@@ -52,11 +57,12 @@ export default async function CrewPage() {
   }
 
   const cleaner = identity.cleaner;
-  const [assignments, availability, timeOff, teamOperations] = await Promise.all([
+  const [assignments, availability, timeOff, teamOperations, field] = await Promise.all([
     getCrewAssignments(cleaner.id, identity.devOnly),
     getCleanerAvailability(cleaner.id),
     getCleanerTimeOff(cleaner.id),
     getCrewTeamOperations(cleaner.id, identity.devOnly),
+    getCrewFieldDashboard(cleaner.id, identity.devOnly),
   ]);
 
   return (
@@ -139,6 +145,70 @@ export default async function CrewPage() {
         </div>
 
         <div className="crew-operations-stack">
+          <article className="card operator-panel">
+            <span className="eyebrow">Assigned job execution</span>
+            <h2>Route, checklist, customer updates, mileage, and escalation.</h2>
+            <p className="copy">Only your accepted assignments appear here. Customer messages and operational reports stay attached to the job for manager audit.</p>
+            <div className="ops-ledger-list">
+              {field.jobs.map((job) => {
+                const checklist = field.checklist.filter((item) => item.team_job_allocation_id === job.team_job_allocation_id);
+                const messages = field.communications.filter((message) => message.team_job_allocation_id === job.team_job_allocation_id);
+                const executable = ["confirmed", "en_route", "in_progress"].includes(job.schedule_status);
+                const checklistEditable = job.schedule_status === "in_progress";
+                return <article key={job.team_job_allocation_id}>
+                  <div className="operator-panel-head">
+                    <div><span className={`status-badge ${job.schedule_status}`}>{job.schedule_status.replaceAll("_", " ")}</span><strong>{job.service_vertical} · {job.team_name}</strong><small>{formatDateTime(job.start_at, job.timezone)} → {formatDateTime(job.end_at, job.timezone)}</small></div>
+                    <span>{job.route_status?.replaceAll("_", " ") ?? "route review pending"}</span>
+                  </div>
+                  <div className="notice-card"><strong>Service location</strong><p>{[job.street, job.unit, job.city, job.state, job.zip].filter(Boolean).join(", ")}</p>{job.arrival_window_start && <p>Approved arrival: {new Date(job.arrival_window_start).toLocaleTimeString("en-US", { timeZone: job.timezone, hour: "numeric", minute: "2-digit" })}–{new Date(job.arrival_window_end!).toLocaleTimeString("en-US", { timeZone: job.timezone, hour: "numeric", minute: "2-digit" })}</p>}</div>
+
+                  <div className="operator-checklist">
+                    {checklist.map((item) => checklistEditable ? <form action={cleanerChecklistAction} key={item.id} className={item.state === "completed" ? "complete" : ""}>
+                      <input type="hidden" name="allocationId" value={job.team_job_allocation_id} /><input type="hidden" name="itemId" value={item.id} /><input type="hidden" name="version" value={item.version} />
+                      <label><span>{item.room_label ?? "Whole scope"}</span><strong>{item.label}</strong><select name="state" defaultValue={item.state} disabled={identity.devOnly}><option value="pending">Pending</option><option value="completed">Completed</option><option value="skipped">Skipped with note</option></select><input name="note" defaultValue={item.completion_note ?? ""} maxLength={1000} placeholder="Completion or exception note" /></label>
+                      <button className="btn btn-soft" disabled={identity.devOnly}>Save step</button>
+                    </form> : <div key={item.id} className={item.state === "completed" ? "complete" : ""}><span>{item.room_label ?? "Whole scope"}</span><strong>{item.label}</strong><p>{item.state.replaceAll("_", " ")}{item.completion_note ? ` · ${item.completion_note}` : ""}</p></div>)}
+                  </div>
+
+                  <div className="split-form-grid">
+                    {executable ? <form action={cleanerJobMessageAction} className="operations-form-grid">
+                      <input type="hidden" name="allocationId" value={job.team_job_allocation_id} />
+                      <label>Customer update<select name="template" defaultValue="custom"><option value="custom">Custom job update</option><option value="running_15_late">Running about 15 minutes late</option><option value="running_30_late">Running about 30 minutes late</option></select></label>
+                      <label>Custom message<textarea name="body" maxLength={2000} placeholder="Used only for a custom update. Do not include private manager notes." /></label>
+                      <button className="btn btn-primary" disabled={identity.devOnly}>Record + send in app</button>
+                    </form> : <div className="notice-card"><strong>Customer updates closed</strong><p>This visit is in quality review; its checklist and execution messages are now read-only evidence.</p></div>}
+                    <form action={cleanerMileageAction} className="operations-form-grid">
+                      <input type="hidden" name="membershipId" value={job.membership_id} /><input type="hidden" name="allocationId" value={job.team_job_allocation_id} />
+                      <label>Service date<input name="serviceDate" type="date" required /></label>
+                      <label>Miles<input name="miles" type="number" min="0.01" max="1000" step="0.01" required /></label>
+                      <label>Purpose<select name="purpose"><option value="to_job">To job</option><option value="between_jobs">Between jobs</option><option value="supply_run">Supply run</option><option value="training">Training</option><option value="other">Other</option></select></label>
+                      <label>Vehicle<input name="vehicleLabel" maxLength={120} placeholder="Personal or company vehicle label" /></label>
+                      <label>Note<input name="note" maxLength={1000} /></label>
+                      <button className="btn btn-soft" disabled={identity.devOnly}>Submit mileage</button>
+                    </form>
+                  </div>
+
+                  <form action={cleanerIssueAction} className="operations-form-grid">
+                    <input type="hidden" name="membershipId" value={job.membership_id} /><input type="hidden" name="allocationId" value={job.team_job_allocation_id} />
+                    <label>Escalation type<select name="issueType"><option value="schedule_conflict">Schedule conflict</option><option value="access">Access problem</option><option value="safety">Safety issue</option><option value="vehicle">Vehicle issue</option><option value="customer_note">Customer note</option><option value="scope">Scope exception</option><option value="inventory">Low stock / supply issue</option><option value="quality">Quality concern</option><option value="other">Other</option></select></label>
+                    <label>Severity<select name="severity"><option value="medium">Medium</option><option value="low">Low</option><option value="high">High</option><option value="critical">Critical</option></select></label>
+                    <label>Summary<textarea name="summary" required maxLength={1000} placeholder="What happened and what immediate help is needed?" /></label>
+                    <label>Private manager detail<textarea name="privateDetails" maxLength={4000} /></label>
+                    <p className="copy">This begins as a manager-private escalation. An authorized manager may deliberately share the summary with the customer; private detail is never shared.</p>
+                    <button className="btn btn-primary" disabled={identity.devOnly}>Escalate to team</button>
+                  </form>
+
+                  {messages.length > 0 && <div className="internal-note-list">{messages.map((message) => <article key={message.id}><div><strong>{message.sender_kind}</strong><span>{new Date(message.created_at).toLocaleString()}</span></div><p>{message.body}</p></article>)}</div>}
+                </article>;
+              })}
+              {field.jobs.length === 0 && <p className="copy">No accepted, confirmed field work is ready.</p>}
+            </div>
+          </article>
+
+          {field.duty.length > 0 && <article className="card operator-panel"><span className="eyebrow">Escalation coverage</span><h2>Manager or lead on duty</h2><div className="availability-list">{field.duty.map((duty) => <div key={duty.id}><strong>{duty.display_name} · {duty.duty_kind.replaceAll("_", " ")}</strong><span>{new Date(duty.starts_at).toLocaleString()} → {new Date(duty.ends_at).toLocaleString()}</span></div>)}</div></article>}
+
+          {(field.mileage.length > 0 || field.issues.length > 0) && <article className="card operator-panel"><span className="eyebrow">My field history</span><h2>Mileage + escalations</h2><div className="availability-list">{field.mileage.map((entry) => <div key={entry.id}><strong>{entry.miles} miles · {entry.status}</strong><span>{entry.service_date} · {entry.purpose.replaceAll("_", " ")}</span></div>)}{field.issues.map((issue) => <div key={issue.id}><strong>{issue.issue_type.replaceAll("_", " ")} · {issue.status}</strong><span>{issue.severity} · {issue.summary}</span></div>)}</div></article>}
+
           {teamOperations.restocks.length > 0 && (
             <article className="card operator-panel">
               <span className="eyebrow">Restock tracking</span>
@@ -160,7 +230,7 @@ export default async function CrewPage() {
               {teamOperations.assignments.map((assignment) => <article key={assignment.allocation_id}>
                 <div><strong>{assignment.service_vertical}</strong><span>{assignment.territory_name}</span></div>
                 <p>{formatDateTime(assignment.start_at, assignment.territory_timezone)}</p>
-                {assignment.open_time_entry_id ? <form action={stopTimeEntryAction} className="assignment-actions"><input type="hidden" name="entryId" value={assignment.open_time_entry_id} /><label>Break minutes<input name="breakMinutes" type="number" min="0" max="720" defaultValue="0" /></label><button className="btn btn-primary" disabled={identity.devOnly}>Stop + submit time</button></form> : <form action={startTimeEntryAction}><input type="hidden" name="allocationId" value={assignment.allocation_id} /><button className="btn btn-primary" disabled={identity.devOnly}>Start assigned work clock</button></form>}
+                {assignment.open_time_entry_id ? <form action={stopTimeEntryAction} className="assignment-actions"><input type="hidden" name="entryId" value={assignment.open_time_entry_id} /><label>Break minutes<input name="breakMinutes" type="number" min="0" max="720" defaultValue="0" /></label><button className="btn btn-primary" disabled={identity.devOnly}>Stop + submit time</button></form> : <form action={startTimeEntryAction}><input type="hidden" name="allocationId" value={assignment.allocation_id} /><button className="btn btn-primary" disabled={identity.devOnly || !assignment.clock_in_available}>Start assigned work clock</button>{!assignment.clock_in_available && <small>Clock-in opens at the approved arrival window minus the job travel buffer. It closes 12 hours after the planned finish.</small>}</form>}
               </article>)}
               {teamOperations.assignments.length === 0 && <p className="copy">No team-allocated accepted work is ready for time tracking.</p>}
             </div>

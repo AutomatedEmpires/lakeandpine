@@ -39,7 +39,16 @@ export default async function TimePage({ searchParams }: { searchParams: Promise
         <div className="ops-ledger-list time-ledger">
           {dashboard.timeEntries.map((entry) => <article key={entry.id}>
             <div><span className={`status-badge ${entry.status}`}>{entry.status}</span><strong>{entry.cleaner_name}</strong><small>{new Date(entry.clock_in_at).toLocaleString()} · {minutesLabel(entry.actual_minutes)} actual / {minutesLabel(entry.estimated_minutes_snapshot)} plan</small>{entry.variance_percent !== null && <p className={entry.variance_percent > 20 ? "variance over" : entry.variance_percent < -20 ? "variance under" : "variance"}>{entry.variance_percent > 0 ? "+" : ""}{entry.variance_percent}% from individual plan</p>}</div>
-            {canReview && entry.status === "submitted" && <div className="inline-action-row"><form action={reviewTimeEntryAction}><input type="hidden" name="teamId" value={dashboard.selectedTeamId!} /><input type="hidden" name="entryId" value={entry.id} /><input type="hidden" name="version" value={entry.version} /><input type="hidden" name="to" value="rejected" /><button className="btn btn-soft">Return for correction</button></form><form action={reviewTimeEntryAction}><input type="hidden" name="teamId" value={dashboard.selectedTeamId!} /><input type="hidden" name="entryId" value={entry.id} /><input type="hidden" name="version" value={entry.version} /><input type="hidden" name="to" value="approved" /><button className="btn btn-primary">Approve time</button></form></div>}
+            {canReview && entry.status === "submitted" && (
+              <form action={reviewTimeEntryAction} className="inline-action-row">
+                <input type="hidden" name="teamId" value={dashboard.selectedTeamId!} />
+                <input type="hidden" name="entryId" value={entry.id} />
+                <input type="hidden" name="version" value={entry.version} />
+                <input name="reason" maxLength={1000} placeholder="Review note (required to reject)" />
+                <button className="btn btn-soft" name="to" value="rejected">Return for correction</button>
+                <button className="btn btn-primary" name="to" value="approved">Approve time</button>
+              </form>
+            )}
           </article>)}
           {dashboard.timeEntries.length === 0 && <p className="copy">No team time entries yet. Cleaners can start a clock only on an accepted, team-allocated assignment.</p>}
         </div>

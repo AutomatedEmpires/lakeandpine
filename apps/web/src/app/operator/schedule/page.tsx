@@ -13,6 +13,7 @@ import {
 import {
   allocateScheduleAction,
   proposeTeamScheduleCandidateAction,
+  staffJobMessageAction,
   teamScheduleStatusAction,
 } from "../team-operations-actions";
 
@@ -21,7 +22,7 @@ export const metadata: Metadata = { title: "Team scheduling", robots: { index: f
 
 const NEXT: Record<string, Array<{ to: string; label: string }>> = {
   tentative: [{ to: "held", label: "Hold plan" }, { to: "canceled", label: "Cancel" }],
-  held: [{ to: "confirmed", label: "Confirm capacity-backed schedule" }, { to: "tentative", label: "Return to planning" }, { to: "canceled", label: "Cancel" }],
+  held: [{ to: "tentative", label: "Return to planning" }, { to: "canceled", label: "Cancel" }],
   confirmed: [{ to: "en_route", label: "Crew en route" }, { to: "held", label: "Return to hold" }, { to: "canceled", label: "Cancel" }],
   en_route: [{ to: "in_progress", label: "Start service" }, { to: "confirmed", label: "Return to confirmed" }],
   in_progress: [{ to: "quality_review", label: "Move to quality review" }],
@@ -59,6 +60,30 @@ export default async function TeamSchedulePage({ searchParams }: { searchParams:
     dashboard.access.organizationId,
     dashboard.selectedTeamId,
   );
+  const canCommunicate = dashboard.selectedTeamId !== null && hasCapability(
+    dashboard.access.memberships,
+    "communicate_with_customers",
+    dashboard.access.organizationId,
+    dashboard.selectedTeamId,
+  );
+  const canApproveSchedule = dashboard.selectedTeamId !== null && hasCapability(
+    dashboard.access.memberships,
+    "manage_schedule_approvals",
+    dashboard.access.organizationId,
+    dashboard.selectedTeamId,
+  );
+  const canRecover = dashboard.selectedTeamId !== null && hasCapability(
+    dashboard.access.memberships,
+    "manage_service_recovery",
+    dashboard.access.organizationId,
+    dashboard.selectedTeamId,
+  );
+  const closeoutReady = Boolean(
+    selected
+      && selected.checklist_item_count > 0
+      && selected.checklist_pending_count === 0
+      && selected.checklist_skipped_without_note_count === 0,
+  );
 
   return <div className="route-page operator-page">
     <section className="container page-hero">
@@ -88,7 +113,7 @@ export default async function TeamSchedulePage({ searchParams }: { searchParams:
       {!selected ? <div className="card empty-operator"><h2>No work has been allocated to this team.</h2><p className="copy">Any authorized local dispatcher can accept qualified work from this team&apos;s active territory queue. Owners and GMs retain cross-team oversight.</p></div> : <div className="schedule-console">
         <aside className="card operator-panel"><span className="eyebrow">Team queue</span><h2>{dashboard.selectedTeam?.name}</h2><div className="schedule-list">{dashboard.teamSchedules.map((schedule) => <Link className={`schedule-entry${schedule.id === selected.id ? " selected" : ""}`} href={`/operator/schedule?team=${dashboard.selectedTeamId}&schedule=${schedule.id}`} key={schedule.id}><strong>{schedule.service_vertical}</strong><span>{formatScheduleTime(schedule.start_at, schedule.territory_timezone)} · {schedule.status}</span><span>{schedule.assigned_cleaners.length}/{schedule.required_crew_size} crew assigned</span></Link>)}</div></aside>
         <div className="operator-detail-stack">
-          <article className="card operator-panel"><div className="operator-panel-head"><div><span className="eyebrow">Allocated job</span><h2>{selected.service_vertical} · {selected.territory_name}</h2></div><span className={`status-badge ${selected.status}`}>{selected.status.replaceAll("_", " ")}</span></div><div className="metric-grid compact"><div><span>Start</span><strong>{formatScheduleTime(selected.start_at, selected.territory_timezone)}</strong></div><div><span>End</span><strong>{formatScheduleTime(selected.end_at, selected.territory_timezone)}</strong></div><div><span>Labor plan</span><strong>{selected.labor_minutes} minutes</strong></div><div><span>Crew</span><strong>{selected.assigned_cleaners.length}/{selected.required_crew_size}</strong></div></div>{selected.assigned_cleaners.length > 0 && <p className="copy">Proposed/accepted: {selected.assigned_cleaners.join(", ")}</p>}<div className="schedule-actions">{(NEXT[selected.status] ?? []).map((next) => <form action={teamScheduleStatusAction} key={next.to}><input type="hidden" name="teamId" value={dashboard.selectedTeamId!} /><input type="hidden" name="scheduleId" value={selected.id} /><input type="hidden" name="from" value={selected.status} /><input type="hidden" name="to" value={next.to} /><button className={next.to === "canceled" || next.to === "tentative" ? "btn btn-soft" : "btn btn-primary"}>{next.label}</button></form>)}</div></article>
+          <article className="card operator-panel"><div className="operator-panel-head"><div><span className="eyebrow">Allocated job</span><h2>{selected.service_vertical} · {selected.territory_name}</h2></div><span className={`status-badge ${selected.status}`}>{selected.status.replaceAll("_", " ")}</span></div><div className="metric-grid compact"><div><span>Start</span><strong>{formatScheduleTime(selected.start_at, selected.territory_timezone)}</strong></div><div><span>End</span><strong>{formatScheduleTime(selected.end_at, selected.territory_timezone)}</strong></div><div><span>Labor plan</span><strong>{selected.labor_minutes} minutes</strong></div><div><span>Crew</span><strong>{selected.assigned_cleaners.length}/{selected.required_crew_size}</strong></div></div>{selected.assigned_cleaners.length > 0 && <p className="copy">Proposed/accepted: {selected.assigned_cleaners.join(", ")}</p>}{selected.status === "in_progress" && !closeoutReady && <p className="copy">Closeout is locked: {selected.checklist_item_count === 0 ? "add a reviewed checklist before execution; " : ""}finish {selected.checklist_pending_count} pending checklist item{selected.checklist_pending_count === 1 ? "" : "s"} and add notes to {selected.checklist_skipped_without_note_count} skipped item{selected.checklist_skipped_without_note_count === 1 ? "" : "s"}.</p>}<div className="schedule-actions">{(NEXT[selected.status] ?? []).filter((next) => next.to !== "canceled" || canRecover).filter((next) => next.to !== "confirmed" || canApproveSchedule).filter((next) => !(selected.status === "confirmed" && next.to === "held") || canApproveSchedule).map((next) => <form action={teamScheduleStatusAction} key={next.to}><input type="hidden" name="teamId" value={dashboard.selectedTeamId!} /><input type="hidden" name="scheduleId" value={selected.id} /><input type="hidden" name="from" value={selected.status} /><input type="hidden" name="to" value={next.to} /><button className={next.to === "canceled" || next.to === "tentative" ? "btn btn-soft" : "btn btn-primary"} disabled={next.to === "quality_review" && !closeoutReady}>{next.label}</button></form>)}</div>{canCommunicate && selected.customer_linked && selected.status !== "canceled" && <form action={staffJobMessageAction} className="operations-form-grid"><input type="hidden" name="teamId" value={dashboard.selectedTeamId!} /><input type="hidden" name="allocationId" value={selected.allocation_id} /><label>Customer update<textarea name="body" required minLength={2} maxLength={2000} placeholder="Arrival, access, scheduling, or service update. Keep private operations notes out of customer messages." /></label><button className="btn btn-soft" disabled={identity.devOnly}>Record + send in app</button></form>}</article>
           <article className="card operator-panel"><span className="eyebrow">Intelligent crew recommendations</span><h2>Eligible team combinations</h2><div className="crew-suggestion-list">{suggestions.map((suggestion) => <article className={`crew-suggestion ${suggestion.eligible ? "eligible" : "blocked"}`} key={suggestion.candidateId}><div><strong>{suggestion.cleanerNames.join(" + ")}</strong><span>{suggestion.eligible ? `score ${suggestion.score}` : "blocked"}</span></div><p>{(suggestion.eligible ? suggestion.reasons : suggestion.blockers).join(" · ")}</p>{suggestion.eligible && <form action={proposeTeamScheduleCandidateAction}><input type="hidden" name="teamId" value={dashboard.selectedTeamId!} /><input type="hidden" name="scheduleId" value={selected.id} /><input type="hidden" name="candidateId" value={suggestion.candidateId} /><button className="btn btn-primary">Propose this crew</button></form>}</article>)}{suggestions.length === 0 && <p className="copy">No eligible team recommendation is available. Confirm active screened team membership, recurring availability, required skills, territory fit, and capacity.</p>}</div></article>
         </div>
       </div>}

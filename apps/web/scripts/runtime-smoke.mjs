@@ -17,6 +17,11 @@ function assert(condition, message) {
 
 assert(smokeToken && smokeToken.length >= 32, "RUNTIME_SMOKE_TOKEN must match the app server and contain at least 32 characters");
 assert(!forceFailure || forceFailure === "after-booking", "RUNTIME_SMOKE_FORCE_FAILURE only supports after-booking");
+assert(process.env.LAKEANDPINE_ALLOW_RUNTIME_SMOKE === "1", "Set LAKEANDPINE_ALLOW_RUNTIME_SMOKE=1 only for an explicitly selected disposable target");
+assert(process.env.NODE_ENV !== "production" && process.env.VERCEL_ENV !== "production", "Runtime smoke is forbidden in production");
+const smokeUrl = new URL(baseUrl);
+assert(smokeUrl.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(smokeUrl.hostname), "Runtime smoke only accepts a local HTTP application target");
+assert(Boolean(process.env.RUNTIME_SMOKE_DATABASE), "RUNTIME_SMOKE_DATABASE must exactly name the disposable database");
 
 const sql = connect();
 
@@ -34,6 +39,7 @@ async function postJson(path, body) {
     headers: {
       "content-type": "application/json",
       "x-lake-pine-runtime-smoke-token": smokeToken,
+      "x-lake-pine-runtime-smoke-database": process.env.RUNTIME_SMOKE_DATABASE,
     },
     body: JSON.stringify(body),
   });
@@ -57,6 +63,14 @@ async function cleanup() {
 }
 
 try {
+  const [target] = await sql`
+    select current_database() as database_name,
+      coalesce(inet_server_addr()::text, 'local-socket') as server_address`;
+  assert(
+    target.database_name === process.env.RUNTIME_SMOKE_DATABASE,
+    `Runtime smoke database mismatch: expected ${process.env.RUNTIME_SMOKE_DATABASE}, connected to ${target.database_name}`,
+  );
+  console.log(`Runtime smoke target: ${target.database_name} @ ${target.server_address} via ${baseUrl}`);
   const pages = [];
   pages.push(await getPage("/", "Interior care"));
   pages.push(await getPage("/services", "Private Estate Care"));
@@ -88,11 +102,20 @@ try {
     scheduling: {
       preferredDate: planningDate(5),
       alternateDates: [planningDate(6), planningDate(7)],
-      windowPreference: "Morning",
+      windowPreference: "8:00–10:00 AM",
       deadlineCritical: true,
       accessComplex: false,
     },
-    contact: { name: "Runtime Smoke", phone: "2085550100", email, zip: "83814" },
+    contact: {
+      name: "Runtime Smoke",
+      phone: "2085550100",
+      email,
+      street: "105 N 1st St",
+      unit: "",
+      city: "Coeur d'Alene",
+      state: "ID",
+      zip: "83814",
+    },
     acknowledgements: {
       siteReady: true,
       privacyConsent: true,
@@ -114,8 +137,19 @@ try {
       b.estimate_cents, b.required_crew_size, b.estimated_duration_minutes,
       exists(select 1 from booking_events e where e.booking_id = b.id and e.type = 'requested') as has_requested_event,
       (select count(*)::int from checklist_items c where c.booking_id = b.id) as checklist_count,
-      (select count(*)::int from notification_outbox o where o.booking_id = b.id) as outbox_count
-    from bookings b where b.id = ${booking.id}`;
+      (select count(*)::int from notification_outbox o where o.booking_id = b.id) as outbox_count,
+      assessment.id::text as route_assessment_id,
+      assessment.team_id::text as route_team_id,
+      assessment.address_fingerprint,
+      assessment.assessment_status as route_status,
+      assessment.provider as route_provider,
+      assessment.branch_origin_label,
+      assessment.branch_origin_latitude::float8,
+      assessment.branch_origin_longitude::float8,
+      assessment.standard_radius_miles::float8
+    from bookings b
+    left join service_location_assessments assessment on assessment.booking_id = b.id
+    where b.id = ${booking.id}`;
   assert(bookingRow?.service_vertical === "construction", "premium vertical was not persisted");
   assert(bookingRow?.status === "requested", "request did not stay unconfirmed");
   assert(bookingRow?.qualification_status === "walkthrough_needed", "qualification path was not persisted");
@@ -123,6 +157,12 @@ try {
   assert(bookingRow?.required_crew_size > 0 && bookingRow?.estimated_duration_minutes > 0, "planning capacity was not persisted");
   assert(bookingRow?.has_requested_event && bookingRow?.checklist_count > 0, "atomic event/checklist evidence is missing");
   assert(bookingRow?.outbox_count === 2, "customer and operations notifications were not durably recorded");
+  assert(bookingRow?.route_assessment_id, "route assessment was not created atomically");
+  assert(bookingRow?.route_team_id == null, "intake route assessment was prematurely assigned to a team");
+  assert(/^[0-9a-f]{64}$/.test(bookingRow?.address_fingerprint ?? ""), "route address fingerprint is invalid");
+  assert(["manual_review", "inside_standard_radius", "outside_standard_radius"].includes(bookingRow?.route_status), "route assessment status is invalid");
+  assert(["manual", "mapbox"].includes(bookingRow?.route_provider), "route provider evidence is invalid");
+  assert(bookingRow?.branch_origin_label && Number.isFinite(bookingRow?.branch_origin_latitude) && Number.isFinite(bookingRow?.branch_origin_longitude) && bookingRow?.standard_radius_miles > 0, "route origin/radius evidence is incomplete");
 
   console.log(JSON.stringify({
     result: "PASS",
@@ -139,6 +179,11 @@ try {
         checklistCount: bookingRow.checklist_count,
         outboxCount: bookingRow.outbox_count,
         idempotentRetry: true,
+        routeAssessment: {
+          status: bookingRow.route_status,
+          provider: bookingRow.route_provider,
+          unallocated: bookingRow.route_team_id == null,
+        },
       },
     },
     cleanup: "synthetic rows removed in finally",

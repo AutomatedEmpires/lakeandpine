@@ -69,7 +69,25 @@ export default async function WorkforcePage({ searchParams }: { searchParams: Pr
           <article className="card operator-panel">
             <span className="eyebrow">Team leave queue</span><h2>Time-off requests</h2>
             <div className="ops-ledger-list">
-              {dashboard.timeOffRequests.map((request) => <article key={request.id}><div><span className={`status-badge ${request.status}`}>{request.status}</span><strong>{request.cleaner_name}</strong><small>{new Date(request.start_at).toLocaleString()} → {new Date(request.end_at).toLocaleString()} · {request.reason_category}</small></div>{canReviewTime && request.status === "requested" && <div className="inline-action-row"><form action={reviewTeamTimeOffAction}><input type="hidden" name="teamId" value={dashboard.selectedTeamId!} /><input type="hidden" name="timeOffId" value={request.id} /><button className="btn btn-soft" name="to" value="declined">Decline</button></form><form action={reviewTeamTimeOffAction}><input type="hidden" name="teamId" value={dashboard.selectedTeamId!} /><input type="hidden" name="timeOffId" value={request.id} /><button className="btn btn-primary" name="to" value="approved">Approve</button></form></div>}</article>)}
+              {dashboard.timeOffRequests.map((request) => (
+                <article key={request.id}>
+                  <div>
+                    <span className={`status-badge ${request.status}`}>{request.status}</span>
+                    <strong>{request.cleaner_name}</strong>
+                    <small>{new Date(request.start_at).toLocaleString()} → {new Date(request.end_at).toLocaleString()} · {request.reason_category}</small>
+                  </div>
+                  {canReviewTime && request.status === "requested" && (
+                    <form action={reviewTeamTimeOffAction} className="inline-action-row">
+                      <input type="hidden" name="teamId" value={dashboard.selectedTeamId!} />
+                      <input type="hidden" name="timeOffId" value={request.id} />
+                      <input type="hidden" name="version" value={request.version} />
+                      <input name="reason" maxLength={1000} placeholder="Decision note (required to decline)" />
+                      <button className="btn btn-soft" name="to" value="declined">Decline</button>
+                      <button className="btn btn-primary" name="to" value="approved">Approve</button>
+                    </form>
+                  )}
+                </article>
+              ))}
               {dashboard.timeOffRequests.length === 0 && <p className="copy">No current team time-off requests.</p>}
             </div>
           </article>

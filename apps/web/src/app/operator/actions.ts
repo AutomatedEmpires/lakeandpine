@@ -39,7 +39,13 @@ export async function updateJobStatusAction(formData: FormData) {
   const to = String(formData.get("to") ?? "") as JobStatus;
   if (!bookingId || !JOB_STATUSES.includes(from) || !JOB_STATUSES.includes(to)) return;
   if (!canTransitionJob(from, to)) throw new Error(`Invalid job transition: ${from} → ${to}`);
-  await updateBookingStatus(bookingId, from, to, operator.devOnly);
+  await updateBookingStatus(
+    bookingId,
+    from,
+    to,
+    operator.devOnly,
+    operator.operator.id,
+  );
   revalidatePath("/operator");
 }
 
@@ -54,6 +60,7 @@ export async function checklistItemAction(formData: FormData) {
     itemId,
     state as "pending" | "completed" | "skipped",
     operator.devOnly,
+    operator.operator.id,
   );
   revalidatePath("/operator");
 }
@@ -63,7 +70,12 @@ export async function addInternalNoteAction(formData: FormData) {
   const bookingId = String(formData.get("bookingId") ?? "");
   const body = String(formData.get("body") ?? "").trim().slice(0, 4000);
   if (!bookingId || !body) return;
-  await addInternalNote(bookingId, body, operator.devOnly);
+  await addInternalNote(
+    bookingId,
+    body,
+    operator.devOnly,
+    operator.operator.id,
+  );
   revalidatePath("/operator");
 }
 
@@ -72,6 +84,11 @@ export async function completeFollowUpAction(formData: FormData) {
   const bookingId = String(formData.get("bookingId") ?? "");
   const followUpId = String(formData.get("followUpId") ?? "");
   if (!bookingId || !followUpId) return;
-  await completeFollowUp(bookingId, followUpId, operator.devOnly);
+  await completeFollowUp(
+    bookingId,
+    followUpId,
+    operator.devOnly,
+    operator.operator.id,
+  );
   revalidatePath("/operator");
 }

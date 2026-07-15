@@ -7,6 +7,7 @@ import {
   effectiveRoleForTeam,
   hasCapability,
   laborVariance,
+  membershipForCapability,
   suggestedReorderQuantity,
   teamAttentionLevel,
   type WorkforceMembership,
@@ -32,8 +33,16 @@ test("role capabilities remain team and organization scoped", () => {
   assert.equal(hasCapability(memberships, "manage_compensation", "org-b", "team-b2"), false);
   assert.equal(hasCapability(memberships, "manage_service_recovery", "org-b", "team-b1"), true);
   assert.equal(hasCapability(memberships, "manage_refunds", "org-b", "team-b1"), true);
+  assert.equal(hasCapability(memberships, "manage_schedule_approvals", "org-b", "team-b1"), true);
+  assert.equal(hasCapability(memberships, "manage_route_exceptions", "org-b", "team-b1"), true);
+  assert.equal(hasCapability(memberships, "approve_mileage", "org-b", "team-b1"), true);
+  assert.equal(hasCapability(memberships, "manage_duty_roster", "org-b", "team-b1"), true);
   assert.equal(hasCapability(memberships, "manage_service_recovery", "org-c", "team-c1"), false);
   assert.equal(hasCapability(memberships, "manage_refunds", "org-c", "team-c1"), false);
+  assert.equal(hasCapability(memberships, "manage_field_operations", "org-c", "team-c1"), false);
+  assert.equal(hasCapability(memberships, "communicate_with_customers", "org-c", "team-c1"), true);
+  assert.equal(hasCapability(memberships, "manage_schedule_approvals", "org-c", "team-c1"), false);
+  assert.equal(hasCapability(memberships, "approve_mileage", "org-c", "team-c1"), false);
   assert.equal(hasCapability(memberships, "manage_service_recovery", "org-d", "team-d1"), false);
   assert.equal(hasCapability(memberships, "manage_refunds", "org-d", "team-d1"), false);
   assert.equal(hasCapability(memberships, "approve_restock", "org-c", "team-c1"), false);
@@ -49,6 +58,42 @@ test("organization-wide roles expand to all organization teams", () => {
   assert.deepEqual(
     accessibleTeamIds(memberships, "org-b", ["team-b1", "team-b2"]),
     ["team-b1"],
+  );
+});
+
+test("audit attribution selects the membership that actually grants the capability", () => {
+  const overlapping: WorkforceMembership[] = [
+    { id: "lead-team", organizationId: "org-a", teamId: "team-a1", role: "shift_lead" },
+    { id: "gm-org", organizationId: "org-a", teamId: null, role: "gm" },
+    { id: "manager-team", organizationId: "org-a", teamId: "team-a1", role: "manager" },
+  ];
+
+  assert.equal(
+    membershipForCapability(
+      overlapping.slice(0, 2),
+      "manage_schedule_approvals",
+      "org-a",
+      "team-a1",
+    )?.id,
+    "gm-org",
+  );
+  assert.equal(
+    membershipForCapability(
+      overlapping,
+      "communicate_with_customers",
+      "org-a",
+      "team-a1",
+    )?.id,
+    "lead-team",
+  );
+  assert.equal(
+    membershipForCapability(
+      overlapping,
+      "manage_route_exceptions",
+      "org-a",
+      "team-a1",
+    )?.id,
+    "manager-team",
   );
 });
 

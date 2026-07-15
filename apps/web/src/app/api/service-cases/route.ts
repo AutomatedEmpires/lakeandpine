@@ -3,6 +3,10 @@ import { z } from "zod";
 
 import { sendOpsNotification } from "@/lib/email";
 import { getIntakeReadinessIssues, requestIntakeEnabled } from "@/lib/env";
+import {
+  getPlanningDateBounds,
+  isPlanningDateAllowed,
+} from "@/lib/planning-date";
 import { checkRequestRateLimit } from "@/lib/rate-limit";
 import { isHoneypotFilled, readJsonBody, RequestBodyError } from "@/lib/request-security";
 import {
@@ -101,10 +105,24 @@ export async function POST(request: Request) {
   if (isHoneypotFilled(parsed.data.companyWebsite)) {
     return NextResponse.json({ accepted: true, reference: "LP-RECEIVED" }, { status: 202 });
   }
+  const planningDateBounds = getPlanningDateBounds();
+  if (
+    [parsed.data.preferredDate, parsed.data.alternateDate]
+      .filter((value): value is string => Boolean(value))
+      .some((value) => !isPlanningDateAllowed(value, planningDateBounds))
+  ) {
+    return NextResponse.json(
+      { error: "Choose planning dates from today through the next 18 months." },
+      { status: 422 },
+    );
+  }
 
   try {
     const serviceCase = await createServiceCase(parsed.data);
     if (!serviceCase.duplicate) {
+      if (!serviceCase.notificationOutboxId) {
+        throw new Error("Service-case notification claim is unavailable");
+      }
       const outcome = await sendOpsNotification(
         {
           kind: "service_case",
@@ -116,9 +134,16 @@ export async function POST(request: Request) {
             "Open the operator workspace for customer contact and case details.",
           ],
         },
-        { suppress: false },
+        {
+          suppress: false,
+          idempotencyKey: `service-case:${serviceCase.id}:ops_notification`,
+        },
       );
-      await recordServiceCaseNotificationDelivery(serviceCase.id, outcome);
+      await recordServiceCaseNotificationDelivery(
+        serviceCase.notificationOutboxId,
+        serviceCase.id,
+        outcome,
+      );
     }
     return NextResponse.json({ reference: serviceCase.reference });
   } catch (error) {

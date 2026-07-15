@@ -30,14 +30,6 @@ export type ServiceCaseType = (typeof SERVICE_CASE_TYPES)[number];
 export class ServiceCaseBookingReferenceError extends Error {}
 export class ServiceCaseBookingLifecycleError extends Error {}
 
-const PRE_SERVICE_BOOKING_STATUSES = [
-  "requested",
-  "reviewing",
-  "ready",
-  "confirmed",
-  "scheduled",
-];
-
 export type CreateServiceCaseInput = {
   idempotencyKey: string;
   caseType: ServiceCaseType;
@@ -61,109 +53,115 @@ function sha256(value: string) {
 
 export async function createServiceCase(
   input: CreateServiceCaseInput,
-): Promise<{ id: string; reference: string; duplicate: boolean }> {
+): Promise<{
+  id: string;
+  reference: string;
+  duplicate: boolean;
+  notificationOutboxId: string | null;
+}> {
   return sql.begin(async (transaction) => {
-    const existing = await transaction<
-      { id: string; public_reference: string }[]
-    >`
-      select id, public_reference
-      from service_cases
-      where idempotency_key = ${sha256(input.idempotencyKey)}
-      limit 1`;
-    if (existing[0]) {
-      return {
-        id: existing[0].id,
-        reference: existing[0].public_reference,
-        duplicate: true,
-      };
-    }
-
-    let bookingId: string | null = null;
+    const idempotencyHash = sha256(input.idempotencyKey);
     const normalizedReference = input.bookingReference?.trim() || null;
-    if (normalizedReference) {
-      const bookings = await transaction<
-        { id: string; status: string; schedule_status: string | null }[]
-      >`
-        select booking.id, booking.status, schedule.status as schedule_status
-        from bookings booking
-        left join job_schedules schedule on schedule.booking_id = booking.id
-        where public_reference_token_hash = ${hashBookingReference(normalizedReference)}
-          and lower(booking.contact ->> 'email') = lower(${input.email})
-        limit 1`;
-      bookingId = bookings[0]?.id ?? null;
-      if (
-        bookings[0] &&
-        ["reschedule", "cancel"].includes(input.caseType) &&
-        (!PRE_SERVICE_BOOKING_STATUSES.includes(bookings[0].status) ||
-          (bookings[0].schedule_status !== null &&
-            !["tentative", "held", "confirmed"].includes(
-              bookings[0].schedule_status,
-            )))
-      ) {
-        throw new ServiceCaseBookingLifecycleError(
-          "Booking is no longer eligible for a schedule mutation",
-        );
-      }
-    }
-    if (
-      BOOKING_LINKED_CASE_TYPES.includes(input.caseType) &&
-      !bookingId
-    ) {
+    const reference = publicReference();
+    const rows = await transaction<Array<{
+      service_case_id: string | null;
+      case_reference: string | null;
+      duplicate: boolean;
+      outcome: string;
+      notification_outbox_id: string | null;
+    }>>`
+      select * from private.create_public_service_case(
+        ${idempotencyHash}, ${input.caseType},
+        ${normalizedReference ? hashBookingReference(normalizedReference) : null},
+        ${reference},
+        ${transaction.json({
+          name: input.name,
+          email: input.email,
+          phone: input.phone || null,
+        })},
+        ${input.details}, ${input.preferredDate || null},
+        ${input.alternateDate || null},
+        ${transaction.json({
+          privacy: true,
+          policyVersion: REQUEST_CONSENT_POLICY_VERSION,
+          privacyNoticeDate: PRIVACY_NOTICE_DATE,
+        })}
+      )`;
+    const serviceCase = rows[0];
+    if (serviceCase?.outcome === "invalid_reference") {
       throw new ServiceCaseBookingReferenceError(
         "Booking-linked service case could not be verified",
       );
     }
-
-    const reference = publicReference();
-    const rows = await transaction<{ id: string; public_reference: string }[]>`
-      insert into service_cases
-        (public_reference, idempotency_key, case_type, booking_id,
-         contact, details, preferred_date, alternate_date,
-         status, consent_snapshot, consented_at)
-      values
-        (${reference}, ${sha256(input.idempotencyKey)}, ${input.caseType}, ${bookingId},
-         ${transaction.json({
-           name: input.name,
-           email: input.email,
-           phone: input.phone || null,
-         })}, ${input.details}, ${input.preferredDate || null}, ${input.alternateDate || null},
-         'submitted', ${transaction.json({
-           privacy: true,
-           policyVersion: REQUEST_CONSENT_POLICY_VERSION,
-           privacyNoticeDate: PRIVACY_NOTICE_DATE,
-         })}, now())
-      returning id, public_reference`;
-
-    const serviceCase = rows[0];
-    await transaction`insert into notification_outbox
-      (service_case_id, notification_type, channel, recipient_kind, template_key,
-       template_data, deduplication_key, is_dev_seed)
-      values (${serviceCase.id}, 'ops_notification', 'email', 'ops',
-        'ops-service-case', ${transaction.json({ serviceCaseId: serviceCase.id })},
-        ${`service-case:${serviceCase.id}:ops_notification`}, false)`;
+    if (serviceCase?.outcome === "invalid_lifecycle") {
+      throw new ServiceCaseBookingLifecycleError(
+        "Booking is no longer eligible for a schedule mutation",
+      );
+    }
+    if (
+      !serviceCase?.service_case_id ||
+      !serviceCase.case_reference ||
+      (!serviceCase.duplicate && !serviceCase.notification_outbox_id)
+    ) {
+      throw new Error("Service-case intake did not return a durable record");
+    }
     return {
-      id: serviceCase.id,
-      reference: serviceCase.public_reference,
-      duplicate: false,
+      id: serviceCase.service_case_id,
+      reference: serviceCase.case_reference,
+      duplicate: serviceCase.duplicate,
+      notificationOutboxId: serviceCase.notification_outbox_id,
     };
   });
 }
 
 export async function createCustomerRescheduleCase(customerId: string, bookingId: string) {
   return sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${customerId}, true
+    )`;
+    const bookings = await transaction<
+      {
+        id: string;
+        contact: postgres.JSONValue;
+        is_dev_seed: boolean;
+        schedule_status: string | null;
+      }[]
+    >`
+      select booking.id, booking.contact, booking.is_dev_seed,
+        schedule.status as schedule_status
+      from bookings booking
+      left join job_schedules schedule on schedule.booking_id = booking.id
+      where booking.id = ${bookingId} and booking.customer_id = ${customerId}
+        and booking.status in ('requested', 'reviewing', 'ready', 'confirmed', 'scheduled')
+      limit 1 for update of booking`;
+    if (
+      !bookings[0] ||
+      (bookings[0].schedule_status !== null &&
+        !["tentative", "held", "confirmed"].includes(
+          bookings[0].schedule_status,
+        ))
+    ) {
+      throw new Error("Booking is not eligible for reschedule review");
+    }
+    await transaction`
+      select pg_advisory_xact_lock(
+        hashtextextended(${'active-reschedule:' + bookingId}, 9403)
+      )`;
+
     const existing = await transaction<{ id: string; public_reference: string }[]>`
       select id, public_reference from service_cases
       where customer_id = ${customerId} and booking_id = ${bookingId}
         and case_type = 'reschedule'
         and status not in ('resolved', 'closed', 'declined', 'canceled')
       order by created_at desc limit 1`;
-    if (existing[0]) return { ...existing[0], duplicate: true };
-
-    const bookings = await transaction<{ id: string; contact: postgres.JSONValue }[]>`
-      select id, contact from bookings where id = ${bookingId} and customer_id = ${customerId}
-        and status in ('requested', 'reviewing', 'ready', 'confirmed', 'scheduled')
-        limit 1`;
-    if (!bookings[0]) throw new Error("Booking is not eligible for reschedule review");
+    if (existing[0]) {
+      return {
+        ...existing[0],
+        duplicate: true,
+        notificationOutboxId: null,
+      };
+    }
     const rows = await transaction<{ id: string; public_reference: string }[]>`
       insert into service_cases
         (public_reference, case_type, booking_id, customer_id, contact, details,
@@ -173,112 +171,76 @@ export async function createCustomerRescheduleCase(customerId: string, bookingId
         'Customer requested a reschedule from the authenticated dashboard.',
         'submitted', ${transaction.json({ source: "authenticated_dashboard_action" })}, now())
       returning id, public_reference`;
-    await transaction`insert into notification_outbox
-      (service_case_id, customer_id, notification_type, channel, recipient_kind,
-       template_key, template_data, deduplication_key, is_dev_seed)
-      values (${rows[0].id}, ${customerId}, 'ops_notification', 'email', 'ops',
-        'ops-service-case', ${transaction.json({ serviceCaseId: rows[0].id })},
-        ${`service-case:${rows[0].id}:ops_notification`}, false)`;
-    return { ...rows[0], duplicate: false };
+    const enqueued = await transaction<
+      { notification_outbox_id: string | null }[]
+    >`
+      select private.enqueue_service_case_ops_notification(
+        ${rows[0].id}
+      ) as notification_outbox_id`;
+    if (!enqueued[0]?.notification_outbox_id) {
+      throw new Error("Service-case notification could not be queued");
+    }
+    return {
+      ...rows[0],
+      duplicate: false,
+      notificationOutboxId: enqueued[0].notification_outbox_id,
+    };
   });
 }
 
 export async function createAuthenticatedServiceCase(input: {
+  idempotencyKey: string;
   customerId: string;
   bookingId: string | null;
   caseType: ServiceCaseType;
   details: string;
 }) {
   return sql.begin(async (transaction) => {
-    const customers = await transaction<
-      { email: string | null; full_name: string | null; phone: string | null }[]
-    >`
-      select email, full_name, phone from customers
-      where id = ${input.customerId} for update`;
-    if (!customers[0]) throw new Error("Customer account was not found");
-
-    let booking: {
-      id: string;
-      status: string;
-      contact: postgres.JSONValue;
-      is_dev_seed: boolean;
-    } | null = null;
-    if (input.bookingId) {
-      const bookings = await transaction<
-        {
-          id: string;
-          status: string;
-          contact: postgres.JSONValue;
-          is_dev_seed: boolean;
-        }[]
-      >`
-        select id, status, contact, is_dev_seed from bookings
-        where id = ${input.bookingId} and customer_id = ${input.customerId}
-        for update`;
-      booking = bookings[0] ?? null;
-      if (!booking) throw new Error("Choose a booking from this account");
-    }
-
-    if (
-      ["reschedule", "cancel", "reclean", "refund_review", "damage"].includes(
-        input.caseType,
-      ) &&
-      !booking
-    ) {
-      throw new Error("This request type must be linked to a booking");
-    }
-    if (
-      ["reschedule", "cancel"].includes(input.caseType) &&
-      booking &&
-      !PRE_SERVICE_BOOKING_STATUSES.includes(booking.status)
-    ) {
-      throw new Error("That booking is no longer eligible for a schedule change");
-    }
-
-    const contact: postgres.JSONValue =
-      booking?.contact ??
-      ({
-        name: customers[0].full_name,
-        email: customers[0].email,
-        phone: customers[0].phone,
-      } as postgres.JSONValue);
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config(
+      'lakeandpine.current_customer_id', ${input.customerId}, true
+    )`;
     const rows = await transaction<
-      { id: string; public_reference: string }[]
+      {
+        service_case_id: string;
+        case_reference: string;
+        duplicate: boolean;
+        notification_outbox_id: string | null;
+      }[]
     >`
-      insert into service_cases
-        (public_reference, case_type, booking_id, customer_id, contact, details,
-         status, consent_snapshot, consented_at, first_response_due_at, is_dev_seed)
-      values (${publicReference()}, ${input.caseType}, ${booking?.id ?? null},
-        ${input.customerId}, ${transaction.json(contact)}, ${input.details}, 'submitted',
-        ${transaction.json({ source: "authenticated_dashboard_support" })}, now(),
-        now() + interval '4 hours', ${booking?.is_dev_seed ?? false})
-      returning id, public_reference`;
-    await transaction`
-      insert into notification_outbox
-        (service_case_id, customer_id, notification_type, channel, recipient_kind,
-         template_key, template_data, deduplication_key, is_dev_seed)
-      values (${rows[0].id}, ${input.customerId}, 'ops_notification', 'email', 'ops',
-        'ops-service-case', ${transaction.json({ serviceCaseId: rows[0].id })},
-        ${`service-case:${rows[0].id}:ops_notification`}, ${booking?.is_dev_seed ?? false})`;
-    return { ...rows[0], duplicate: false };
+      select * from private.create_authenticated_service_case(
+        ${sha256(
+          `authenticated-service-case:${input.customerId}:${input.idempotencyKey}`,
+        )},
+        ${publicReference()}, ${input.customerId}, ${input.bookingId},
+        ${input.caseType}, ${input.details}
+      )`;
+    if (
+      !rows[0]?.service_case_id ||
+      !rows[0].case_reference ||
+      (!rows[0].duplicate && !rows[0].notification_outbox_id)
+    ) {
+      throw new Error("Authenticated service-case intake did not return a durable record");
+    }
+    return {
+      id: rows[0].service_case_id,
+      public_reference: rows[0].case_reference,
+      duplicate: rows[0].duplicate,
+      notificationOutboxId: rows[0].notification_outbox_id,
+    };
   });
 }
 
 export async function recordServiceCaseNotificationDelivery(
+  outboxId: string,
   serviceCaseId: string,
   outcome: "sent" | "suppressed" | "skipped" | "failed",
 ) {
-  const status =
-    outcome === "sent"
-      ? "sent"
-      : outcome === "suppressed"
-        ? "canceled"
-        : outcome === "failed"
-          ? "retry"
-          : "failed";
-  await sql`update notification_outbox set status = ${status}, attempt_count = attempt_count + 1,
-      sent_at = case when ${status} = 'sent' then now() else sent_at end,
-      next_attempt_at = case when ${status} = 'retry' then now() + interval '15 minutes' else next_attempt_at end,
-      last_error_code = case when ${status} = 'sent' then null else ${outcome} end
-    where service_case_id = ${serviceCaseId} and notification_type = 'ops_notification'`;
+  const rows = await sql<{ finished: boolean }[]>`
+    select private.finish_initial_service_case_notification_delivery(
+      ${outboxId}, ${serviceCaseId}, ${outcome}
+    ) as finished`;
+  if (!rows[0]?.finished) {
+    throw new Error("Service-case notification is no longer pending delivery");
+  }
 }

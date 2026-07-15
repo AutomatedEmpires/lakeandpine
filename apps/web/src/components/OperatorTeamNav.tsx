@@ -5,6 +5,7 @@ import type { OperationsDashboard } from "@/lib/team-operations-data";
 const SECTIONS = [
   ["network", "Network"],
   ["schedule", "Schedule"],
+  ["field", "Field control"],
   ["inventory", "Inventory"],
   ["workforce", "Workforce"],
   ["time", "Time + performance"],

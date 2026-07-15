@@ -87,12 +87,12 @@ const RECOVERY_NEXT: Record<string, string[]> = {
   scheduled: ["completed", "approved", "canceled"],
 };
 const SCHEDULE_NEXT: Record<string, string[]> = {
-  tentative: ["held", "canceled"],
-  held: ["confirmed", "tentative", "canceled"],
-  confirmed: ["en_route", "held", "canceled"],
-  en_route: ["in_progress", "confirmed", "canceled"],
-  in_progress: ["quality_review", "confirmed"],
-  quality_review: ["completed", "in_progress"],
+  tentative: ["held"],
+  held: ["tentative"],
+  confirmed: ["en_route"],
+  en_route: ["in_progress"],
+  in_progress: ["quality_review"],
+  quality_review: ["completed"],
 };
 const DAYS = [
   "Sunday",
@@ -686,6 +686,13 @@ export default async function OperationsPage({
                   </div>
                   <form action={timeOffReviewAction}>
                     <input type="hidden" name="timeOffId" value={item.id} />
+                    <input type="hidden" name="version" value={item.version} />
+                    <input
+                      name="reason"
+                      maxLength={1000}
+                      placeholder="Decision note (required to decline)"
+                      aria-label={`Decision note for ${item.cleaner_name}`}
+                    />
                     <button
                       className="btn btn-soft"
                       name="status"

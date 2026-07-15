@@ -7,11 +7,15 @@ export type EmailMessage = {
 };
 
 export type EmailTransport = {
-  send(message: EmailMessage): Promise<unknown>;
+  send(
+    message: EmailMessage,
+    options?: { idempotencyKey?: string },
+  ): Promise<unknown>;
 };
 
 export type EmailDeliveryContext = {
   suppress: boolean;
+  idempotencyKey?: string;
 };
 
 export type BookingConfirmationInput = {
@@ -80,11 +84,16 @@ export function createEmailService(config: {
     }
 
     try {
-      await client.send({
-        ...message,
-        from: config.from,
-        replyTo: config.replyTo,
-      });
+      await client.send(
+        {
+          ...message,
+          from: config.from,
+          replyTo: config.replyTo,
+        },
+        delivery.idempotencyKey
+          ? { idempotencyKey: delivery.idempotencyKey }
+          : undefined,
+      );
       return "sent";
     } catch (error) {
       // Email must never fail a booking or lead write.

@@ -26,7 +26,13 @@ export const { sendBookingConfirmation, sendOpsNotification } = createEmailServi
   createTransport: (apiKey) => {
     const resend = new Resend(apiKey);
     return {
-      send: (message) => resend.emails.send({ ...message, replyTo: message.replyTo }),
+      send: (message, options) =>
+        resend.emails.send(
+          { ...message, replyTo: message.replyTo },
+          options?.idempotencyKey
+            ? { idempotencyKey: options.idempotencyKey }
+            : undefined,
+        ),
     };
   },
 });

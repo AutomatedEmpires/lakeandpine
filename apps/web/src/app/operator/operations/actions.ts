@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { resolveOperatorIdentity } from "@/lib/auth";
-import { boundedCurrencyCents } from "@/lib/form-values";
+import { boundedCurrencyCents, boundedDecimalValue } from "@/lib/form-values";
 import { retryOutboxNotification } from "@/lib/notification-outbox";
 import {
   addCleanerAvailability,
@@ -551,6 +551,8 @@ export async function timeOffReviewAction(formData: FormData) {
     operator.operator.id,
     value(formData, "timeOffId"),
     status,
+    boundedDecimalValue(formData, "version", { min: 1, max: 1_000_000 }),
+    value(formData, "reason").slice(0, 1000) || null,
     operator.devOnly,
   );
   refresh();

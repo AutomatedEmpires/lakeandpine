@@ -2,7 +2,7 @@ import "server-only";
 
 import { sql } from "./db";
 import { optionalEnv } from "./env";
-import { buildPrivateRequestKey, fixedWindowStart } from "./request-security";
+import { buildPrivateRequestKey } from "./request-security";
 
 export type RateLimitResult =
   | { allowed: true; remaining: number }
@@ -17,29 +17,31 @@ export async function checkRequestRateLimit(
     return { allowed: false, retryAfterSeconds: 60, reason: "configuration" };
   }
 
-  const now = new Date();
-  const windowStartedAt = fixedWindowStart(now, input.windowMs);
-  const expiresAt = new Date(windowStartedAt.getTime() + input.windowMs * 2);
   const requestKey = buildPrivateRequestKey(request.headers, input.scope, secret);
-
-  const rows = await sql<{ request_count: number }[]>`
-    insert into request_rate_limits
-      (scope, key_hash, window_start, window_seconds, request_count, expires_at)
-    values
-      (${input.scope}, ${requestKey}, ${windowStartedAt.toISOString()},
-       ${Math.ceil(input.windowMs / 1000)}, 1, ${expiresAt.toISOString()})
-    on conflict (scope, key_hash, window_start)
-    do update set request_count = request_rate_limits.request_count + 1
-    returning request_count`;
-
-  const count = rows[0]?.request_count ?? input.limit + 1;
-  if (count > input.limit) {
-    const retryAfterSeconds = Math.max(
-      1,
-      Math.ceil((windowStartedAt.getTime() + input.windowMs - now.getTime()) / 1000),
-    );
-    return { allowed: false, retryAfterSeconds, reason: "limit" };
+  const rows = await sql<
+    { allowed: boolean | null; remaining: number | null; retry_after_seconds: number | null }[]
+  >`
+    select * from private.consume_request_rate_limit(
+      ${input.scope}, ${requestKey}, ${input.limit}, ${Math.ceil(input.windowMs / 1000)}
+    )`;
+  const consumption = rows[0];
+  if (
+    typeof consumption?.allowed !== "boolean" ||
+    typeof consumption.remaining !== "number" ||
+    typeof consumption.retry_after_seconds !== "number" ||
+    !Number.isInteger(consumption.remaining) ||
+    !Number.isInteger(consumption.retry_after_seconds)
+  ) {
+    throw new Error("Rate-limit consumption did not return a valid decision");
   }
 
-  return { allowed: true, remaining: Math.max(0, input.limit - count) };
+  if (!consumption.allowed) {
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(1, consumption.retry_after_seconds),
+      reason: "limit",
+    };
+  }
+
+  return { allowed: true, remaining: Math.max(0, consumption.remaining) };
 }

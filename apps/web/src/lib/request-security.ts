@@ -33,10 +33,9 @@ export function buildPrivateRequestKey(
       headers.get("x-forwarded-for") ??
       headers.get("x-real-ip"),
   );
-  const userAgent = (headers.get("user-agent") ?? "unknown").slice(0, 256);
 
   return createHmac("sha256", secret)
-    .update(`${scope}\n${address}\n${userAgent}`)
+    .update(`${scope}\n${address}`)
     .digest("hex");
 }
 

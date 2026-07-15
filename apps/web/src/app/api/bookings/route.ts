@@ -8,7 +8,9 @@ import { normalizeVerifiedClerkEmail } from "@/lib/clerk-identity";
 import { buildBookingConsentRecord } from "@/lib/consent-policy";
 import {
   createBooking,
+  getRuntimeDatabaseName,
   recordBookingNotificationDelivery,
+  updateUnallocatedBookingRouteAssessment,
   upsertCustomerFromClerk,
 } from "@/lib/data";
 import { sendBookingConfirmation, sendOpsNotification } from "@/lib/email";
@@ -18,13 +20,30 @@ import {
   requestIntakeEnabled,
 } from "@/lib/env";
 import { deriveRequestPlanning, PREMIUM_PROGRAMS } from "@/lib/premium-request";
+import {
+  getPlanningDateBounds,
+  isPlanningDateAllowed,
+} from "@/lib/planning-date";
 import { checkRequestRateLimit } from "@/lib/rate-limit";
+import {
+  assessRequestLocation,
+  createManualRequestLocationAssessment,
+} from "@/lib/route-qualification";
 import {
   isHoneypotFilled,
   readJsonBody,
   RequestBodyError,
 } from "@/lib/request-security";
-import { getRuntimeSmokeDisposition } from "@/lib/runtime-smoke-request";
+import {
+  getRuntimeSmokeDisposition,
+  isSafeRuntimeSmokeDatabase,
+  RUNTIME_SMOKE_DATABASE_HEADER,
+} from "@/lib/runtime-smoke-request";
+import { feasibleArrivalWindows } from "@/lib/field-operations";
+import {
+  MULTI_DAY_WINDOW_PREFERENCE,
+  REQUEST_WINDOW_PREFERENCES,
+} from "@/lib/scheduling";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const PROGRAM_TITLES = {
@@ -59,12 +78,7 @@ const bookingSchema = z.object({
   scheduling: z.object({
     preferredDate: z.string().regex(DATE_PATTERN),
     alternateDates: z.array(z.string().regex(DATE_PATTERN)).min(1).max(2),
-    windowPreference: z.enum([
-      "Morning",
-      "Midday",
-      "Afternoon",
-      "After-hours review",
-    ]),
+    windowPreference: z.enum(REQUEST_WINDOW_PREFERENCES),
     deadlineCritical: z.boolean(),
     accessComplex: z.boolean(),
   }),
@@ -72,6 +86,14 @@ const bookingSchema = z.object({
     name: z.string().trim().min(2).max(200),
     email: z.string().trim().email().max(320),
     phone: z.string().trim().min(7).max(30),
+    street: z.string().trim().min(3).max(200),
+    unit: z.string().trim().max(120).default(""),
+    city: z.string().trim().min(2).max(120),
+    state: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z]{2}$/)
+      .transform((value) => value.toUpperCase()),
     zip: z.string().trim().min(3).max(12),
   }),
   acknowledgements: z.object({
@@ -81,22 +103,6 @@ const bookingSchema = z.object({
     photoPermission: z.boolean(),
   }),
 });
-
-function todayInOperatingTimezone() {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Los_Angeles",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
-}
-
-function validPlanningDate(value: string) {
-  const today = todayInOperatingTimezone();
-  const lastDate = new Date(`${today}T12:00:00Z`);
-  lastDate.setUTCMonth(lastDate.getUTCMonth() + 18);
-  return value >= today && value <= lastDate.toISOString().slice(0, 10);
-}
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
@@ -224,11 +230,10 @@ export async function POST(request: Request) {
   if (isHoneypotFilled(input.companyWebsite)) {
     return NextResponse.json({ accepted: true }, { status: 202 });
   }
-  if (
-    ![input.scheduling.preferredDate, ...input.scheduling.alternateDates].every(
-      validPlanningDate,
-    )
-  ) {
+  const planningDateBounds = getPlanningDateBounds();
+  if (![input.scheduling.preferredDate, ...input.scheduling.alternateDates].every(
+    (value) => isPlanningDateAllowed(value, planningDateBounds),
+  )) {
     return NextResponse.json(
       { error: "Choose planning dates from today through the next 18 months." },
       { status: 422 },
@@ -244,6 +249,45 @@ export async function POST(request: Request) {
     finishSensitive: Boolean(input.scope.finishNotes),
     accessComplex: input.scheduling.accessComplex,
   });
+  const elapsedMinutes =
+    Math.ceil(planning.estimatedMinutes / planning.estimatedCrewSize / 30) * 30;
+  const feasibleWindows = feasibleArrivalWindows(elapsedMinutes).filter(
+    (window) => window.eligible,
+  );
+  const requiresMultiDayReview = feasibleWindows.length === 0;
+  if (
+    (requiresMultiDayReview &&
+      input.scheduling.windowPreference !== MULTI_DAY_WINDOW_PREFERENCE) ||
+    (!requiresMultiDayReview &&
+      !feasibleWindows.some(
+        (window) => window.label === input.scheduling.windowPreference,
+      ))
+  ) {
+    return NextResponse.json(
+      {
+        error: requiresMultiDayReview
+          ? "This scope requires operator-planned multi-day review; choose that planning path."
+          : "Choose an arrival window that fits the estimated single-day duration.",
+      },
+      { status: 422 },
+    );
+  }
+  if (smokeDisposition === "authorized") {
+    const connectedDatabase = await getRuntimeDatabaseName();
+    if (!isSafeRuntimeSmokeDatabase({
+      headerDatabase: request.headers.get(RUNTIME_SMOKE_DATABASE_HEADER),
+      configuredDatabase: process.env.RUNTIME_SMOKE_DATABASE,
+      connectedDatabase,
+      databaseUrl: process.env.DATABASE_URL,
+      allowRemoteDatabase:
+        process.env.RUNTIME_SMOKE_ALLOW_REMOTE_DATABASE === "true",
+    })) {
+      return NextResponse.json(
+        { error: "Runtime smoke target identity mismatch" },
+        { status: 403 },
+      );
+    }
+  }
 
   let customerId: string | null = null;
   if (authEnabled) {
@@ -260,7 +304,9 @@ export async function POST(request: Request) {
         fullName: user?.fullName ?? input.contact.name,
         phone: input.contact.phone,
       });
-      customerId = customer.id;
+      const normalizedContactEmail = input.contact.email.trim().toLowerCase();
+      customerId =
+        verifiedEmail === normalizedContactEmail ? customer.id : null;
     }
   }
   // Guest contact email is unverified. Keep the request unowned until a later
@@ -272,7 +318,7 @@ export async function POST(request: Request) {
     ? input.property.cadence
     : "onetime";
   const qualificationStatus =
-    planning.reviewPath === "walkthrough recommended"
+    planning.reviewPath === "walkthrough recommended" || requiresMultiDayReview
       ? "walkthrough_needed"
       : "requested";
   const requiredSkills = [
@@ -287,6 +333,11 @@ export async function POST(request: Request) {
       Math.ceil(planning.estimatedMinutes / 60) * 3,
   );
   const consent = buildBookingConsentRecord(input.acknowledgements);
+  // Claim the idempotency key with a safe local assessment before any paid or
+  // externally observable geocoding call. Only the request that created the
+  // booking may enrich it; retries return the original booking without calling
+  // the provider again.
+  let routeAssessment = createManualRequestLocationAssessment(input.contact);
 
   let booking;
   try {
@@ -331,6 +382,7 @@ export async function POST(request: Request) {
       qualificationStatus,
       qualificationRequirements: {
         reviewPath: planning.reviewPath,
+        multiDayReviewRequired: requiresMultiDayReview,
         siteReady: input.acknowledgements.siteReady,
         deadlineCritical: input.scheduling.deadlineCritical,
         accessComplex: input.scheduling.accessComplex,
@@ -347,7 +399,26 @@ export async function POST(request: Request) {
         input.program,
         input.acknowledgements.photoPermission,
       ),
+      routeAssessment,
     });
+    if (!booking.duplicate) {
+      const enrichedAssessment = await assessRequestLocation(input.contact);
+      try {
+        await updateUnallocatedBookingRouteAssessment(
+          booking.id,
+          enrichedAssessment,
+        );
+        routeAssessment = enrichedAssessment;
+      } catch (error) {
+        // The manual-review record created in the booking transaction is the
+        // fail-safe. Never discard a valid request because enrichment raced or
+        // the database became unavailable after the idempotency claim.
+        console.error(
+          "[booking:route-enrichment]",
+          error instanceof Error ? error.message : "unknown",
+        );
+      }
+    }
   } catch (error) {
     console.error(
       "[booking:error]",
@@ -361,6 +432,9 @@ export async function POST(request: Request) {
 
   const reference = deriveBookingReference(booking.id);
   if (!booking.duplicate) {
+    if (!booking.notificationOutboxIds) {
+      throw new Error("Booking notification claims are unavailable");
+    }
     const [customerOutcome, opsOutcome] = await Promise.all([
       sendBookingConfirmation(
         {
@@ -372,29 +446,38 @@ export async function POST(request: Request) {
           bookingId: booking.id,
           publicReference: reference,
         },
-        { suppress: smokeDisposition === "authorized" },
+        {
+          suppress: smokeDisposition === "authorized",
+          idempotencyKey: `booking:${booking.id}:customer_confirmation`,
+        },
       ),
       sendOpsNotification(
         {
           kind: "booking",
           summary: `${PROGRAM_TITLES[input.program]} · ${input.scheduling.preferredDate} · ${qualificationStatus.replaceAll("_", " ")}`,
           detailLines: [
-            `Customer: ${input.contact.name} (${input.contact.email}, ${input.contact.phone}, ${input.contact.zip})`,
+            `Customer: ${input.contact.name} (${input.contact.email}, ${input.contact.phone})`,
+            `Service area: ${input.contact.city}, ${input.contact.state} ${input.contact.zip} · ${routeAssessment.assessmentStatus.replaceAll("_", " ")}`,
             `Context: ${input.property.context} · ${input.property.sizeBand} · ${input.property.zoneCount} zones · ${input.property.cadence}`,
             `Planning: ${planning.reviewPath} · ${planning.estimatedMinutes} labor minutes · ${planning.estimatedCrewSize} suggested crew`,
             `Reference: ${reference}`,
           ],
         },
-        { suppress: smokeDisposition === "authorized" },
+        {
+          suppress: smokeDisposition === "authorized",
+          idempotencyKey: `booking:${booking.id}:ops_notification`,
+        },
       ),
     ]);
     await Promise.allSettled([
       recordBookingNotificationDelivery(
+        booking.notificationOutboxIds.customer,
         booking.id,
         "customer_confirmation",
         customerOutcome,
       ),
       recordBookingNotificationDelivery(
+        booking.notificationOutboxIds.ops,
         booking.id,
         "ops_notification",
         opsOutcome,

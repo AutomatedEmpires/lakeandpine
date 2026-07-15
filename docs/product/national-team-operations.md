@@ -35,6 +35,9 @@ the same boundaries in PostgreSQL. A missing or mismatched actor context fails c
   creation, and role assignment.
 - `/operator/schedule` — team job allocation, capacity-aware schedule suggestions,
   candidate proposals, and controlled schedule transitions.
+- `/operator/field` — branch radius and hours, route exceptions, customer-approved
+  arrival windows, manager-on-duty coverage, mileage, field issues, communication audit,
+  and non-cash tip intent.
 - `/operator/inventory` — product catalog, purchase link, unit cost, opening count,
   stock ledger, cleaner usage, restock queue, and receiving.
 - `/operator/workforce` — team roster and append-only callout, no-show, coaching,
@@ -46,8 +49,9 @@ the same boundaries in PostgreSQL. A missing or mismatched actor context fails c
 - `/operator/recovery` — team-scoped complaints, case lifecycle, rescheduling,
   cancellation, recovery actions, and evidence-backed refund review. It never moves
   money.
-- `/crew` — cleaner assignment response, time off, clock in/out, product usage,
-  restock request, callout, and bonus history.
+- `/crew` — cleaner assignment response, exact assigned location, approved arrival
+  window, checklist, audited customer updates, mileage, field issues, time off, clock
+  in/out, product usage, restock request, callout, and bonus history.
 
 The previous global operator dashboards are restricted to owner and general-manager
 memberships because their legacy queries are organization-wide. Team managers and shift

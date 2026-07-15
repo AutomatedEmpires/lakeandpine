@@ -81,9 +81,9 @@ export default async function CompensationPage({ searchParams }: { searchParams:
             {dashboard.qualityReviewCandidates.length > 0 ? <form action={createQualityReviewAction} className="operations-form-grid">
               <input type="hidden" name="teamId" value={dashboard.selectedTeamId!} />
               <label>Completed work + cleaner<select name="candidateKey">{dashboard.qualityReviewCandidates.map((candidate) => <option key={`${candidate.allocation_id}-${candidate.cleaner_id}`} value={`${candidate.allocation_id}|${candidate.cleaner_id}`}>{candidate.cleaner_name} · {candidate.job_label}</option>)}</select></label>
-              <label>Source<select name="source"><option value="verified_customer">Verified customer feedback</option><option value="quality_inspection">Quality inspection</option><option value="manager_review">Manager review</option></select></label>
+              <label>Source<select name="source"><option value="quality_inspection">Quality inspection</option><option value="manager_review">Manager review</option></select></label>
               <label>Rating<input name="rating" type="number" min="1" max="5" step="1" required /></label>
-              <label>Evidence reference<input name="evidenceReference" placeholder="Customer thread, survey, or inspection reference" /></label>
+              <label>Evidence reference<input name="evidenceReference" placeholder="Inspection or manager-review reference" /></label>
               <label>Restricted note<textarea name="privateNote" placeholder="Evidence summary; avoid unnecessary personal data" /></label>
               <button className="btn btn-primary">Record review evidence</button>
             </form> : <p className="copy">Quality evidence becomes available after allocated work reaches closeout or completion and the cleaner is confirmed on the job.</p>}
