@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { localDateTimeToUtc } from "./zoned-datetime.ts";
+import { isValidIanaTimeZone, localDateTimeToUtc } from "./zoned-datetime.ts";
+
+test("accepts multi-segment and hyphenated IANA timezones", () => {
+  assert.equal(isValidIanaTimeZone("America/Port-au-Prince"), true);
+  assert.equal(isValidIanaTimeZone("America/Argentina/Buenos_Aires"), true);
+  assert.equal(isValidIanaTimeZone("Not/A_Zone"), false);
+});
 
 test("converts territory wall-clock time without using the server timezone", () => {
   assert.equal(

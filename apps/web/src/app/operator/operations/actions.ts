@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 
 import { resolveOperatorIdentity } from "@/lib/auth";
+import { boundedCurrencyCents } from "@/lib/form-values";
 import { retryOutboxNotification } from "@/lib/notification-outbox";
 import {
   addCleanerAvailability,
@@ -46,11 +47,20 @@ import {
   type ScheduleStatus,
   type ServiceCaseStatus,
 } from "@/lib/operations-workflows";
+import { hasCapability } from "@/lib/team-operations";
+import { getOperationsAccess } from "@/lib/team-operations-data";
 
 async function requireOperator() {
   const identity = await resolveOperatorIdentity();
   if (identity.state !== "authed" && identity.state !== "preview")
     throw new Error("Operator access required");
+  const access = await getOperationsAccess(identity.operator.id, identity.devOnly);
+  if (
+    !access.organizationId ||
+    !hasCapability(access.memberships, "view_network", access.organizationId, null)
+  ) {
+    throw new Error("Owner or GM access is required for unallocated service operations");
+  }
   return identity;
 }
 
@@ -95,6 +105,7 @@ export async function createTerritoryAction(formData: FormData) {
     throw new Error("Territory name, code, or postal-code list is invalid");
   }
   await createTerritoryDraft({
+    customerId: operator.operator.id,
     code,
     name,
     postalCodes,
@@ -109,6 +120,7 @@ export async function postalCodeStatusAction(formData: FormData) {
   if (!(["review", "active", "excluded"] as const).includes(status as "review"))
     return;
   await setPostalCodeStatus(
+    operator.operator.id,
     value(formData, "territoryId"),
     value(formData, "postalCode"),
     status as "review" | "active" | "excluded",
@@ -123,6 +135,7 @@ export async function territoryStatusAction(formData: FormData) {
   if (!(["draft", "active", "paused"] as const).includes(status as "draft"))
     return;
   await setTerritoryStatus(
+    operator.operator.id,
     value(formData, "territoryId"),
     status as "draft" | "active" | "paused",
     operator.devOnly,
@@ -145,6 +158,7 @@ export async function applicationStatusAction(formData: FormData) {
   if (!APPLICATION_TRANSITIONS[from]?.includes(to))
     throw new Error("Invalid application transition");
   await setCleanerApplicationStatus(
+    operator.operator.id,
     value(formData, "applicationId"),
     from,
     to,
@@ -156,6 +170,7 @@ export async function applicationStatusAction(formData: FormData) {
 export async function onboardCleanerAction(formData: FormData) {
   const operator = await requireOperator();
   await createOnboardingCleaner(
+    operator.operator.id,
     value(formData, "applicationId"),
     value(formData, "territoryId"),
     operator.devOnly,
@@ -167,7 +182,11 @@ export async function verifyCleanerScreeningAction(formData: FormData) {
   const operator = await requireOperator();
   if (value(formData, "attestation") !== "verified")
     throw new Error("Verification attestation is required");
-  await verifyCleanerScreening(value(formData, "cleanerId"), operator.devOnly);
+  await verifyCleanerScreening(
+    operator.operator.id,
+    value(formData, "cleanerId"),
+    operator.devOnly,
+  );
   refresh();
 }
 
@@ -187,6 +206,7 @@ export async function cleanerAvailabilityAction(formData: FormData) {
     throw new Error("Availability window is invalid");
   }
   await addCleanerAvailability({
+    customerId: operator.operator.id,
     cleanerId: value(formData, "cleanerId"),
     territoryId: value(formData, "territoryId"),
     dayOfWeek,
@@ -236,6 +256,7 @@ export async function cleanerCapabilitiesAction(formData: FormData) {
     throw new Error("Use only supported capability codes");
   }
   await setCleanerCapabilities({
+    customerId: operator.operator.id,
     cleanerId: value(formData, "cleanerId"),
     skills,
     verticalExperience: verticalExperience as (typeof ALLOWED_VERTICALS)[number][],
@@ -250,6 +271,7 @@ export async function cleanerStatusAction(formData: FormData) {
   if (!(["active", "paused", "inactive"] as const).includes(status as "active"))
     return;
   await setCleanerStatus(
+    operator.operator.id,
     value(formData, "cleanerId"),
     status as "active" | "paused" | "inactive",
     operator.devOnly,
@@ -290,6 +312,7 @@ export async function qualificationStatusAction(formData: FormData) {
     );
   }
   await setQualificationStatus(
+    operator.operator.id,
     value(formData, "bookingId"),
     from,
     to,
@@ -311,6 +334,7 @@ export async function scheduleStatusAction(formData: FormData) {
     throw new Error("Invalid schedule transition");
   }
   await setJobScheduleStatus(
+    operator.operator.id,
     value(formData, "scheduleId"),
     from,
     to,
@@ -322,6 +346,7 @@ export async function scheduleStatusAction(formData: FormData) {
 export async function createScheduleAction(formData: FormData) {
   const operator = await requireOperator();
   await createJobSchedule({
+    customerId: operator.operator.id,
     bookingId: value(formData, "bookingId"),
     territoryId: value(formData, "territoryId"),
     startLocal: value(formData, "startAt"),
@@ -334,6 +359,7 @@ export async function createScheduleAction(formData: FormData) {
 export async function proposeCrewAction(formData: FormData) {
   const operator = await requireOperator();
   await proposeAssignmentCandidate(
+    operator.operator.id,
     value(formData, "scheduleId"),
     value(formData, "candidateId"),
     operator.devOnly,
@@ -344,6 +370,7 @@ export async function proposeCrewAction(formData: FormData) {
 export async function removePlanningAssignmentAction(formData: FormData) {
   const operator = await requireOperator();
   const changed = await removeAssignmentFromPlanningSchedule(
+    operator.operator.id,
     value(formData, "assignmentId"),
     operator.devOnly,
   );
@@ -369,6 +396,7 @@ export async function serviceCaseStatusAction(formData: FormData) {
     );
   }
   await setServiceCaseStatus(
+    operator.operator.id,
     value(formData, "caseId"),
     from,
     to,
@@ -381,6 +409,7 @@ export async function serviceCaseStatusAction(formData: FormData) {
 export async function rescheduleCaseAction(formData: FormData) {
   const operator = await requireOperator();
   await rescheduleBookingFromCase({
+    customerId: operator.operator.id,
     caseId: value(formData, "caseId"),
     startLocal: value(formData, "startAt"),
     endLocal: value(formData, "endAt"),
@@ -392,6 +421,7 @@ export async function rescheduleCaseAction(formData: FormData) {
 export async function updateUnscheduledPreferenceAction(formData: FormData) {
   const operator = await requireOperator();
   await updateUnscheduledBookingPreferenceFromCase({
+    customerId: operator.operator.id,
     caseId: value(formData, "caseId"),
     preferredDate: value(formData, "preferredDate"),
     devOnly: operator.devOnly,
@@ -403,14 +433,17 @@ export async function cancelCaseBookingAction(formData: FormData) {
   const operator = await requireOperator();
   if (value(formData, "confirmation") !== "cancel")
     throw new Error("Cancellation confirmation is required");
-  await cancelBookingFromCase(value(formData, "caseId"), operator.devOnly);
+  await cancelBookingFromCase(
+    operator.operator.id,
+    value(formData, "caseId"),
+    operator.devOnly,
+  );
   refresh();
 }
 
 export async function recoveryAction(formData: FormData) {
   const operator = await requireOperator();
   const type = value(formData, "type");
-  const ownerLabel = value(formData, "ownerLabel").slice(0, 120);
   const scheduledLocal = value(formData, "scheduledAt");
   const allowed = [
     "reclean",
@@ -422,13 +455,13 @@ export async function recoveryAction(formData: FormData) {
     "documentation",
     "other",
   ];
-  if (!allowed.includes(type) || !ownerLabel || !scheduledLocal) {
-    throw new Error("Recovery type, owner, and target time are required");
+  if (!allowed.includes(type) || !scheduledLocal) {
+    throw new Error("Recovery type and target time are required");
   }
   await createRecoveryAction({
+    customerId: operator.operator.id,
     caseId: value(formData, "caseId"),
     type,
-    ownerLabel,
     scheduledLocal,
     notes: value(formData, "notes").slice(0, 2000),
     devOnly: operator.devOnly,
@@ -448,6 +481,7 @@ export async function recoveryStatusAction(formData: FormData) {
     throw new Error("Invalid recovery transition");
   }
   const changed = await setRecoveryStatus(
+    operator.operator.id,
     value(formData, "recoveryId"),
     from,
     to,
@@ -459,21 +493,18 @@ export async function recoveryStatusAction(formData: FormData) {
 
 export async function requestRefundReviewAction(formData: FormData) {
   const operator = await requireOperator();
-  const amountCents = Math.round(
-    Number(value(formData, "amountDollars")) * 100,
-  );
+  const amountCents = boundedCurrencyCents(formData, "amountDollars", {
+    minCents: 1,
+    maxCents: 1_000_000,
+  });
   const reasonCode = value(formData, "reasonCode")
     .toLowerCase()
     .replace(/[^a-z0-9_-]/g, "")
     .slice(0, 80);
-  if (
-    !Number.isInteger(amountCents) ||
-    amountCents <= 0 ||
-    amountCents > 1_000_000 ||
-    !reasonCode
-  )
+  if (!reasonCode)
     throw new Error("Refund review amount or reason is invalid");
   await createRefundReview({
+    customerId: operator.operator.id,
     caseId: value(formData, "caseId"),
     amountCents,
     reasonCode,
@@ -502,6 +533,7 @@ export async function refundStatusAction(formData: FormData) {
     );
   }
   await setRefundStatus(
+    operator.operator.id,
     value(formData, "refundId"),
     from,
     to,
@@ -515,13 +547,19 @@ export async function timeOffReviewAction(formData: FormData) {
   const operator = await requireOperator();
   const status = value(formData, "status");
   if (status !== "approved" && status !== "declined") return;
-  await reviewTimeOff(value(formData, "timeOffId"), status, operator.devOnly);
+  await reviewTimeOff(
+    operator.operator.id,
+    value(formData, "timeOffId"),
+    status,
+    operator.devOnly,
+  );
   refresh();
 }
 
 export async function retryNotificationAction(formData: FormData) {
   const operator = await requireOperator();
   await retryOutboxNotification(
+    operator.operator.id,
     value(formData, "outboxId"),
     operator.devOnly,
   );

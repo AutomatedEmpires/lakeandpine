@@ -134,13 +134,18 @@ export async function getCleanerAvailability(cleanerId: string) {
 }
 
 export async function getCleanerTimeOff(cleanerId: string) {
-  return sql<TimeOffRow[]>`
-    select id, start_at::text, end_at::text, status, reason_category
-    from cleaner_time_off
-    where cleaner_id = ${cleanerId}
-      and end_at >= now() - interval '1 day'
-    order by start_at asc
-    limit 20`;
+  return sql.begin(async (transaction) => {
+    // Clear the staff actor before setting the cleaner actor on this pooled session.
+    await transaction`select set_config('lakeandpine.current_customer_id', '', true)`;
+    await transaction`select set_config('lakeandpine.current_cleaner_id', ${cleanerId}, true)`;
+    return transaction<TimeOffRow[]>`
+      select id, start_at::text, end_at::text, status, reason_category
+      from cleaner_time_off
+      where cleaner_id = ${cleanerId}
+        and end_at >= now() - interval '1 day'
+      order by start_at asc
+      limit 20`;
+  });
 }
 
 export async function respondToAssignment(
@@ -164,26 +169,47 @@ export async function respondToAssignment(
 
 export async function requestTimeOff(input: {
   cleanerId: string;
+  membershipId: string;
   startLocal: string;
   endLocal: string;
   reasonCategory: "unavailable" | "personal" | "medical" | "training" | "other";
   devOnly: boolean;
 }) {
-  const territories = await sql<{ timezone: string }[]>`
-    select territory.timezone
-    from cleaners cleaner
-    join service_territories territory on territory.id = cleaner.home_territory_id
-    where cleaner.id = ${input.cleanerId}
-      and cleaner.status in ('onboarding', 'active')
-      and (${input.devOnly} = false or cleaner.is_dev_seed)
-    limit 1`;
-  if (!territories[0]) {
-    throw new Error("A home territory is required before requesting time off");
-  }
-  const startAt = localDateTimeToUtc(input.startLocal, territories[0].timezone);
-  const endAt = localDateTimeToUtc(input.endLocal, territories[0].timezone);
-  validateUtcInterval(startAt, endAt, { maxMinutes: 14 * 24 * 60 });
-  await sql`
-    insert into cleaner_time_off (cleaner_id, start_at, end_at, reason_category, status)
-    values (${input.cleanerId}, ${startAt}, ${endAt}, ${input.reasonCategory}, 'requested')`;
+  await sql.begin(async (transaction) => {
+    // Clear the staff actor before setting the cleaner actor so a pooled
+    // session can never evaluate RLS under a mixed identity.
+    await transaction`select set_config('lakeandpine.current_customer_id', '', true)`;
+    await transaction`select set_config('lakeandpine.current_cleaner_id', ${input.cleanerId}, true)`;
+    const memberships = await transaction<{
+      organization_id: string;
+      team_id: string;
+      timezone: string;
+    }[]>`
+      select membership.organization_id, membership.team_id, team.timezone
+      from workforce_memberships membership
+      join cleaning_teams team on team.id = membership.team_id
+      join cleaners cleaner on cleaner.id = membership.cleaner_id
+      where membership.id = ${input.membershipId}
+        and membership.cleaner_id = ${input.cleanerId}
+        and membership.role in ('cleaner','shift_lead')
+        and membership.status = 'active'
+        and cleaner.status in ('onboarding','active')
+        and (${input.devOnly} = false or (
+          membership.is_dev_seed and cleaner.is_dev_seed and team.is_dev_seed
+        ))
+      limit 1`;
+    if (!memberships[0]) {
+      throw new Error("Choose an active team before requesting time off");
+    }
+    const startAt = localDateTimeToUtc(input.startLocal, memberships[0].timezone);
+    const endAt = localDateTimeToUtc(input.endLocal, memberships[0].timezone);
+    validateUtcInterval(startAt, endAt, { maxMinutes: 14 * 24 * 60 });
+    await transaction`
+      insert into cleaner_time_off
+        (organization_id, team_id, cleaner_id, start_at, end_at,
+         reason_category, status, is_dev_seed)
+      values (${memberships[0].organization_id}, ${memberships[0].team_id},
+        ${input.cleanerId}, ${startAt}, ${endAt}, ${input.reasonCategory},
+        'requested', ${input.devOnly})`;
+  });
 }

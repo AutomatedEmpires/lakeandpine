@@ -214,7 +214,7 @@ async function createHostedMigrationRunner(bootstrapSql, bootstrapUrl, database)
   const runnerUrl = new URL(bootstrapUrl);
   runnerUrl.username = "postgres";
   runnerUrl.password = "lakeandpine-verifier-postgres";
-  const runnerSql = postgres(runnerUrl.toString(), { max: 1, onnotice: () => {} });
+  const runnerSql = postgres(runnerUrl.toString(), { max: 4, onnotice: () => {} });
   const [runner] = await runnerSql`
     select current_user, rolsuper, rolcreaterole, rolcreatedb,
       rolreplication, rolbypassrls
@@ -894,6 +894,7 @@ async function inspectOperationalInvariants(sql) {
         (job_schedule_id, cleaner_id, assignment_role, status, is_dev_seed)
       values (${schedule.id}, ${cleanerTwo}, 'member', 'accepted', true)`;
 
+    await transaction.unsafe('reset role');
     const [timeOff] = await transaction`
       insert into cleaner_time_off
         (cleaner_id, start_at, end_at, status, is_dev_seed)
@@ -902,6 +903,7 @@ async function inspectOperationalInvariants(sql) {
     await expectDatabaseError(transaction, ['23P01'], 'time-off approval over accepted work', async (savepoint) => {
       await savepoint`update cleaner_time_off set status = 'approved' where id = ${timeOff.id}`;
     });
+    await transaction.unsafe(`set local role ${quoteIdentifier(APP_ROLE)}`);
 
     const [capacityBooking] = await transaction`
       insert into bookings
@@ -1129,6 +1131,1011 @@ async function inspectOperationalInvariants(sql) {
   });
 }
 
+async function inspectOwnerBootstrapConcurrency(sql) {
+  const candidates = await sql`
+    insert into customers (email, full_name, role, is_dev_seed)
+    values
+      ('owner-race-a@verify.invalid', 'Owner Race A', 'staff', true),
+      ('owner-race-b@verify.invalid', 'Owner Race B', 'staff', true)
+    returning id`;
+  const attempts = await Promise.allSettled(candidates.map((candidate) =>
+    sql.begin(async (transaction) => {
+      await transaction.unsafe(`set local role ${quoteIdentifier(APP_ROLE)}`);
+      await transaction`select set_config('lakeandpine.current_customer_id', ${candidate.id}, true)`;
+      const [membership] = await transaction`
+        select private.bootstrap_lakeandpine_owner(${candidate.id}) as id`;
+      return membership.id;
+    }),
+  ));
+  invariant(
+    attempts.filter((attempt) => attempt.status === 'fulfilled').length === 1
+      && attempts.filter((attempt) => attempt.status === 'rejected').length === 1,
+    'Concurrent owner bootstrap must establish exactly one national owner',
+  );
+  const [ownerCount] = await sql`
+    select count(*)::int as count from workforce_memberships
+    where role = 'owner' and status = 'active'`;
+  invariant(ownerCount.count === 1,
+    'Database owner uniqueness invariant did not hold after concurrent bootstrap');
+  await sql.begin(async (transaction) => {
+    await transaction`select set_config('lakeandpine.dev_seed_purge', '1', true)`;
+    await transaction`delete from workforce_memberships where role = 'owner' and status = 'active'`;
+    await transaction`delete from customers where id = any(${candidates.map((candidate) => candidate.id)}::uuid[])`;
+  });
+}
+
+async function inspectNationalTeamOperations(sql) {
+  await sql.begin(async (transaction) => {
+    await transaction.unsafe(`set local role ${quoteIdentifier(APP_ROLE)}`);
+    const [owner] = await transaction`
+      insert into customers (email, full_name, role, is_dev_seed)
+      values ('national-owner@verify.invalid', 'National Owner', 'staff', true)
+      returning id`;
+    const [manager] = await transaction`
+      insert into customers (email, full_name, role, is_dev_seed)
+      values ('team-manager@verify.invalid', 'Team Manager', 'staff', true)
+      returning id`;
+    const [generalManager] = await transaction`
+      insert into customers (email, full_name, role, is_dev_seed)
+      values ('general-manager@verify.invalid', 'General Manager', 'staff', true)
+      returning id`;
+    const [teamBManager] = await transaction`
+      insert into customers (email, full_name, role, is_dev_seed)
+      values ('team-b-manager@verify.invalid', 'Team B Manager', 'staff', true)
+      returning id`;
+    const [candidateManager] = await transaction`
+      insert into customers (email, full_name, role, is_dev_seed)
+      values ('candidate-manager@verify.invalid', 'Candidate Manager', 'staff', true)
+      returning id`;
+    const [peerManager] = await transaction`
+      insert into customers (email, full_name, role, is_dev_seed)
+      values ('peer-manager@verify.invalid', 'Peer Team Manager', 'staff', true)
+      returning id`;
+    await transaction`select set_config('lakeandpine.current_customer_id', ${owner.id}, true)`;
+    const [ownerMembership] = await transaction`
+      select private.bootstrap_lakeandpine_owner(${owner.id}) as id`;
+    invariant(ownerMembership.id, 'National owner bootstrap did not return a membership');
+    const [organization] = await transaction`
+      select id from organizations where slug = 'lake-and-pine'`;
+    invariant(organization, 'Bootstrapped owner cannot read the organization');
+
+    const [teamA] = await transaction`
+      insert into cleaning_teams
+        (organization_id, code, name, timezone, status, is_dev_seed)
+      values (${organization.id}, 'verify-team-a', 'Verifier Team A',
+        'America/Los_Angeles', 'active', true)
+      returning id`;
+    const [teamB] = await transaction`
+      insert into cleaning_teams
+        (organization_id, code, name, timezone, status, is_dev_seed)
+      values (${organization.id}, 'verify-team-b', 'Verifier Team B',
+        'America/Los_Angeles', 'active', true)
+      returning id`;
+    const [locationA] = await transaction`
+      insert into inventory_locations
+        (organization_id, team_id, name, location_type)
+      values (${organization.id}, ${teamA.id}, 'Team A supply room', 'supply_room')
+      returning id`;
+    const [locationB] = await transaction`
+      insert into inventory_locations
+        (organization_id, team_id, name, location_type)
+      values (${organization.id}, ${teamB.id}, 'Team B supply room', 'supply_room')
+      returning id`;
+    const [managerMembership] = await transaction`
+      insert into workforce_memberships
+        (organization_id, team_id, customer_id, role, status, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${manager.id}, 'manager', 'active', true)
+      returning id`;
+    const [peerManagerMembership] = await transaction`
+      insert into workforce_memberships
+        (organization_id, team_id, customer_id, role, status, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${peerManager.id}, 'manager', 'active', true)
+      returning id`;
+    const [teamBManagerMembership] = await transaction`
+      insert into workforce_memberships
+        (organization_id, team_id, customer_id, role, status, is_dev_seed)
+      values (${organization.id}, ${teamB.id}, ${teamBManager.id}, 'manager', 'active', true)
+      returning id`;
+    const [peerManagerRate] = await transaction`
+      insert into compensation_rates
+        (organization_id, team_id, workforce_membership_id, pay_basis,
+         amount_cents, effective_from, status, created_by_membership_id,
+         reason, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${peerManagerMembership.id}, 'salary',
+        9000000, '2030-01-01', 'active', ${ownerMembership.id},
+        'Verifier owner-only manager compensation', true)
+      returning id`;
+    const [peerManagerBonus] = await transaction`
+      insert into bonus_awards
+        (organization_id, team_id, workforce_membership_id, amount_cents,
+         reason, status, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${peerManagerMembership.id}, 5000,
+        'Verifier owner-only manager bonus', 'proposed', true)
+      returning id`;
+    const [peerManagerEvent] = await transaction`
+      insert into workforce_events
+        (organization_id, team_id, subject_membership_id, event_type, severity,
+         summary, created_by_membership_id, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${peerManagerMembership.id},
+        'performance_coaching', 'medium', 'Verifier owner-only manager event',
+        ${ownerMembership.id}, true)
+      returning id`;
+    const [generalManagerMembership] = await transaction`
+      insert into workforce_memberships
+        (organization_id, customer_id, role, status, is_dev_seed)
+      values (${organization.id}, ${generalManager.id}, 'gm', 'active', true)
+      returning id`;
+    invariant(generalManagerMembership.id,
+      'Owner could not grant the organization-wide general-manager role');
+    const [globalBonusTier] = await transaction`
+      insert into review_bonus_tiers
+        (organization_id, team_id, name, minimum_rating, bonus_cents, is_dev_seed)
+      values (${organization.id}, null, 'Verifier national standard', 5, 1000, true)
+      returning id`;
+    const [teamBBonusTier] = await transaction`
+      insert into review_bonus_tiers
+        (organization_id, team_id, name, minimum_rating, bonus_cents, is_dev_seed)
+      values (${organization.id}, ${teamB.id}, 'Verifier Team B standard', 5, 1100, true)
+      returning id`;
+
+    const [cleaner] = await transaction`
+      insert into cleaners
+        (full_name, email, status, screening_status, screening_verified_at,
+         skills, vertical_experience, is_dev_seed)
+      values ('Team A Cleaner', 'team-a-cleaner@verify.invalid', 'active',
+        'verified', now(), array['estate_detail'], array['estate'], true)
+      returning id`;
+    const [cleanerMembership] = await transaction`
+      insert into workforce_memberships
+        (organization_id, team_id, cleaner_id, role, status, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${cleaner.id}, 'cleaner', 'active', true)
+      returning id`;
+    const [leadCleaner] = await transaction`
+      insert into cleaners
+        (full_name, email, status, screening_status, screening_verified_at,
+         skills, vertical_experience, is_dev_seed)
+      values ('Team A Shift Lead', 'team-a-lead@verify.invalid', 'active',
+        'verified', now(), array['estate_detail'], array['estate'], true)
+      returning id`;
+
+    const [productA] = await transaction`
+      insert into inventory_products
+        (organization_id, team_id, sku, name, category, unit_label,
+         automatic_reorder_enabled, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, 'VERIFY-A', 'Verifier Product A',
+        'general', 'bottle', false, true)
+      returning id`;
+    const [productB] = await transaction`
+      insert into inventory_products
+        (organization_id, team_id, sku, name, category, unit_label,
+         automatic_reorder_enabled, is_dev_seed)
+      values (${organization.id}, ${teamB.id}, 'VERIFY-B', 'Verifier Product B',
+        'general', 'bottle', true, true)
+      returning id`;
+    const [guardProduct] = await transaction`
+      insert into inventory_products
+        (organization_id, team_id, sku, name, category, unit_label, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, 'VERIFY-GUARD',
+        'Verifier Guard Product', 'general', 'bottle', true)
+      returning id`;
+    await expectDatabaseError(transaction, ['42501'], 'nonzero opening stock', async (savepoint) => {
+      await savepoint`
+        insert into inventory_stock
+          (organization_id, team_id, location_id, product_id, on_hand,
+           reorder_point, target_level)
+        values (${organization.id}, ${teamA.id}, ${locationA.id}, ${guardProduct.id},
+          4, 0, 0)`;
+    });
+    await transaction`
+      insert into inventory_stock
+        (organization_id, team_id, location_id, product_id, reorder_point, target_level)
+      values (${organization.id}, ${teamA.id}, ${locationA.id}, ${productA.id}, 0, 0)`;
+    await transaction`
+      insert into inventory_stock
+        (organization_id, team_id, location_id, product_id, reorder_point, target_level)
+      values (${organization.id}, ${teamB.id}, ${locationB.id}, ${productB.id}, 0, 0)`;
+    await transaction`
+      insert into inventory_transactions
+        (organization_id, team_id, location_id, product_id, transaction_type,
+         quantity_delta, balance_after, actor_membership_id, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${locationA.id}, ${productA.id},
+        'receipt', 10, 0, ${ownerMembership.id}, true)`;
+    await transaction`
+      update inventory_stock set reorder_point = 5, target_level = 12
+      where location_id = ${locationA.id} and product_id = ${productA.id}`;
+    await transaction`
+      update inventory_products set automatic_reorder_enabled = true
+      where id = ${productA.id}`;
+    await transaction`
+      insert into inventory_transactions
+        (organization_id, team_id, location_id, product_id, transaction_type,
+         quantity_delta, balance_after, actor_membership_id, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${locationA.id}, ${productA.id},
+        'usage', -6, 0, ${ownerMembership.id}, true)`;
+    await transaction`
+      insert into inventory_transactions
+        (organization_id, team_id, location_id, product_id, transaction_type,
+         quantity_delta, balance_after, actor_membership_id, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${locationA.id}, ${productA.id},
+        'usage', -1, 0, ${ownerMembership.id}, true)`;
+    const [stock] = await transaction`
+      select on_hand::float8 from inventory_stock
+      where location_id = ${locationA.id} and product_id = ${productA.id}`;
+    invariant(stock.on_hand === 3, 'Inventory ledger did not reconcile team stock');
+    await expectDatabaseError(transaction, ['42501'], 'stock identity rewrite', async (savepoint) => {
+      await savepoint`
+        update inventory_stock set product_id = ${guardProduct.id}
+        where location_id = ${locationA.id} and product_id = ${productA.id}`;
+    });
+    const deletedStock = await transaction`
+      delete from inventory_stock
+      where location_id = ${locationA.id} and product_id = ${productA.id}
+      returning product_id`;
+    invariant(deletedStock.length === 0,
+      'Stock deletion changed rows despite the ledger-controlled delete policy');
+    const [automaticDrafts] = await transaction`
+      select count(*)::int as count from restock_requests
+      where location_id = ${locationA.id} and product_id = ${productA.id}
+        and request_source = 'automatic_threshold'
+        and status in ('requested','approved','ordered')`;
+    invariant(automaticDrafts.count === 1,
+      'Threshold usage must create exactly one open automatic restock draft');
+
+    await expectDatabaseError(transaction, ['23514'], 'negative team inventory', async (savepoint) => {
+      await savepoint`
+        insert into inventory_transactions
+          (organization_id, team_id, location_id, product_id, transaction_type,
+           quantity_delta, balance_after, actor_membership_id, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${locationA.id}, ${productA.id},
+          'usage', -100, 0, ${ownerMembership.id}, true)`;
+    });
+    await expectDatabaseError(transaction, ['23503'], 'cross-team inventory reference', async (savepoint) => {
+      await savepoint`
+        insert into inventory_transactions
+          (organization_id, team_id, location_id, product_id, transaction_type,
+           quantity_delta, balance_after, actor_membership_id, is_dev_seed)
+        values (${organization.id}, ${teamB.id}, ${locationB.id}, ${productA.id},
+          'receipt', 1, 0, ${ownerMembership.id}, true)`;
+    });
+    await expectDatabaseError(transaction, ['42501'], 'direct stock balance mutation', async (savepoint) => {
+      await savepoint`
+        update inventory_stock set on_hand = 99
+        where location_id = ${locationA.id} and product_id = ${productA.id}`;
+    });
+    const rewrittenLedger = await transaction`
+      update inventory_transactions set note = 'rewritten'
+      where product_id = ${productA.id}
+      returning id`;
+    invariant(rewrittenLedger.length === 0,
+      'Inventory ledger rewrite changed rows despite immutable policy');
+
+    await expectDatabaseError(transaction, ['23514'], 'cross-team actor attribution', async (savepoint) => {
+      await savepoint`
+        insert into inventory_transactions
+          (organization_id, team_id, location_id, product_id, transaction_type,
+           quantity_delta, balance_after, actor_membership_id, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${locationA.id}, ${productA.id},
+          'receipt', 1, 0, ${teamBManagerMembership.id}, true)`;
+    });
+
+    await transaction`select set_config('lakeandpine.current_customer_id', ${generalManager.id}, true)`;
+    const [gmTeams] = await transaction`
+      select count(*)::int as count from cleaning_teams
+      where id in (${teamA.id}, ${teamB.id})`;
+    invariant(gmTeams.count === 2, 'General manager cannot read organization teams');
+    await expectDatabaseError(transaction, ['42501'], 'general manager granting another GM', async (savepoint) => {
+      await savepoint`
+        insert into workforce_memberships
+          (organization_id, customer_id, role, status, is_dev_seed)
+        values (${organization.id}, ${candidateManager.id}, 'gm', 'active', true)`;
+    });
+
+    await transaction`select set_config('lakeandpine.current_customer_id', ${manager.id}, true)`;
+    const [managerTeamA] = await transaction`
+      select count(*)::int as count from cleaning_teams where id = ${teamA.id}`;
+    const [managerTeamB] = await transaction`
+      select count(*)::int as count from cleaning_teams where id = ${teamB.id}`;
+    invariant(managerTeamA.count === 1 && managerTeamB.count === 0,
+      'Manager team isolation did not fail closed');
+    const [leadMembership] = await transaction`
+      insert into workforce_memberships
+        (organization_id, team_id, cleaner_id, role, status, title, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${leadCleaner.id}, 'shift_lead',
+        'active', 'Verifier shift lead', true)
+      returning id`;
+    invariant(leadMembership.id,
+      'Manager could not grant the cleaner-backed shift-lead role');
+    await expectDatabaseError(transaction, ['42501'], 'manager granting manager role', async (savepoint) => {
+      await savepoint`
+        insert into workforce_memberships
+          (organization_id, team_id, customer_id, role, status, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${candidateManager.id},
+          'manager', 'active', true)`;
+    });
+    const [staffLeadMembership] = await transaction`
+      insert into workforce_memberships
+        (organization_id, team_id, customer_id, role, status, title, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${candidateManager.id},
+        'shift_lead', 'active', 'Verifier staff dispatch lead', true)
+      returning id`;
+    invariant(staffLeadMembership.id,
+      'Manager could not grant a staff-backed shift-lead role');
+    const [managerRoster] = await transaction`
+      select count(*)::int as count from workforce_memberships
+      where team_id = ${teamA.id}`;
+    invariant(managerRoster.count === 5,
+      'Manager cannot read the complete local team roster');
+    const [hiddenPeerRate] = await transaction`
+      select count(*)::int as count from compensation_rates where id = ${peerManagerRate.id}`;
+    const [hiddenPeerBonus] = await transaction`
+      select count(*)::int as count from bonus_awards where id = ${peerManagerBonus.id}`;
+    const [hiddenPeerEvent] = await transaction`
+      select count(*)::int as count from workforce_events where id = ${peerManagerEvent.id}`;
+    invariant(hiddenPeerRate.count === 0 && hiddenPeerBonus.count === 0
+      && hiddenPeerEvent.count === 0,
+      'Manager visibility crossed peer-manager financial or workforce boundaries');
+    await expectDatabaseError(transaction, ['42501'], 'manager changing peer manager pay', async (savepoint) => {
+      await savepoint`
+        insert into compensation_rates
+          (organization_id, team_id, workforce_membership_id, pay_basis,
+           amount_cents, effective_from, status, created_by_membership_id,
+           reason, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${peerManagerMembership.id}, 'salary',
+          9500000, '2031-01-01', 'active', ${managerMembership.id},
+          'Forbidden peer manager pay change', true)`;
+    });
+    await expectDatabaseError(transaction, ['42501'], 'manager awarding peer manager bonus', async (savepoint) => {
+      await savepoint`
+        insert into bonus_awards
+          (organization_id, team_id, workforce_membership_id, amount_cents,
+           reason, status, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${peerManagerMembership.id}, 5000,
+          'Forbidden peer manager bonus', 'proposed', true)`;
+    });
+    await expectDatabaseError(transaction, ['42501'], 'manager disciplining peer manager', async (savepoint) => {
+      await savepoint`
+        insert into workforce_events
+          (organization_id, team_id, subject_membership_id, event_type, severity,
+           summary, created_by_membership_id, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${peerManagerMembership.id},
+          'termination', 'critical', 'Forbidden peer manager termination',
+          ${managerMembership.id}, true)`;
+    });
+    await expectDatabaseError(transaction, ['42501'], 'manager cross-assigning Team B staff', async (savepoint) => {
+      await savepoint`
+        insert into workforce_memberships
+          (organization_id, team_id, customer_id, role, status, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${teamBManager.id},
+          'shift_lead', 'active', true)`;
+    });
+    const [managerGlobalTier] = await transaction`
+      select count(*)::int as count from review_bonus_tiers
+      where id = ${globalBonusTier.id}`;
+    const [managerTeamBTier] = await transaction`
+      select count(*)::int as count from review_bonus_tiers
+      where id = ${teamBBonusTier.id}`;
+    invariant(managerGlobalTier.count === 1 && managerTeamBTier.count === 0,
+      'Team A manager bonus-tier visibility crossed the team boundary');
+    await expectDatabaseError(transaction, ['42501'], 'manager cross-team automatic restock insert', async (savepoint) => {
+      await savepoint`
+        insert into restock_requests
+          (organization_id, team_id, location_id, product_id, request_source,
+           quantity_requested, is_dev_seed)
+        values (${organization.id}, ${teamB.id}, ${locationB.id}, ${productB.id},
+          'automatic_threshold', 2, true)`;
+    });
+    await expectDatabaseError(transaction, ['42501'], 'manager cross-team product insert', async (savepoint) => {
+      await savepoint`
+        insert into inventory_products
+          (organization_id, team_id, sku, name, category, unit_label)
+        values (${organization.id}, ${teamB.id}, 'VERIFY-CROSS', 'Cross team product',
+          'general', 'each')`;
+    });
+    await expectDatabaseError(transaction, ['55000'], 'membership status rewrite without evidence', async (savepoint) => {
+      await savepoint`
+        update workforce_memberships set status = 'paused'
+        where id = ${leadMembership.id}`;
+    });
+    await transaction`
+      update workforce_memberships
+      set status = 'paused', status_reason = 'Verifier access pause',
+          status_changed_by_membership_id = ${managerMembership.id}, status_changed_at = now()
+      where id = ${leadMembership.id}`;
+    await transaction`
+      update workforce_memberships
+      set status = 'active', status_reason = 'Verifier access restored',
+          status_changed_by_membership_id = ${managerMembership.id}, status_changed_at = now(),
+          ended_at = null
+      where id = ${leadMembership.id}`;
+
+    const [jobCustomer] = await transaction`
+      insert into customers (email, full_name, role, is_dev_seed)
+      values ('verified-job-customer@verify.invalid', 'Verified Job Customer',
+        'customer', true)
+      returning id`;
+    const [wrongCustomer] = await transaction`
+      insert into customers (email, full_name, role, is_dev_seed)
+      values ('wrong-review-customer@verify.invalid', 'Wrong Review Customer',
+        'customer', true)
+      returning id`;
+    const [jobTerritory] = await transaction`
+      insert into service_territories
+        (code, name, timezone, status, travel_buffer_minutes, is_dev_seed)
+      values ('national-verifier', 'National team verifier',
+        'America/Los_Angeles', 'draft', 30, true)
+      returning id`;
+    const jobStart = '2030-08-05T16:00:00.000Z';
+    const jobEnd = '2030-08-05T19:00:00.000Z';
+    await transaction`
+      insert into territory_postal_codes (territory_id, postal_code, status)
+      values (${jobTerritory.id}, '83816', 'active')`;
+    await transaction`
+      update cleaners set home_territory_id = ${jobTerritory.id}
+      where id in (${cleaner.id}, ${leadCleaner.id})`;
+    await transaction`
+      insert into cleaner_availability_rules
+        (cleaner_id, territory_id, day_of_week, start_time, end_time,
+         effective_from, status)
+      values
+        (${cleaner.id}, ${jobTerritory.id},
+          extract(dow from ${jobStart}::timestamptz at time zone 'America/Los_Angeles')::integer,
+          '08:00', '18:00', '2030-01-01', 'active'),
+        (${leadCleaner.id}, ${jobTerritory.id},
+          extract(dow from ${jobStart}::timestamptz at time zone 'America/Los_Angeles')::integer,
+          '08:00', '18:00', '2030-01-01', 'active')`;
+    await transaction`
+      update service_territories set status = 'active'
+      where id = ${jobTerritory.id}`;
+    await transaction`select set_config('lakeandpine.current_customer_id', ${owner.id}, true)`;
+    await transaction`
+      insert into team_service_territories
+        (organization_id, team_id, territory_id, status, is_dev_seed)
+      values
+        (${organization.id}, ${teamA.id}, ${jobTerritory.id}, 'active', true),
+        (${organization.id}, ${teamB.id}, ${jobTerritory.id}, 'active', true)`;
+    await transaction`select set_config('lakeandpine.current_customer_id', ${manager.id}, true)`;
+    const [teamBooking] = await transaction`
+      insert into bookings
+        (customer_id, service_id, scheduled_date, scheduled_window, status, contact,
+         is_dev_seed, service_vertical, territory_id, qualification_status,
+         estimated_duration_minutes, required_crew_size, required_skills)
+      values (${jobCustomer.id}, 'estate', '2030-08-05', 'Verifier window', 'requested',
+        ${transaction.json({ name: 'Verified Job Customer', email: 'verified-job-customer@verify.invalid', zip: '83816' })},
+        true, 'estate', ${jobTerritory.id}, 'approved', 360, 2,
+        array['estate_detail'])
+      returning id`;
+    const [teamSchedule] = await transaction`
+      insert into job_schedules
+        (booking_id, territory_id, service_vertical, start_at, end_at,
+         required_crew_size, required_skills, labor_minutes, is_dev_seed)
+      values (${teamBooking.id}, ${jobTerritory.id}, 'estate', ${jobStart}, ${jobEnd},
+        2, array['estate_detail'], 360, true)
+      returning id`;
+    await expectDatabaseError(transaction, ['23505'], 'second schedule for one booking', async (savepoint) => {
+      await savepoint`
+        insert into job_schedules
+          (booking_id, territory_id, service_vertical, start_at, end_at,
+           required_crew_size, required_skills, labor_minutes, is_dev_seed)
+        values (${teamBooking.id}, ${jobTerritory.id}, 'estate',
+          '2030-08-05T20:00:00.000Z', '2030-08-05T21:00:00.000Z',
+          1, array['estate_detail'], 60, true)`;
+    });
+    const [staffLeadBooking] = await transaction`
+      insert into bookings
+        (customer_id, service_id, scheduled_date, scheduled_window, status, contact,
+         is_dev_seed, service_vertical, territory_id, qualification_status,
+         estimated_duration_minutes, required_crew_size, required_skills)
+      values (${jobCustomer.id}, 'estate', '2030-08-05', 'Staff lead allocation', 'requested',
+        ${transaction.json({ name: 'Staff lead allocation proof', email: 'verified-job-customer@verify.invalid', zip: '83816' })},
+        true, 'estate', ${jobTerritory.id}, 'approved', 60, 1,
+        array['estate_detail'])
+      returning id`;
+    const [staffLeadSchedule] = await transaction`
+      insert into job_schedules
+        (booking_id, territory_id, service_vertical, start_at, end_at,
+         required_crew_size, required_skills, labor_minutes, is_dev_seed)
+      values (${staffLeadBooking.id}, ${jobTerritory.id}, 'estate',
+        '2030-08-05T20:00:00.000Z', '2030-08-05T21:00:00.000Z',
+        1, array['estate_detail'], 60, true)
+      returning id`;
+    await transaction`select set_config('lakeandpine.current_customer_id', ${candidateManager.id}, true)`;
+    await transaction`select private.lock_current_workforce_access(${candidateManager.id})`;
+    await expectDatabaseError(transaction, ['42501'], 'shift lead creating disciplinary event', async (savepoint) => {
+      await savepoint`
+        insert into workforce_events
+          (organization_id, team_id, subject_membership_id, event_type, severity,
+           summary, created_by_membership_id, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${cleanerMembership.id},
+          'termination', 'critical', 'Forbidden shift-lead disciplinary action',
+          ${staffLeadMembership.id}, true)`;
+    });
+    await transaction`
+      insert into workforce_events
+        (organization_id, team_id, subject_membership_id, event_type, severity,
+         summary, created_by_membership_id, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${cleanerMembership.id},
+        'late', 'low', 'Verifier shift-lead operational observation',
+        ${staffLeadMembership.id}, true)`;
+    const [staffLeadCoverage] = await transaction`
+      select private.lock_active_team_territory_coverage(
+        ${organization.id}, ${teamA.id}, ${jobTerritory.id}
+      ) as covered`;
+    invariant(staffLeadCoverage.covered,
+      'Staff-backed shift lead could not lock local territory coverage');
+    const [staffLeadAllocation] = await transaction`
+      insert into team_job_allocations
+        (organization_id, team_id, job_schedule_id, assigned_by_membership_id,
+         estimated_labor_minutes, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${staffLeadSchedule.id},
+        ${staffLeadMembership.id}, 60, true)
+      returning id`;
+    const [staffLeadLockedAllocation] = await transaction`
+      select id from team_job_allocations
+      where id = ${staffLeadAllocation.id}
+      for update`;
+    invariant(staffLeadLockedAllocation.id === staffLeadAllocation.id,
+      'Staff-backed shift lead could not allocate and lock local work');
+    await transaction`select set_config('lakeandpine.current_customer_id', ${manager.id}, true)`;
+    await transaction`
+      insert into job_assignments
+        (job_schedule_id, cleaner_id, team_id, assignment_role, status, is_dev_seed)
+      values
+        (${teamSchedule.id}, ${cleaner.id}, ${teamA.id}, 'member', 'accepted', true),
+        (${teamSchedule.id}, ${leadCleaner.id}, ${teamA.id}, 'lead', 'accepted', true)`;
+    await expectDatabaseError(transaction, ['23514'], 'cross-team schedule allocation', async (savepoint) => {
+      await savepoint`
+        insert into team_job_allocations
+          (organization_id, team_id, job_schedule_id, assigned_by_membership_id,
+           estimated_labor_minutes, is_dev_seed)
+        values (${organization.id}, ${teamB.id}, ${teamSchedule.id},
+          ${teamBManagerMembership.id}, 360, true)`;
+    });
+    const [teamAllocation] = await transaction`
+      insert into team_job_allocations
+        (organization_id, team_id, job_schedule_id, assigned_by_membership_id,
+         estimated_labor_minutes, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${teamSchedule.id},
+        ${managerMembership.id}, 360, true)
+        returning id`;
+    const [autoAssignedCase] = await transaction`
+      insert into service_cases
+        (public_reference, case_type, booking_id, contact, details, status, priority, is_dev_seed)
+      values ('VERIFY-TEAM-CASE-A', 'complaint', ${teamBooking.id},
+        ${transaction.json({ name: 'Verified Job Customer', email: 'verified-job-customer@verify.invalid' })},
+        'Verifier team-isolation case', 'triaged', 'normal', true)
+      returning id, assigned_team_id`;
+    invariant(autoAssignedCase.assigned_team_id === teamA.id,
+      'Allocated booking case did not inherit explicit Team A ownership');
+    await expectDatabaseError(transaction, ['23514'], 'cross-team service-case ownership', async (savepoint) => {
+      await savepoint`
+        insert into service_cases
+          (public_reference, case_type, booking_id, assigned_team_id, contact, details, status, priority, is_dev_seed)
+        values ('VERIFY-TEAM-CASE-B', 'complaint', ${teamBooking.id}, ${teamB.id},
+          ${savepoint.json({ name: 'Wrong team case' })}, 'Must be rejected',
+          'triaged', 'normal', true)`;
+    });
+    const [bonusTier] = await transaction`
+      insert into review_bonus_tiers
+        (organization_id, team_id, name, minimum_rating, bonus_cents, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, 'Five-star verifier', 5, 2500, true)
+      returning id`;
+    await expectDatabaseError(transaction, ['23514'], 'review before job completion', async (savepoint) => {
+      await savepoint`
+        insert into quality_reviews
+          (organization_id, team_id, team_job_allocation_id, cleaner_id, customer_id,
+           rating, source, verified_at, evidence_reference,
+           created_by_membership_id, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${teamAllocation.id}, ${cleaner.id},
+          ${jobCustomer.id}, 5, 'verified_customer', now(), 'customer-response-early',
+          ${managerMembership.id}, true)`;
+    });
+    await expectDatabaseError(transaction, ['23514'], 'review for cleaner who did not work job', async (savepoint) => {
+      await savepoint`
+        insert into quality_reviews
+          (organization_id, team_id, team_job_allocation_id, cleaner_id,
+           rating, source, verified_at, evidence_reference,
+           created_by_membership_id, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${teamAllocation.id}, ${leadCleaner.id},
+          5, 'quality_inspection', now(), 'inspection-without-assignment',
+          ${managerMembership.id}, true)`;
+    });
+
+    await transaction`update job_schedules set status = 'held', version = version + 1
+      where id = ${teamSchedule.id}`;
+    await transaction`update job_schedules set status = 'confirmed', version = version + 1
+      where id = ${teamSchedule.id}`;
+    const [unassignedCleaner] = await transaction`
+      insert into cleaners
+        (full_name, email, status, screening_status, screening_verified_at,
+         skills, vertical_experience, is_dev_seed)
+      values ('Team A Unassigned Cleaner', 'team-a-unassigned@verify.invalid', 'active',
+        'verified', now(), array['estate_detail'], array['estate'], true)
+      returning id`;
+    await transaction`
+      insert into workforce_memberships
+        (organization_id, team_id, cleaner_id, role, status, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${unassignedCleaner.id}, 'cleaner', 'active', true)`;
+    await transaction`select set_config('lakeandpine.current_customer_id', '', true)`;
+    await transaction`select set_config('lakeandpine.current_cleaner_id', ${unassignedCleaner.id}, true)`;
+    await expectDatabaseError(transaction, ['42501'], 'unassigned cleaner forged time clock', async (savepoint) => {
+      await savepoint`
+        insert into job_time_entries
+          (organization_id, team_id, team_job_allocation_id, cleaner_id,
+           clock_in_at, estimated_minutes_snapshot, status, source, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${teamAllocation.id}, ${unassignedCleaner.id},
+          clock_timestamp(), 180, 'open', 'crew_timer', true)`;
+    });
+    await transaction`select set_config('lakeandpine.current_cleaner_id', ${cleaner.id}, true)`;
+    const [cleanerTeamA] = await transaction`
+      select count(*)::int as count from cleaning_teams where id = ${teamA.id}`;
+    const [cleanerTeamB] = await transaction`
+      select count(*)::int as count from cleaning_teams where id = ${teamB.id}`;
+    invariant(cleanerTeamA.count === 1 && cleanerTeamB.count === 0,
+      'Cleaner team isolation did not fail closed');
+    await transaction`
+      insert into inventory_transactions
+        (organization_id, team_id, location_id, product_id, transaction_type,
+         quantity_delta, balance_after, actor_membership_id, cleaner_id, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${locationA.id}, ${productA.id},
+        'usage', -1, 0, ${cleanerMembership.id}, ${cleaner.id}, true)`;
+    await expectDatabaseError(transaction, ['42501'], 'cleaner forged inventory receipt', async (savepoint) => {
+      await savepoint`
+        insert into inventory_transactions
+          (organization_id, team_id, location_id, product_id, transaction_type,
+           quantity_delta, balance_after, actor_membership_id, cleaner_id, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${locationA.id}, ${productA.id},
+          'receipt', 5, 0, ${cleanerMembership.id}, ${cleaner.id}, true)`;
+    });
+    await expectDatabaseError(transaction, ['42501'], 'cleaner forged inventory adjustment', async (savepoint) => {
+      await savepoint`
+        insert into inventory_transactions
+          (organization_id, team_id, location_id, product_id, transaction_type,
+           quantity_delta, balance_after, actor_membership_id, cleaner_id, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${locationA.id}, ${productA.id},
+          'adjustment', 5, 0, ${cleanerMembership.id}, ${cleaner.id}, true)`;
+    });
+    const [cleanerLedger] = await transaction`
+      select count(*)::int as count from inventory_transactions`;
+    invariant(cleanerLedger.count === 1,
+      'Cleaner must see only their own inventory ledger entries');
+    await transaction`
+      insert into restock_requests
+        (organization_id, team_id, location_id, product_id,
+         requested_by_membership_id, request_source, quantity_requested, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${locationA.id}, ${productA.id},
+        ${cleanerMembership.id}, 'cleaner', 4, true)`;
+    const [cleanerRestocks] = await transaction`
+      select count(*)::int as count,
+        count(*) filter (where requested_by_membership_id = ${cleanerMembership.id})::int
+          as own_count,
+        count(*) filter (where request_source = 'automatic_threshold')::int
+          as automatic_count
+      from restock_requests`;
+    invariant(
+      cleanerRestocks.count === 2 && cleanerRestocks.own_count === 1 &&
+        cleanerRestocks.automatic_count === 1,
+      'Cleaner restock visibility must be limited to their request and team threshold drafts',
+    );
+
+    await expectDatabaseError(transaction, ['42501'], 'cleaner forged initial approval', async (savepoint) => {
+      await savepoint`
+        insert into job_time_entries
+          (organization_id, team_id, team_job_allocation_id, cleaner_id,
+           clock_in_at, clock_out_at, estimated_minutes_snapshot, status, source,
+           approved_by_membership_id, approved_at, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${teamAllocation.id}, ${cleaner.id},
+          clock_timestamp() - interval '1 hour', clock_timestamp(), 1, 'approved',
+          'manager_entry', ${cleanerMembership.id}, clock_timestamp(), true)`;
+    });
+    await expectDatabaseError(transaction, ['42501'], 'cleaner forged initial estimate', async (savepoint) => {
+      await savepoint`
+        insert into job_time_entries
+          (organization_id, team_id, team_job_allocation_id, cleaner_id,
+           clock_in_at, estimated_minutes_snapshot, status, source, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${teamAllocation.id}, ${cleaner.id},
+          clock_timestamp(), 60, 'open', 'crew_timer', true)`;
+    });
+    const [timeEntry] = await transaction`
+      insert into job_time_entries
+        (organization_id, team_id, team_job_allocation_id, cleaner_id,
+         clock_in_at, estimated_minutes_snapshot, status, source, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${teamAllocation.id}, ${cleaner.id},
+        clock_timestamp() - interval '4 minutes', 180, 'open', 'crew_timer', true)
+      returning id`;
+    await expectDatabaseError(transaction, ['42501'], 'cleaner self-approval of time', async (savepoint) => {
+      await savepoint`
+        update job_time_entries
+        set clock_out_at = clock_timestamp(), status = 'approved',
+            approved_by_membership_id = ${cleanerMembership.id}, approved_at = now(),
+            version = version + 1
+        where id = ${timeEntry.id}`;
+    });
+    await expectDatabaseError(transaction, ['42501'], 'cleaner rewriting time estimate', async (savepoint) => {
+      await savepoint`
+        update job_time_entries
+        set clock_out_at = clock_timestamp(), status = 'submitted',
+            estimated_minutes_snapshot = 60, version = version + 1
+          where id = ${timeEntry.id}`;
+    });
+    await expectDatabaseError(transaction, ['23514'], 'break longer than elapsed shift', async (savepoint) => {
+      await savepoint`
+        update job_time_entries
+        set clock_out_at = clock_timestamp(), break_minutes = 10,
+            status = 'submitted', version = version + 1
+        where id = ${timeEntry.id}`;
+    });
+    await transaction`
+      update job_time_entries
+      set clock_out_at = clock_timestamp(), break_minutes = 3,
+          status = 'submitted', version = version + 1
+      where id = ${timeEntry.id}`;
+    const [teamTimeOff] = await transaction`
+      insert into cleaner_time_off
+        (organization_id, team_id, cleaner_id, start_at, end_at, status, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${cleaner.id},
+        '2030-09-02T16:00:00.000Z', '2030-09-02T20:00:00.000Z',
+        'requested', true)
+      returning id`;
+    await expectDatabaseError(transaction, ['42501'], 'cleaner cross-team time-off request', async (savepoint) => {
+      await savepoint`
+        insert into cleaner_time_off
+          (organization_id, team_id, cleaner_id, start_at, end_at, status, is_dev_seed)
+        values (${organization.id}, ${teamB.id}, ${cleaner.id},
+          '2030-09-09T16:00:00.000Z', '2030-09-09T20:00:00.000Z',
+          'requested', true)`;
+    });
+
+    await transaction`select set_config('lakeandpine.current_cleaner_id', ${leadCleaner.id}, true)`;
+    await transaction`select private.lock_team_crew_memberships(
+      ${organization.id}, ${teamA.id}
+    )`;
+    await expectDatabaseError(transaction, ['42501'], 'shift lead cross-team crew lock', async (savepoint) => {
+      await savepoint`select private.lock_team_crew_memberships(
+        ${organization.id}, ${teamB.id}
+      )`;
+    });
+    await transaction`
+      insert into inventory_transactions
+        (organization_id, team_id, location_id, product_id, transaction_type,
+         quantity_delta, balance_after, actor_membership_id, cleaner_id, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${locationA.id}, ${productA.id},
+        'usage', -1, 0, ${leadMembership.id}, ${leadCleaner.id}, true)`;
+    await transaction`
+      insert into restock_requests
+        (organization_id, team_id, location_id, product_id,
+         requested_by_membership_id, request_source, quantity_requested, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${locationA.id}, ${productA.id},
+        ${leadMembership.id}, 'cleaner', 2, true)`;
+    await transaction`
+      insert into workforce_events
+        (organization_id, team_id, subject_membership_id, event_type, severity,
+         summary, created_by_membership_id, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${leadMembership.id}, 'callout',
+        'high', 'Verifier shift-lead callout', ${leadMembership.id}, true)`;
+    const [leadTimeEntry] = await transaction`
+      insert into job_time_entries
+        (organization_id, team_id, team_job_allocation_id, cleaner_id,
+         clock_in_at, estimated_minutes_snapshot, status, source, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${teamAllocation.id}, ${leadCleaner.id},
+        clock_timestamp() - interval '4 minutes', 180, 'open', 'crew_timer', true)
+      returning id`;
+    await transaction`
+      update job_time_entries
+      set clock_out_at = clock_timestamp(), break_minutes = 3,
+          status = 'submitted', version = version + 1
+      where id = ${leadTimeEntry.id}`;
+
+    await transaction`select set_config('lakeandpine.current_cleaner_id', '', true)`;
+    await transaction`select set_config('lakeandpine.current_customer_id', ${manager.id}, true)`;
+    await expectDatabaseError(transaction, ['23514'], 'bonus inserted as already paid', async (savepoint) => {
+      await savepoint`
+        insert into bonus_awards
+          (organization_id, team_id, workforce_membership_id, amount_cents,
+           reason, status, approved_by_membership_id, approved_at,
+           external_reference, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${cleanerMembership.id}, 500,
+          'Forged paid bonus', 'recorded_paid', ${managerMembership.id}, now(),
+          'FORGED-PAID', true)`;
+    });
+    await expectDatabaseError(transaction, ['42501'], 'manager self compensation control', async (savepoint) => {
+      await savepoint`
+        insert into compensation_rates
+          (organization_id, team_id, workforce_membership_id, pay_basis,
+           amount_cents, effective_from, status, created_by_membership_id,
+           reason, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${managerMembership.id}, 'hourly',
+          5000, current_date, 'active', ${managerMembership.id},
+          'Forbidden self rate', true)`;
+    });
+    const [cleanerRestock] = await transaction`
+      select id, version from restock_requests
+      where requested_by_membership_id = ${cleanerMembership.id}
+        and status = 'requested' limit 1`;
+    await expectDatabaseError(transaction, ['55000'], 'restock lifecycle bypass', async (savepoint) => {
+      await savepoint`
+        update restock_requests
+        set status = 'received', decision_by_membership_id = ${managerMembership.id},
+            decided_at = now(), ordered_at = now(), received_at = now(),
+            version = version + 1
+        where id = ${cleanerRestock.id}`;
+    });
+    await transaction`
+      update job_time_entries
+      set status = 'approved', approved_by_membership_id = ${managerMembership.id},
+          approved_at = now(), version = version + 1
+      where id = ${timeEntry.id}`;
+    await transaction`
+      update job_time_entries
+      set status = 'approved', approved_by_membership_id = ${managerMembership.id},
+          approved_at = now(), version = version + 1
+      where id = ${leadTimeEntry.id}`;
+    await transaction`
+      update cleaner_time_off
+      set status = 'approved', reviewed_by_membership_id = ${managerMembership.id},
+          reviewed_at = now(), reviewed_by_label = 'Verifier team manager'
+      where id = ${teamTimeOff.id}`;
+    const [approvedTeamTime] = await transaction`
+      select status, approved_by_membership_id from job_time_entries
+      where id = ${timeEntry.id}`;
+    invariant(approvedTeamTime.status === 'approved' &&
+      approvedTeamTime.approved_by_membership_id === managerMembership.id,
+      'Manager could not approve submitted local-team time');
+
+    for (const scheduleStatus of ['held', 'confirmed', 'en_route', 'in_progress',
+      'quality_review', 'completed']) {
+      await transaction`
+        update job_schedules set status = ${scheduleStatus}, version = version + 1
+        where id = ${teamSchedule.id}`;
+    }
+    await expectDatabaseError(transaction, ['23514'], 'verified review from wrong customer', async (savepoint) => {
+      await savepoint`
+        insert into quality_reviews
+          (organization_id, team_id, team_job_allocation_id, cleaner_id, customer_id,
+           rating, source, verified_at, evidence_reference,
+           created_by_membership_id, is_dev_seed)
+        values (${organization.id}, ${teamA.id}, ${teamAllocation.id}, ${cleaner.id},
+          ${wrongCustomer.id}, 5, 'verified_customer', now(), 'wrong-customer-response',
+          ${managerMembership.id}, true)`;
+    });
+    const [qualityReview] = await transaction`
+      insert into quality_reviews
+        (organization_id, team_id, team_job_allocation_id, cleaner_id, customer_id,
+         rating, source, verified_at, evidence_reference,
+         created_by_membership_id, is_dev_seed)
+      values (${organization.id}, ${teamA.id}, ${teamAllocation.id}, ${cleaner.id},
+        ${jobCustomer.id}, 5, 'verified_customer', now(), 'verified-customer-response',
+        ${managerMembership.id}, true)
+      returning id`;
+    const [qualityBonus] = await transaction`
+      select count(*)::int as count, max(amount_cents)::int as amount_cents
+      from bonus_awards
+      where quality_review_id = ${qualityReview.id} and bonus_tier_id = ${bonusTier.id}`;
+    invariant(qualityBonus.count === 1 && qualityBonus.amount_cents === 2500,
+      'Completed verified customer review did not create exactly one configured bonus');
+  });
+}
+
+async function inspectAccessRevocationConcurrency(sql) {
+  const [actor] = await sql`
+    select customer.id as customer_id, membership.id as membership_id,
+           membership.organization_id
+    from customers customer
+    join workforce_memberships membership on membership.customer_id = customer.id
+    where customer.email = 'team-manager@verify.invalid'
+      and membership.role = 'manager'
+      and membership.status = 'active'`;
+  invariant(actor, 'Revocation concurrency manager fixture is missing');
+  const [owner] = await sql`
+    select membership.id
+    from workforce_memberships membership
+    where membership.organization_id = ${actor.organization_id}
+      and membership.role = 'owner'
+      and membership.status = 'active'`;
+  invariant(owner, 'Revocation concurrency owner fixture is missing');
+
+  let confirmLock;
+  const lockAcquired = new Promise((resolve) => { confirmLock = resolve; });
+  let releaseLock;
+  const mayCommit = new Promise((resolve) => { releaseLock = resolve; });
+  const holder = sql.begin(async (transaction) => {
+    await transaction.unsafe(`set local role ${quoteIdentifier(APP_ROLE)}`);
+    await transaction`select set_config('lakeandpine.current_customer_id', ${actor.customer_id}, true)`;
+    await transaction`select private.lock_current_workforce_access(${actor.customer_id})`;
+    confirmLock();
+    await mayCommit;
+  });
+
+  await lockAcquired;
+  const revoker = sql.begin(async (transaction) => {
+    await transaction`
+      update workforce_memberships
+      set status = 'paused', status_reason = 'Verifier authorization revocation',
+          status_changed_by_membership_id = ${owner.id}, status_changed_at = now()
+      where id = ${actor.membership_id}`;
+  });
+  const earlyResult = await Promise.race([
+    revoker.then(() => 'revoked'),
+    new Promise((resolve) => setTimeout(() => resolve('blocked'), 100)),
+  ]);
+  invariant(
+    earlyResult === 'blocked',
+    'Membership revocation must wait for an in-flight actor transaction',
+  );
+  releaseLock();
+  await Promise.all([holder, revoker]);
+
+  await sql.begin(async (transaction) => {
+    await transaction.unsafe(`set local role ${quoteIdentifier(APP_ROLE)}`);
+    await transaction`select set_config('lakeandpine.current_customer_id', ${actor.customer_id}, true)`;
+    await transaction`select private.lock_current_workforce_access(${actor.customer_id})`;
+    const [access] = await transaction`
+      select count(*)::int as count
+      from workforce_memberships
+      where customer_id = ${actor.customer_id} and status = 'active'`;
+    invariant(access.count === 0,
+      'A revoked manager must not retain active access in the next transaction');
+  });
+}
+
+async function inspectTeamAssignmentConcurrency(sql) {
+  const managers = await sql`
+    select customer.id as customer_id, membership.organization_id,
+           membership.team_id
+    from customers customer
+    join workforce_memberships membership on membership.customer_id = customer.id
+    where customer.email in ('team-manager@verify.invalid', 'team-b-manager@verify.invalid')
+      and membership.role = 'manager' and membership.status = 'active'
+    order by customer.email`;
+  invariant(managers.length === 2,
+    'Concurrent clean-room assignment managers are missing');
+  const [candidate] = await sql`
+    insert into customers (email, full_name, role, is_dev_seed)
+    values ('assignment-race@verify.invalid', 'Assignment Race Candidate', 'staff', true)
+    returning id`;
+
+  let confirmIdentityLock;
+  const identityLocked = new Promise((resolve) => { confirmIdentityLock = resolve; });
+  let releaseIdentityLock;
+  const mayRelease = new Promise((resolve) => { releaseIdentityLock = resolve; });
+  const holder = sql.begin(async (transaction) => {
+    await transaction`select id from customers where id = ${candidate.id} for update`;
+    confirmIdentityLock();
+    await mayRelease;
+  });
+  await identityLocked;
+
+  const attemptsPromise = Promise.allSettled(managers.map((manager) =>
+    sql.begin(async (transaction) => {
+      await transaction.unsafe(`set local role ${quoteIdentifier(APP_ROLE)}`);
+      await transaction`select set_config('lakeandpine.current_customer_id', ${manager.customer_id}, true)`;
+      await transaction`
+        insert into workforce_memberships
+          (organization_id, team_id, customer_id, role, status, is_dev_seed)
+        values (${manager.organization_id}, ${manager.team_id}, ${candidate.id},
+          'shift_lead', 'active', true)`;
+    }),
+  ));
+  const earlyResult = await Promise.race([
+    attemptsPromise.then(() => 'finished'),
+    new Promise((resolve) => setTimeout(() => resolve('blocked'), 100)),
+  ]);
+  invariant(earlyResult === 'blocked',
+    'Concurrent team assignments did not wait on the subject identity lock');
+  releaseIdentityLock();
+  const attempts = await attemptsPromise;
+  await holder;
+  invariant(
+    attempts.filter((attempt) => attempt.status === 'fulfilled').length === 1
+      && attempts.filter((attempt) => attempt.status === 'rejected').length === 1,
+    'Concurrent local managers must not assign one person to two team clean rooms',
+  );
+  const [membershipCount] = await sql`
+    select count(*)::int as count from workforce_memberships
+    where customer_id = ${candidate.id} and status = 'active'`;
+  invariant(membershipCount.count === 1,
+    'Concurrent team assignment created more than one active membership');
+}
+
 const bootstrapUrl = process.env.MIGRATION_DATABASE_URL;
 const { target, database } = validateTarget(bootstrapUrl);
 const migrations = await loadMigrations();
@@ -1188,6 +2195,10 @@ try {
     access.operationsTables,
   );
   await inspectOperationalInvariants(sql);
+  await inspectOwnerBootstrapConcurrency(sql);
+  await inspectNationalTeamOperations(sql);
+  await inspectTeamAssignmentConcurrency(sql);
+  await inspectAccessRevocationConcurrency(sql);
 
   console.log(JSON.stringify({
     result: "PASS",
@@ -1218,7 +2229,7 @@ try {
     atomicIntakeFunctions: atomicIntake.functions.length > 0
       ? atomicIntake.functions.map((candidate) => candidate.signature)
       : "none discovered; add a function name matching create*booking/booking*create or an 'atomic intake' function comment",
-    operationalInvariants: "postal eligibility, territory capacity, labor, schedule and recovery lifecycle, availability, cancellation, time off, and refund guards verified",
+    operationalInvariants: "postal eligibility, team territory dispatch, case-team isolation, labor, schedule and recovery lifecycle, availability and approved PTO, cancellation, refunds, concurrent owner bootstrap, race-safe team clean rooms, owner/GM/manager hierarchy, downward-only financial and workforce authority, scoped actor attribution, team job allocation, ledger-controlled stock, guarded restock receipts, cleaner and shift-lead time with nonzero breaks, rejected forged time/bonus states, self-financial controls, and completed-job verified-review bonuses verified",
   }, null, 2));
 } finally {
   if (sql) await sql.end({ timeout: 5 });

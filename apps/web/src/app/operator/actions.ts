@@ -14,11 +14,20 @@ import {
   JOB_STATUSES,
   type JobStatus,
 } from "@/lib/service-planning";
+import { hasCapability } from "@/lib/team-operations";
+import { getOperationsAccess } from "@/lib/team-operations-data";
 
 async function requireOperator() {
   const identity = await resolveOperatorIdentity();
   if (identity.state !== "authed" && identity.state !== "preview") {
     throw new Error("Operator access required");
+  }
+  const access = await getOperationsAccess(identity.operator.id, identity.devOnly);
+  if (
+    !access.organizationId ||
+    !hasCapability(access.memberships, "view_network", access.organizationId, null)
+  ) {
+    throw new Error("Owner or GM access is required for the national service desk");
   }
   return identity;
 }

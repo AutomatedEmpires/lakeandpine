@@ -6,6 +6,7 @@ import { connect } from "./_db.mjs";
 const sql = connect();
 const EMAIL = "dev-preview@lakeandpinecleaning.com";
 const OPERATOR_EMAIL = "operator-preview@lakeandpinecleaning.com";
+const MANAGER_EMAIL = "manager-preview@lakeandpinecleaning.com";
 const CLEANER_EMAIL = "cleaner-preview@lakeandpinecleaning.com";
 
 // customers has no BEFORE INSERT triggers, but keep the sibling-venture rule
@@ -282,13 +283,260 @@ if (!demoCase) {
       'triaged', 'high', ${sql.json({ privacy: true, version: "dev-seed" })}, now(), true)
     returning id`;
 }
-if ((await sql`select 1 from refund_records where service_case_id = ${demoCase.id}`).length === 0) {
+let [manager] = await sql`select id from customers where email = ${MANAGER_EMAIL}`;
+if (!manager) {
+  [manager] = await sql`
+    insert into customers (email, full_name, role, is_dev_seed)
+    values (${MANAGER_EMAIL}, 'Maple Manager', 'staff', true)
+    returning id`;
+}
+if ((await sql`select 1 from service_recovery_actions where service_case_id = ${demoCase.id}`).length === 0) {
+  await sql`insert into service_recovery_actions
+    (service_case_id, booking_id, action_type, status, owner_label,
+     scheduled_at, notes, is_dev_seed)
+    values (${demoCase.id}, ${premiumBooking.id}, 'site_visit', 'planned',
+      'Demo manager', now() + interval '1 day',
+      'Synthetic recovery review for the premium finish concern.', true)`;
+}
+let [demoRefundCase] = await sql`
+  select id from service_cases where public_reference = 'LP-REFUND-DEMO-001'`;
+if (!demoRefundCase) {
+  [demoRefundCase] = await sql`insert into service_cases
+    (public_reference, case_type, booking_id, customer_id, contact, details, status,
+     priority, consent_snapshot, consented_at, is_dev_seed)
+    values ('LP-REFUND-DEMO-001', 'refund_review', ${premiumBooking.id}, ${customer.id},
+      ${sql.json({ name: "Devon Preview", email: EMAIL })},
+      'Synthetic preview: manager review requested; no money moves in the application.',
+      'refund_pending', 'normal',
+      ${sql.json({ privacy: true, version: "dev-seed" })}, now(), true)
+    returning id`;
+}
+let [premiumBilling] = await sql`
+  select id from billing_records where booking_id = ${premiumBooking.id} and is_dev_seed`;
+if (!premiumBilling) {
+  [premiumBilling] = await sql`insert into billing_records
+    (customer_id, booking_id, description, amount_cents, status, is_dev_seed)
+    values (${customer.id}, ${premiumBooking.id},
+      'Synthetic premium service charge', 33700, 'paid', true)
+    returning id`;
+}
+if ((await sql`select 1 from refund_records where service_case_id = ${demoRefundCase.id}`).length === 0) {
   await sql`insert into refund_records
-    (service_case_id, booking_id, amount_cents, reason_code, status, provider,
-     requested_by_label, is_dev_seed)
-    values (${demoCase.id}, ${premiumBooking.id}, 12500, 'scope_exception_review',
+    (service_case_id, booking_id, billing_record_id, amount_cents, reason_code,
+     status, provider, requested_by_label, is_dev_seed)
+    values (${demoRefundCase.id}, ${premiumBooking.id}, ${premiumBilling.id},
+      12500, 'scope_exception_review',
       'requested', 'manual', 'Demo operator', true)`;
 }
+
+// National operations preview: the supported seed owns its organization identity,
+// isolated team, cleaner membership, allocated job, and opening inventory ledger.
+// This makes every new operator/crew surface usable without depending on verifier data.
+await sql.begin(async (tx) => {
+  await tx`select set_config('lakeandpine.current_customer_id', ${operator.id}, true)`;
+  const [organization] = await tx`select id from organizations where slug = 'lake-and-pine'`;
+  if (!organization) throw new Error('Lake & Pine organization is missing; apply migrations first');
+
+  let [ownerMembership] = await tx`
+    select id from workforce_memberships
+    where organization_id = ${organization.id} and customer_id = ${operator.id}
+      and team_id is null and role = 'owner' and status = 'active'`;
+  if (!ownerMembership) {
+    [ownerMembership] = await tx`
+      select private.bootstrap_lakeandpine_owner(${operator.id}) as id`;
+  }
+
+  let [team] = await tx`
+    select id from cleaning_teams
+    where organization_id = ${organization.id} and code = 'dev_cda_ops'`;
+  if (!team) {
+    [team] = await tx`
+      insert into cleaning_teams
+        (organization_id, code, name, timezone, region_label, status, is_dev_seed)
+      values (${organization.id}, 'dev_cda_ops', 'Demo Coeur d''Alene Team',
+        'America/Los_Angeles', 'Synthetic preview only', 'active', true)
+      returning id`;
+  }
+  await tx`
+    insert into team_service_territories
+      (organization_id, team_id, territory_id, status, priority, is_dev_seed)
+    values (${organization.id}, ${team.id}, ${territory.id}, 'active', 100, true)
+    on conflict (team_id, territory_id) do update set status = 'active'`;
+  if ((await tx`
+    select 1 from workforce_memberships
+    where organization_id = ${organization.id} and team_id = ${team.id}
+      and customer_id = ${manager.id} and role = 'manager' and status = 'active'`).length === 0) {
+    await tx`
+      insert into workforce_memberships
+        (organization_id, team_id, customer_id, role, status, title, hired_at,
+         is_dev_seed)
+      values (${organization.id}, ${team.id}, ${manager.id}, 'manager', 'active',
+        'Preview team manager', current_date, true)`;
+  }
+
+  let [location] = await tx`
+    select id from inventory_locations
+    where organization_id = ${organization.id} and team_id = ${team.id}
+      and name = 'Demo supply room'`;
+  if (!location) {
+    [location] = await tx`
+      insert into inventory_locations (organization_id, team_id, name, location_type)
+      values (${organization.id}, ${team.id}, 'Demo supply room', 'supply_room')
+      returning id`;
+  }
+
+  let [cleanerMembership] = await tx`
+    select id from workforce_memberships
+    where organization_id = ${organization.id} and team_id = ${team.id}
+      and cleaner_id = ${cleaner.id} and status = 'active'`;
+  if (!cleanerMembership) {
+    [cleanerMembership] = await tx`
+      insert into workforce_memberships
+        (organization_id, team_id, cleaner_id, role, status, title, hired_at, is_dev_seed)
+      values (${organization.id}, ${team.id}, ${cleaner.id}, 'cleaner', 'active',
+        'Preview cleaner', current_date, true)
+      returning id`;
+  }
+  let [allocation] = await tx`
+    select id from team_job_allocations where job_schedule_id = ${demoSchedule.id}`;
+  if (!allocation) {
+    [allocation] = await tx`
+      insert into team_job_allocations
+        (organization_id, team_id, job_schedule_id, assigned_by_membership_id,
+         estimated_labor_minutes, is_dev_seed)
+      values (${organization.id}, ${team.id}, ${demoSchedule.id}, ${ownerMembership.id},
+        360, true)
+      returning id`;
+  }
+  if ((await tx`
+    select 1 from job_assignments
+    where job_schedule_id = ${demoSchedule.id} and cleaner_id = ${cleaner.id}`).length === 0) {
+    await tx`
+      insert into job_assignments
+        (job_schedule_id, cleaner_id, team_id, assignment_role, status,
+         suggestion_score, suggestion_reasons, assigned_by_label, responded_at, is_dev_seed)
+      values (${demoSchedule.id}, ${cleaner.id}, ${team.id}, 'lead', 'accepted', 100,
+        ${tx.json(['Synthetic preview assignment'])}, 'Dev seed', now(), true)`;
+  }
+  await tx`update service_cases set assigned_team_id = ${team.id}
+    where id in (${demoCase.id}, ${demoRefundCase.id}) and is_dev_seed`;
+
+  let [ptoProofBooking] = await tx`
+    select id from bookings
+    where is_dev_seed and contact ->> 'name' = 'PTO scheduling proof'`;
+  if (!ptoProofBooking) {
+    [ptoProofBooking] = await tx`
+      insert into bookings
+        (customer_id, service_id, scheduled_date, scheduled_window, status, contact,
+         is_dev_seed, service_vertical, territory_id, qualification_status,
+         qualification_requirements, estimated_duration_minutes,
+         required_crew_size, required_skills)
+      values (${customer.id}, 'estate', current_date + 7,
+        'Approved PTO scheduling proof', 'requested',
+        ${tx.json({ name: 'PTO scheduling proof', email: EMAIL, zip: '83814' })},
+        true, 'estate', ${territory.id}, 'approved',
+        ${tx.json({ siteReady: true, utilitiesReady: true, finishRestrictionsAcknowledged: true })},
+        180, 1, ${['estate-care']})
+      returning id`;
+  }
+  let [ptoProofSchedule] = await tx`
+    select id, start_at, end_at from job_schedules where booking_id = ${ptoProofBooking.id}`;
+  if (!ptoProofSchedule) {
+    [ptoProofSchedule] = await tx`
+      insert into job_schedules
+        (booking_id, territory_id, service_vertical, start_at, end_at, status,
+         required_crew_size, required_skills, labor_minutes, travel_buffer_minutes,
+         is_dev_seed)
+      values (${ptoProofBooking.id}, ${territory.id}, 'estate',
+        ((current_date + 7) + time '09:00') at time zone 'America/Los_Angeles',
+        ((current_date + 7) + time '12:00') at time zone 'America/Los_Angeles',
+        'tentative', 1, ${['estate-care']}, 180, 30, true)
+      returning id, start_at, end_at`;
+    await tx`
+      insert into team_job_allocations
+        (organization_id, team_id, job_schedule_id, assigned_by_membership_id,
+         estimated_labor_minutes, is_dev_seed)
+      values (${organization.id}, ${team.id}, ${ptoProofSchedule.id},
+        ${ownerMembership.id}, 180, true)`;
+  }
+  await tx`
+    insert into cleaner_time_off
+      (organization_id, team_id, cleaner_id, start_at, end_at, status,
+       reviewed_by_membership_id, reviewed_at, reviewed_by_label, reason_category,
+       private_note, is_dev_seed)
+    select ${organization.id}, ${team.id}, ${cleaner.id}, ${ptoProofSchedule.start_at},
+      ${ptoProofSchedule.end_at}, 'approved', ${ownerMembership.id}, now(),
+      'Dev seed owner', 'personal',
+      'Synthetic approved PTO proves scheduling exclusion.', true
+    where not exists (
+      select 1 from cleaner_time_off existing
+      where existing.cleaner_id = ${cleaner.id}
+        and existing.is_dev_seed
+        and existing.private_note = 'Synthetic approved PTO proves scheduling exclusion.'
+    )`;
+
+  let [incomingBooking] = await tx`
+    select id from bookings
+    where is_dev_seed and contact ->> 'name' = 'Local dispatch proof'`;
+  if (!incomingBooking) {
+    [incomingBooking] = await tx`
+      insert into bookings
+        (customer_id, service_id, scheduled_date, scheduled_window, status, contact,
+         is_dev_seed, service_vertical, territory_id, qualification_status,
+         qualification_requirements, estimated_duration_minutes,
+         required_crew_size, required_skills)
+      values (${customer.id}, 'commercial', current_date + 9,
+        'Territory dispatch proof', 'requested',
+        ${tx.json({ name: 'Local dispatch proof', email: EMAIL, zip: '83814' })},
+        true, 'commercial', ${territory.id}, 'approved',
+        ${tx.json({ siteReady: true, utilitiesReady: true, finishRestrictionsAcknowledged: true })},
+        240, 2, ${['commercial-care']})
+      returning id`;
+    await tx`
+      insert into job_schedules
+        (booking_id, territory_id, service_vertical, start_at, end_at, status,
+         required_crew_size, required_skills, labor_minutes, travel_buffer_minutes,
+         is_dev_seed)
+      values (${incomingBooking.id}, ${territory.id}, 'commercial',
+        ((current_date + 9) + time '08:00') at time zone 'America/Los_Angeles',
+        ((current_date + 9) + time '10:00') at time zone 'America/Los_Angeles',
+        'tentative', 2, ${['commercial-care']}, 240, 30, true)`;
+  }
+
+  let [product] = await tx`
+    select id from inventory_products
+    where organization_id = ${organization.id} and team_id = ${team.id}
+      and sku = 'DEV-GLASS-001'`;
+  if (!product) {
+    [product] = await tx`
+      insert into inventory_products
+        (organization_id, team_id, sku, name, category, unit_label,
+         unit_cost_cents, preferred_vendor, purchase_url,
+         created_by_membership_id, is_dev_seed)
+      values (${organization.id}, ${team.id}, 'DEV-GLASS-001',
+        'Preview finish-safe glass care', 'finish_care', 'bottle', 1299,
+        'Synthetic vendor', 'https://example.invalid/preview-product',
+        ${ownerMembership.id}, true)
+      returning id`;
+    await tx`
+      insert into inventory_stock
+        (organization_id, team_id, location_id, product_id, on_hand,
+         reorder_point, target_level)
+      values (${organization.id}, ${team.id}, ${location.id}, ${product.id}, 0, 0, 0)`;
+    await tx`
+      insert into inventory_transactions
+        (organization_id, team_id, location_id, product_id, transaction_type,
+         quantity_delta, balance_after, actor_membership_id, unit_cost_cents,
+         note, is_dev_seed)
+      values (${organization.id}, ${team.id}, ${location.id}, ${product.id},
+        'receipt', 18, 18, ${ownerMembership.id}, 1299,
+        'Synthetic opening stock', true)`;
+    // The ledger trigger atomically applies the +18 receipt to inventory_stock
+    // and replaces balance_after with the database-calculated balance.
+    await tx`update inventory_stock set reorder_point = 5, target_level = 18
+      where location_id = ${location.id} and product_id = ${product.id}`;
+  }
+});
 
 console.log(`dev-seed ready: customer ${customer.id}; operator ${operator.id}; cleaner ${cleaner.id}`);
 await sql.end();
