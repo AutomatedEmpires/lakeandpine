@@ -1,3 +1,22 @@
+<!-- ae-control-plane v1 (2026-07-16). Machine operating contract; product docs follow below. -->
+# Operating contract — Automated Empires control plane
+
+- **Canonical clone (the ONLY writable copy):** WSL `Ubuntu-24.04-Recovered` → `/home/jackson/automatedempires/ventures/lakeandpine`.
+  Never clone this repository anywhere else on the machine. Parallel work uses controlled
+  worktrees: `ae start lakeandpine -t <task> -a <agent> --worktree`.
+- **Sessions:** acquire the single-writer lease first (`ae start lakeandpine -t <task> -a <agent>`);
+  end with `ae finish lakeandpine`. Work counts as done ONLY when pushed and remote-SHA-verified.
+- **Deploys:** merging `main` auto-deploys production via Vercel.
+- **Validate before merge:** `pnpm typecheck && pnpm lint` (CI must be green; squash merges).
+- **Providers (fixed — never swap or cross-wire):** db=supabase (CI role: supabase_admin), auth=clerk, email=resend (reply-to isolation), payments=stripe (webhook route present).
+- **LOCKED:** CI whitespace gate is enforced (no trailing blank lines)
+- **LOCKED:** migrations verified against fresh Postgres on every PR
+- **Warn before:** running supabase migrations
+- **Warn before:** sending email
+- Full policy: `github.com/AutomatedEmpires/ae-control` → `POLICY.md`. Briefing: `ae info lakeandpine`.
+
+---
+
 # Lake & Pine — Venture Operating Contract
 
 This contract is binding for every human and automated contributor. Lake & Pine should deliver a trustworthy premium property-care experience, and add platform complexity only when it improves scope quality, crew readiness, scheduling, or service recovery.
