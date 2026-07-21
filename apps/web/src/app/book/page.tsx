@@ -1,19 +1,53 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 
+import { CustomerSchedulingFlow } from "@/components/CustomerSchedulingFlow";
 import { PremiumRequestFlow } from "@/components/PremiumRequestFlow";
-import { requestIntakeEnabled } from "@/lib/env";
+import {
+  customerSchedulingEnabled,
+  getCustomerSchedulingReadinessIssues,
+  requestIntakeEnabled,
+} from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Request a Private Consultation",
+  title: "Schedule Service or Request a Consultation",
   description:
-    "Build a premium property-care request with scope, finish, access, timing, and contact details for human review.",
+    "See capacity-backed Lake & Pine service windows for eligible work, or continue to an operator-reviewed consultation for complex scope.",
   alternates: { canonical: "/book" },
 };
 
 export default async function BookPage() {
+  const schedulingReady =
+    customerSchedulingEnabled && getCustomerSchedulingReadinessIssues().length === 0;
+
+  if (schedulingReady) {
+    return (
+      <div className="route-page">
+        <div className="container page-hero">
+          <div className="page-panel">
+            <span className="eyebrow">Capacity-backed scheduling</span>
+            <h1>Find a real service time.</h1>
+            <p className="lead">
+              Share the minimum property context, see genuinely holdable windows, and reserve
+              eligible service without signing in. Complex work moves to a consultation with
+              your answers preserved.
+            </p>
+            <div className="honest-proof-row"><span>Real crew capacity</span><span>Local timezone</span><span>Clear hold status</span><span>No payment collected</span></div>
+            <p className="scope-note">Do not enter door codes, payment details, or unnecessary access secrets. Secure access planning happens after scheduling.</p>
+          </div>
+        </div>
+        <section className="section" style={{ paddingTop: 20 }}>
+          <div className="container">
+            <Suspense>
+              <CustomerSchedulingFlow consultationIntakeEnabled={requestIntakeEnabled} />
+            </Suspense>
+          </div>
+        </section>
+      </div>
+    );
+  }
   return (
     <div className="route-page">
       <div className="container page-hero">

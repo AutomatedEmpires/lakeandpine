@@ -13,6 +13,7 @@ import {
   authEnabled,
   BUSINESS_PHONE,
   BUSINESS_PHONE_TEL,
+  customerSchedulingEnabled,
   PUBLIC_BUSINESS_EMAIL,
 } from "@/lib/env";
 import { serializeJsonLd } from "@/lib/json-ld";
@@ -89,14 +90,22 @@ export default function RootLayout({
         <a className="skip" href="#main">
           Skip to content
         </a>
-        <Nav phone={BUSINESS_PHONE} phoneTel={BUSINESS_PHONE_TEL} />
+        <Nav
+          phone={BUSINESS_PHONE}
+          phoneTel={BUSINESS_PHONE_TEL}
+          schedulingEnabled={customerSchedulingEnabled}
+        />
         <main id="main">{children}</main>
-        <StickyCta phoneTel={BUSINESS_PHONE_TEL} />
+        <StickyCta
+          phoneTel={BUSINESS_PHONE_TEL}
+          schedulingEnabled={customerSchedulingEnabled}
+        />
         <ChatDock />
         <Footer
           email={PUBLIC_BUSINESS_EMAIL}
           phone={BUSINESS_PHONE}
           phoneTel={BUSINESS_PHONE_TEL}
+          schedulingEnabled={customerSchedulingEnabled}
         />
         <PrivacyPreferences />
         <Toast />

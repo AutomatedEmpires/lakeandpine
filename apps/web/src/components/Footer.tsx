@@ -2,9 +2,14 @@ import Link from "next/link";
 
 import { BrandMark } from "./BrandMark";
 
-type Props = { email?: string; phone?: string; phoneTel?: string };
+type Props = {
+  email?: string;
+  phone?: string;
+  phoneTel?: string;
+  schedulingEnabled?: boolean;
+};
 
-export function Footer({ email, phone, phoneTel }: Props) {
+export function Footer({ email, phone, phoneTel, schedulingEnabled }: Props) {
   return (
     <footer className="footer">
       <div className="container footer-grid premium-footer-grid">
@@ -25,7 +30,9 @@ export function Footer({ email, phone, phoneTel }: Props) {
           <Link href="/services">Services</Link>
           <Link href="/pricing">Pricing + proposals</Link>
           <Link href="/areas">Planning areas</Link>
-          <Link href="/book">Request consultation</Link>
+          <Link href="/book">
+            {schedulingEnabled ? "Schedule service" : "Request consultation"}
+          </Link>
         </div>
         <div>
           <h4>Service</h4>

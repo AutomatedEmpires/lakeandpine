@@ -9,8 +9,8 @@ export const metadata: Metadata = {
 
 const SECTIONS = [
   {
-    title: "A request is not a confirmed booking",
-    body: "Submitting a preferred date, time, property description, or planning estimate does not reserve a crew or create a confirmed appointment. Scheduling occurs only after an operator reviews scope and capacity and communicates confirmation.",
+    title: "Requests, capacity holds, and confirmation",
+    body: "A consultation request or preferred window does not reserve a crew. When the scheduling flow explicitly reports a capacity hold, that window is temporarily reserved until its displayed expiration, but it is not a confirmed appointment. Confirmation occurs only when the booking status says confirmed.",
   },
   {
     title: "Estimates, quotes, and scope",
@@ -22,7 +22,7 @@ const SECTIONS = [
   },
   {
     title: "Scheduling and rescheduling",
-    body: "Preferred and alternate windows are requests until confirmed. A reschedule or cancellation request does not change an existing appointment until acknowledged. Any deadline, fee, deposit treatment, or exception must come from the confirmed service agreement—not an assumption on this website.",
+    body: "Preferred and alternate windows are requests unless the scheduling flow explicitly reports a capacity hold. An expired hold no longer reserves capacity. A reschedule or cancellation request does not change an existing hold or appointment until acknowledged. Any deadline, fee, deposit treatment, or exception must come from the confirmed service agreement—not an assumption on this website.",
   },
   {
     title: "Payments and refunds",
@@ -45,7 +45,7 @@ const SECTIONS = [
 export default function TermsPage() {
   return (
     <div className="route-page legal-page">
-      <div className="container page-hero"><div className="page-panel"><span className="eyebrow">General service-request terms</span><h1>Clear expectations before a property is scheduled.</h1><p className="lead">Updated July 13, 2026. These are general operating terms for the website and request process, not a final jurisdiction-specific service contract. Confirmed work should be governed by the proposal or service agreement provided for that job.</p></div></div>
+      <div className="container page-hero"><div className="page-panel"><span className="eyebrow">General service-request terms</span><h1>Clear expectations before a property is scheduled.</h1><p className="lead">Updated July 21, 2026. These are general operating terms for the website and request process, not a final jurisdiction-specific service contract. Confirmed work should be governed by the proposal or service agreement provided for that job.</p></div></div>
       <section className="section" style={{ paddingTop: 20 }}>
         <div className="container legal-layout">
           <aside className="card legal-summary"><strong>The short version</strong><p>Request first. Review the scope and price. Treat timing as confirmed only when an operator says it is. Raise concerns against the agreed scope so the right recovery path can be reviewed.</p><Link className="btn btn-soft" href="/pricing">How proposals work</Link></aside>

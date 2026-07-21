@@ -117,6 +117,18 @@ test("routes exceptional or access-complex work to consultation", () => {
   });
   assert.equal(access.path, "consultation");
   assert.match(access.publicReason, /Access or safety/);
+  assert.equal(
+    classifySchedulingRequest({
+      scope: {
+        ...scope,
+        finishSensitive: true,
+        finishRestrictionsAcknowledged: false,
+      },
+      territoryEligible: true,
+      policy,
+    }).path,
+    "consultation",
+  );
 });
 
 test("keeps conditional holds distinct from consultation", () => {
