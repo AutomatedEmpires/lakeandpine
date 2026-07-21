@@ -5,6 +5,7 @@ import { CustomerSchedulingFlow } from "@/components/CustomerSchedulingFlow";
 import { PremiumRequestFlow } from "@/components/PremiumRequestFlow";
 import {
   customerSchedulingEnabled,
+  getCustomerSchedulingReadinessIssues,
   requestIntakeEnabled,
 } from "@/lib/env";
 
@@ -18,7 +19,10 @@ export const metadata: Metadata = {
 };
 
 export default async function BookPage() {
-  if (customerSchedulingEnabled) {
+  const schedulingReady =
+    customerSchedulingEnabled && getCustomerSchedulingReadinessIssues().length === 0;
+
+  if (schedulingReady) {
     return (
       <div className="route-page">
         <div className="container page-hero">

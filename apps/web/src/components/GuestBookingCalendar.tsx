@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 type ManagedBooking = {
   reference: string;
   serviceTitle: string;
-  status: "held" | "pending_scope" | "confirmed" | "canceled";
+  status: "held" | "pending_scope" | "confirmed" | "canceled" | "expired";
   start: string;
   end: string;
   arrivalWindow: string;
@@ -99,6 +99,12 @@ export function GuestBookingCalendar() {
           <div className="notice-card">
             <strong>Capacity hold</strong>
             <p>This is a real reserved window, not yet a confirmed appointment. The hold remains subject to its displayed expiration and crew acceptance.</p>
+          </div>
+        )}
+        {booking.status === "expired" && (
+          <div className="notice-card">
+            <strong>Capacity hold expired</strong>
+            <p>This window is no longer reserved. Return to scheduling to choose from current capacity.</p>
           </div>
         )}
         <div className="hero-actions">

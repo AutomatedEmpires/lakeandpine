@@ -14,7 +14,15 @@ function isActive(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname.startsWith(href);
 }
 
-export function Nav({ phone, phoneTel }: { phone?: string; phoneTel?: string }) {
+export function Nav({
+  phone,
+  phoneTel,
+  schedulingEnabled,
+}: {
+  phone?: string;
+  phoneTel?: string;
+  schedulingEnabled?: boolean;
+}) {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -81,7 +89,7 @@ export function Nav({ phone, phoneTel }: { phone?: string; phoneTel?: string }) 
               ◐
             </button>
             <Link className="btn btn-primary" href="/book">
-              Request consultation
+              {schedulingEnabled ? "Schedule service" : "Request consultation"}
             </Link>
             <button
               className="icon-btn hamb"
@@ -117,7 +125,7 @@ export function Nav({ phone, phoneTel }: { phone?: string; phoneTel?: string }) 
           </a>
         ) : (
           <Link className="btn btn-primary" href="/book">
-            Request consultation
+            {schedulingEnabled ? "Schedule service" : "Request consultation"}
           </Link>
         )}
       </aside>

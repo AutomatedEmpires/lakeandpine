@@ -827,9 +827,15 @@ export async function getGuestManagedBooking(token: string) {
     update guest_booking_management_grants
     set last_used_at = now(), updated_at = now()
     where id = ${row.grant_id}`;
+  const holdExpired =
+    row.hold_status === "active" &&
+    row.expires_at !== null &&
+    Date.parse(row.expires_at) <= Date.now();
   const status =
     row.booking_status === "canceled" || row.hold_status === "canceled"
       ? "canceled"
+      : holdExpired
+        ? "expired"
       : row.hold_status === "confirmed"
         ? "confirmed"
         : row.hold_kind === "conditional"

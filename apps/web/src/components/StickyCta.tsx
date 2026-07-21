@@ -1,10 +1,16 @@
 import Link from "next/link";
 
-export function StickyCta({ phoneTel }: { phoneTel?: string }) {
+export function StickyCta({
+  phoneTel,
+  schedulingEnabled,
+}: {
+  phoneTel?: string;
+  schedulingEnabled?: boolean;
+}) {
   return (
     <div className="sticky-cta">
       <Link className="btn btn-primary" href="/book">
-        Consult
+        {schedulingEnabled ? "Schedule" : "Consult"}
       </Link>
       <Link className="btn btn-soft" href="/pricing">
         Pricing
