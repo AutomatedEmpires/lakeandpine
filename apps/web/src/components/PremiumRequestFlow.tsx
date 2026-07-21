@@ -51,18 +51,45 @@ function minutesLabel(minutes: number) {
   return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} planned labor-hours`;
 }
 
-export function PremiumRequestFlow({ intakeEnabled }: { intakeEnabled: boolean }) {
+export type PremiumRequestInitialDraft = {
+  program: PremiumProgram;
+  postalCode: string;
+  context: string;
+  sizeBand: RequestPlanningInput["sizeBand"];
+  condition: RequestPlanningInput["condition"];
+  cadence: string;
+  zoneCount: number;
+  siteReady: boolean;
+  accessComplex: boolean;
+};
+
+export function PremiumRequestFlow({
+  intakeEnabled,
+  initialDraft,
+}: {
+  intakeEnabled: boolean;
+  initialDraft?: PremiumRequestInitialDraft;
+}) {
   const params = useSearchParams();
   const requestedProgram = params.get("program");
+  const initialProgram =
+    initialDraft?.program ??
+    (isProgram(requestedProgram) ? requestedProgram : "estate");
   const [program, setProgram] = useState<PremiumProgram>(
-    isProgram(requestedProgram) ? requestedProgram : "estate",
+    initialProgram,
   );
-  const [step, setStep] = useState(0);
-  const [sizeBand, setSizeBand] = useState<RequestPlanningInput["sizeBand"]>("standard");
-  const [condition, setCondition] = useState<RequestPlanningInput["condition"]>("maintained");
-  const [zoneCount, setZoneCount] = useState(6);
-  const [context, setContext] = useState(CONTEXT_OPTIONS[program][0][0]);
-  const [cadence, setCadence] = useState("project");
+  const [step, setStep] = useState(initialDraft ? 1 : 0);
+  const [sizeBand, setSizeBand] = useState<RequestPlanningInput["sizeBand"]>(
+    initialDraft?.sizeBand ?? "standard",
+  );
+  const [condition, setCondition] = useState<RequestPlanningInput["condition"]>(
+    initialDraft?.condition ?? "maintained",
+  );
+  const [zoneCount, setZoneCount] = useState(initialDraft?.zoneCount ?? 6);
+  const [context, setContext] = useState(
+    initialDraft?.context ?? CONTEXT_OPTIONS[initialProgram][0][0],
+  );
+  const [cadence, setCadence] = useState(initialDraft?.cadence ?? "project");
   const [priorities, setPriorities] = useState("");
   const [finishNotes, setFinishNotes] = useState("");
   const [preferredDate, setPreferredDate] = useState("");
@@ -70,9 +97,16 @@ export function PremiumRequestFlow({ intakeEnabled }: { intakeEnabled: boolean }
   const [secondAlternateDate, setSecondAlternateDate] = useState("");
   const [windowPreference, setWindowPreference] = useState<string>(WINDOWS[0]);
   const [deadlineCritical, setDeadlineCritical] = useState(false);
-  const [accessComplex, setAccessComplex] = useState(false);
-  const [siteReady, setSiteReady] = useState(false);
-  const [contact, setContact] = useState({ name: "", email: "", phone: "", zip: "" });
+  const [accessComplex, setAccessComplex] = useState(
+    initialDraft?.accessComplex ?? false,
+  );
+  const [siteReady, setSiteReady] = useState(initialDraft?.siteReady ?? false);
+  const [contact, setContact] = useState({
+    name: "",
+    email: "",
+    phone: "",
+    zip: initialDraft?.postalCode ?? "",
+  });
   const [privacyConsent, setPrivacyConsent] = useState(false);
   const [termsConsent, setTermsConsent] = useState(false);
   const [photoPermission, setPhotoPermission] = useState(false);

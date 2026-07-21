@@ -15,7 +15,8 @@
     "ops:purge-dev-seed": "node scripts/purge-dev-seed.mjs",
     "ops:smoke-runtime": "node scripts/runtime-smoke.mjs",
     "quality:verify-migrations": "node scripts/verify-migrations.mjs",
-    "quality:verify-scheduling": "node scripts/verify-customer-scheduling.mjs"
+    "quality:verify-scheduling": "node scripts/verify-customer-scheduling.mjs",
+    "ops:seed-scheduling-preview": "node scripts/seed-scheduling-preview.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.5.13",

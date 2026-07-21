@@ -197,6 +197,9 @@ export function classifySchedulingRequest(input: {
   if (!policy.allowedCadences.includes(scope.cadence)) blockers.push("scope:cadence_outside_policy");
   if (!scope.siteReady) blockers.push("readiness:site_not_ready");
   if (scope.accessComplex) blockers.push("access:operator_coordination_required");
+  if (scope.finishSensitive && !scope.finishRestrictionsAcknowledged) {
+    blockers.push("finish:restrictions_not_acknowledged");
+  }
 
   if (policy.schedulingPath === "consultation" || blockers.length > 0) {
     return {

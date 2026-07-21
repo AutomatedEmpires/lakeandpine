@@ -821,6 +821,26 @@ textarea { height: 116px !important; padding-top: 14px !important; resize: verti
 .booking-actions > span { text-align: center; font-size: 12px; }
 .booking-result { padding: 38px; }
 .booking-result h2 { margin: 16px 0 10px; font-size: 45px; max-width: 800px; }
+.customer-calendar .calendar-head button,
+.customer-calendar .calendar-dates button,
+.customer-calendar .time-grid button { min-width: 44px; min-height: 44px; }
+.customer-calendar .calendar-dates button:focus-visible,
+.customer-calendar .time-grid button:focus-visible {
+  outline: 3px solid var(--lake);
+  outline-offset: 2px;
+}
+.slot-panel { align-self: start; }
+.slot-status { margin-top: 18px; padding: 16px; border-radius: 17px; background: rgba(5,95,79,.09); }
+.slot-status p { margin: 5px 0 0; color: var(--muted); }
+.consultation-fallback { margin-top: 22px; padding: 24px; }
+.consultation-fallback > strong { font-size: 22px; }
+.consultation-fallback p { color: var(--muted); }
+.scheduling-confirmation .scope-note { margin-top: 20px; }
+.guest-calendar-layout { display: grid; grid-template-columns: minmax(0,1fr) 320px; gap: 18px; align-items: start; }
+.calendar-agenda { padding: 24px; }
+.agenda-event { display: grid; grid-template-columns: 64px 1fr; gap: 14px; margin-top: 18px; padding: 16px; border: 1px solid var(--line); border-radius: 18px; }
+.agenda-event > span { display: grid; place-items: center; min-height: 58px; border-radius: 15px; background: var(--ink); color: var(--foam); font-weight: 950; text-align: center; }
+.agenda-event p { margin: 4px 0 0; color: var(--muted); }
 
 .operator-page { --max: 1440px; }
 .operator-hero { display: grid; grid-template-columns: 1fr 280px; gap: 20px; align-items: end; padding: 10px 0; }
@@ -1141,7 +1161,8 @@ textarea { height: 116px !important; padding-top: 14px !important; resize: verti
   .sticky-cta .btn { min-height: 44px; padding: 0 12px; font-size: 13px; }
   .service-plan-preview { transform: none; padding: 20px; }
   .workflow-grid, .dual-experience, .service-explainer-grid, .booking-shell,
-  .property-facts, .room-briefs, .operator-notice-grid, .communication-plan {
+  .property-facts, .room-briefs, .operator-notice-grid, .communication-plan,
+  .guest-calendar-layout {
     grid-template-columns: 1fr;
   }
   .planning-story { padding: 26px; }

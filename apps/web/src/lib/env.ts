@@ -66,8 +66,29 @@ export const authEnabled = Boolean(
   process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY,
 );
 export const requestIntakeEnabled = process.env.REQUEST_INTAKE_ENABLED === "true";
+export const customerSchedulingEnabled =
+  process.env.CUSTOMER_SCHEDULING_ENABLED === "true";
 export const cleanerApplicationsEnabled = process.env.CLEANER_APPLICATIONS_ENABLED === "true";
 export const paymentsEnabled = process.env.PAYMENTS_ENABLED === "true";
+
+export function getCustomerSchedulingReadinessIssues(): string[] {
+  const issues: string[] = [];
+  if (!customerSchedulingEnabled) issues.push("scheduling_disabled");
+  if (!optionalEnv("DATABASE_URL")) issues.push("database_unconfigured");
+  if ((optionalEnv("CUSTOMER_SCHEDULING_SECRET")?.length ?? 0) < 32) {
+    issues.push("scheduling_protection_unconfigured");
+  }
+  if ((optionalEnv("REQUEST_FINGERPRINT_SECRET")?.length ?? 0) < 32) {
+    issues.push("request_protection_unconfigured");
+  }
+  const bookingReferenceSecret =
+    optionalEnv("BOOKING_REFERENCE_SECRET") ||
+    optionalEnv("REQUEST_FINGERPRINT_SECRET");
+  if ((bookingReferenceSecret?.length ?? 0) < 32) {
+    issues.push("booking_reference_protection_unconfigured");
+  }
+  return issues;
+}
 
 export function getIntakeReadinessIssues(): string[] {
   const issues: string[] = [];
