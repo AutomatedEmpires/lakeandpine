@@ -16,8 +16,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const area = await getServiceArea(slug);
   if (!area) return {};
   return {
-    title: `${area.city} Service Area Review`,
-    description: `How Lake & Pine reviews property, route, and schedule fit for requests near ${area.city}. Availability is confirmed individually.`,
+    title: area.seo_phrase,
+    description: area.intro.slice(0, 300),
     alternates: { canonical: `/areas/${slug}` },
   };
 }
@@ -34,8 +34,9 @@ export default async function AreaPage({ params }: Props) {
           <span className="eyebrow">
             {area.city}, {area.state}
           </span>
-          <h1>Planning a property request near {area.city}.</h1>
-          <p className="lead">This page provides regional context, not a blanket availability promise. An operator reviews the property type, scope, travel, crew time, and preferred window before confirming service.</p>
+          <h1>{area.headline}</h1>
+          <p className="lead">{area.intro}</p>
+          <p className="copy">This page provides regional context, not a blanket availability promise. An operator reviews the property type, scope, travel, crew time, and preferred window before confirming service.</p>
           <div className="hero-actions">
             <Link className="btn btn-primary" href="/book">
               Check a property
@@ -66,6 +67,39 @@ export default async function AreaPage({ params }: Props) {
           <AreaMap areas={allAreas} highlight={area.city} />
         </div>
       </section>
+
+      {area.highlights.length > 0 ? (
+        <section className="section">
+          <div className="container service-explainer-grid">
+            {area.highlights.map((highlight) => (
+              <article className="card" key={highlight.title}>
+                <span className="eyebrow">{area.city}</span>
+                <h3>{highlight.title}</h3>
+                <p>{highlight.body}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {area.faqs.length > 0 ? (
+        <section className="section">
+          <div className="container">
+            <span className="eyebrow">Common questions</span>
+            <h2 className="section-title">Requests near {area.city}</h2>
+            <div className="planning-story-list" style={{ marginTop: 18 }}>
+              {area.faqs.map(([question, answer]) => (
+                <article key={question}>
+                  <div>
+                    <strong>{question}</strong>
+                    <p>{answer}</p>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       <section className="section">
         <div className="container final-cta card">
