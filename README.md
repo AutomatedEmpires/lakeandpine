@@ -30,13 +30,15 @@ Content and intake are organized around four service programs: Private Estate Ca
 
 **Operations console** (`/operator`) — qualification review, capacity-aware crew suggestions, scheduling (`/operator/schedule`), workforce and roles (`/operator/workforce`), organization network view (`/operator/network`), inventory, time review, compensation and bonuses, and service recovery (`/operator/recovery`) covering complaints, recleans, refund decisions, and notification retries.
 
-**Organization and team scoping** — a five-role hierarchy (owner, general manager, manager, shift lead, cleaner) maps to 14 named operations capabilities (`apps/web/src/lib/team-operations.ts`). Organization-wide memberships span teams; local memberships carry a team ID. The application sets the authenticated actor inside every database transaction and row-level security enforces the same boundary in PostgreSQL — a missing or mismatched actor context fails closed.
+**Organization and team scoping** — a five-role hierarchy (owner, general manager, manager, shift lead, cleaner) maps to 14 named operations capabilities (`apps/web/src/lib/team-operations.ts`). Organization-wide memberships span teams; local memberships carry a team ID. The application sets the authenticated actor inside every database transaction, every server action opens with a role guard plus a capability check, and a live privilege-escalation attempt is rejected at the database with an owner-identity mismatch.
+
+Row-level security is enabled across the schema, but its strength is uneven and worth stating plainly: the newer national-operations tables (workforce memberships, inventory) enforce genuinely team-scoped policies through `private.can_access_team()`, while the older customer and PII tables still carry a single permissive policy and rely on application-layer scoping for isolation. Application scoping is correct at every call site today, so this is a missing database backstop rather than an open leak — but tightening those legacy policies, and the CI assertion that currently accepts them, is open work rather than a solved problem.
 
 **The money boundary** — the refund ledger records decisions; it never moves money. `/api/checkout` returns 503 while `PAYMENTS_ENABLED` is false, and the Stripe webhook only records signature-verified events into billing history. Restocks, bonuses, pay rates, and workforce events remain approval-gated records until an authorized human completes the real-world action.
 
 ## Status
 
-Lake & Pine is pre-launch: the platform is built, CI-gated, and deployable, but it is not serving customers.
+Lake & Pine is pre-launch. The marketing site is deployed and publicly reachable, but the product is not yet serving customers: public intake ships fail-closed and direct-contact details are unset, so no lead is captured until the founder flips the operating gates.
 
 | Capability | State |
 | --- | --- |
@@ -85,7 +87,7 @@ The schema ships as eight ordered migrations, from `core` and `content_seed` thr
 A single CI workflow (`.github/workflows/ci.yml`) gates every pull request and merge group, in order:
 
 1. **Whitespace gate** — `git diff --check` over changed lines; trailing whitespace fails the build.
-2. **Fresh-database migration proof** — `pnpm quality:verify-migrations` applies every migration to a fresh PostgreSQL 17 service container, then proves the restricted `lakeandpine_app` role holds exactly the table privileges it needs without owning tables or bypassing row-level security. The verifier refuses remote hosts and non-disposable database names, and never reads `DATABASE_URL` or `.env.local`.
+2. **Fresh-database migration proof** — `pnpm quality:verify-migrations` applies every migration to a fresh PostgreSQL 17 service container, then proves the restricted `lakeandpine_app` role holds exactly the table privileges it needs without owning tables or bypassing row-level security. The verifier refuses remote hosts and non-disposable database names, and never reads `DATABASE_URL` or `.env.local`. Its current limit is worth knowing: it asserts that a policy exists with a non-null qualifier, so a permissive policy satisfies it. Treat it as a privilege proof, not yet a policy-strength proof.
 3. **Tests** — `pnpm test` (Node's built-in test runner over `src/**/*.test.ts`).
 4. **Lint, typecheck, build** — `pnpm lint`, `pnpm typecheck`, `pnpm build`.
 
