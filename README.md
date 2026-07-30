@@ -50,7 +50,7 @@ Lake & Pine is pre-launch: the platform is built, CI-gated, and deployable, but 
 | Analytics / monitoring | PostHog and Sentry integrated; inactive without keys |
 | Domain | `lakeandpinecleaning.com` is the configured production canonical; DNS ownership and business phone/email remain external launch dependencies |
 
-Flipping the three operating gates is a founder decision, and each gate's dependencies are checked in code rather than by convention.
+Flipping the three operating gates is a founder decision. Note one prerequisite the gates do not enforce for you: `PAYMENTS_ENABLED=true` with a secret key and a price configured is enough for `/api/checkout` to create a payable Stripe Checkout session, while `/api/webhooks/stripe` still returns 503 for every event unless `STRIPE_WEBHOOK_SECRET` is also set. Configure the webhook secret before enabling payments, or customers can be charged with no billing-history or payment-failure processing behind it.
 
 ## Architecture
 
@@ -107,7 +107,9 @@ export DATABASE_URL="$MIGRATION_DATABASE_URL"   # same disposable local database
 pnpm dev
 ```
 
-The app serves on port 3010. Copy `.env.example` to `apps/web/.env.local` and point only at local, disposable databases; recreate the `--rm` container before rerunning the migration proof. `/api/health` fails closed unless the connected role matches `DATABASE_RUNTIME_ROLE`, so set that to the role you actually connect as. Standard checks:
+The app serves on port 3010. Copy `.env.example` to `apps/web/.env.local` and point only at local, disposable databases; recreate the `--rm` container before rerunning the migration proof.
+
+`DATABASE_RUNTIME_ROLE` is **not** the login role in `DATABASE_URL` — the connection logs in as the owner, then `db.ts` uses `DATABASE_RUNTIME_ROLE` as PostgreSQL's startup `role` so queries run as the restricted, RLS-bound `lakeandpine_app`. Leave it set to `lakeandpine_app`; pointing it at the login superuser would silently bypass row-level security and make local behavior stop reflecting production. Standard checks:
 
 ```bash
 pnpm test
