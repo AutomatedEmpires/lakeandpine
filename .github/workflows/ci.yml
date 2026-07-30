@@ -53,6 +53,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Prepare disposable database URLs
+        shell: bash
+        run: |
+          printf 'MIGRATION_DATABASE_URL=postgresql://%s:%s@127.0.0.1:5432/%s\n' \
+            supabase_admin postgres lakeandpine_test >> "${GITHUB_ENV}"
+          printf 'DATABASE_URL=postgresql://%s:%s@127.0.0.1:5432/%s\n' \
+            postgres lakeandpine-verifier-postgres lakeandpine_test >> "${GITHUB_ENV}"
+
       - name: Check changed lines for whitespace errors
         shell: bash
         run: |
@@ -67,8 +75,9 @@ jobs:
 
       - name: Verify fresh PostgreSQL migrations and application-role access
         run: pnpm quality:verify-migrations
-        env:
-          MIGRATION_DATABASE_URL: postgresql://supabase_admin:postgres@127.0.0.1:5432/lakeandpine_test
+
+      - name: Prove atomic customer capacity reservations
+        run: pnpm quality:verify-scheduling
 
       - name: Test
         run: pnpm test
@@ -81,5 +90,3 @@ jobs:
 
       - name: Build
         run: pnpm build
-        env:
-          DATABASE_URL: postgresql://postgres:lakeandpine-verifier-postgres@127.0.0.1:5432/lakeandpine_test
