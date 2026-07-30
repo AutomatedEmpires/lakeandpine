@@ -4,7 +4,9 @@ import Link from "next/link";
 import { ReviewWall } from "@/components/ReviewWall";
 import { getReviews } from "@/lib/data";
 
-export const dynamic = "force-dynamic";
+// The honest empty state is the expected render until real feedback exists;
+// cache it and degrade to it if the database is unreachable.
+export const revalidate = 300;
 
 export const metadata: Metadata = {
   title: "Customer Feedback",
@@ -14,7 +16,7 @@ export const metadata: Metadata = {
 };
 
 export default async function ReviewsPage() {
-  const reviews = await getReviews();
+  const reviews = await getReviews().catch(() => []);
   return (
     <div className="route-page">
       <div className="container page-hero"><div className="page-panel"><span className="eyebrow">Customer feedback</span><h1>Proof without theater.</h1><p className="lead">Lake &amp; Pine does not publish recovered placeholders, sample praise, or invented customer counts. This page remains quiet until feedback comes from completed work.</p></div></div>
