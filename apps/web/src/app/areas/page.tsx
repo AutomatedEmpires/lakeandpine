@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { getServiceAreas } from "@/lib/data";
 import { REGION_CLUSTERS } from "@/lib/market-content";
 
 export const metadata: Metadata = {
@@ -10,7 +11,13 @@ export const metadata: Metadata = {
   alternates: { canonical: "/areas" },
 };
 
-export default function AreasPage() {
+// Cached rather than per-request: the city list changes rarely and a database
+// blip should not take the corridor page down.
+export const revalidate = 3600;
+
+export default async function AreasPage() {
+  const areas = await getServiceAreas().catch(() => []);
+
   return (
     <div className="route-page">
       <div className="container page-hero">
@@ -40,6 +47,24 @@ export default function AreasPage() {
           ))}
         </div>
       </section>
+
+
+      {areas.length > 0 ? (
+        <section className="section">
+          <div className="container">
+            <span className="eyebrow">Places we plan around</span>
+            <h2 className="section-title">Local planning notes by city</h2>
+            <p className="copy">Each page explains how route, property, and schedule fit are reviewed near that city. A listing is regional context, not a coverage promise.</p>
+            <div className="tag-row" style={{ marginTop: 18 }}>
+              {areas.map((area) => (
+                <Link key={area.slug} className="tag" href={`/areas/${area.slug}`}>
+                  {area.city}, {area.state}
+                </Link>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       <section className="section">
         <div className="container planning-story card area-method">

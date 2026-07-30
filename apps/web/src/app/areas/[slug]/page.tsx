@@ -5,7 +5,9 @@ import { notFound } from "next/navigation";
 import { AreaMap } from "@/components/AreaMap";
 import { getServiceArea, getServiceAreas } from "@/lib/data";
 
-export const dynamic = "force-dynamic";
+// Cached per city; local-search pages should not cost a database round trip
+// on every crawl or visit.
+export const revalidate = 3600;
 
 type Props = { params: Promise<{ slug: string }> };
 
@@ -17,7 +19,6 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     title: `${area.city} Service Area Review`,
     description: `How Lake & Pine reviews property, route, and schedule fit for requests near ${area.city}. Availability is confirmed individually.`,
     alternates: { canonical: `/areas/${slug}` },
-    robots: { index: false },
   };
 }
 
